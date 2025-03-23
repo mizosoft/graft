@@ -1,0 +1,17 @@
+syntax = "proto3";
+
+package graft;
+
+option go_package = "github.com/mizosoft/graft/pb;pb";
+
+service Graft {
+  rpc Append (AppendRequest) returns (AppendResponse);
+}
+
+message AppendRequest {
+  repeated bytes cmds = 1;
+}
+
+message AppendResponse {
+  bool success = 1;
+}

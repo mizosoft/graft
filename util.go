@@ -1,0 +1,3 @@
+package graft
+
+const nilString = ""
