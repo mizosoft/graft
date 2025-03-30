@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"flag"
 	"fmt"
+	"math/rand"
 	"os"
 	"strings"
 
@@ -47,8 +48,32 @@ func main() {
 		ElectionTimeoutHighMillis: 3000,
 		HeartbeatMillis:           500,
 	}
-	graft := graft.New(config)
+	g := graft.New(config)
 
-	gErr := graft.Run()
-	fmt.Println(gErr)
+	go func() {
+		gErr := g.Run()
+		fmt.Println(gErr)
+	}()
+
+	g.Committed = func(entries []graft.CommittedEntry) {
+		fmt.Printf("Committed: %v\n", entries)
+	}
+
+	for {
+		var input string
+		fmt.Print("(y) to send a command, (n) to exit: ")
+		fmt.Scanln(&input) // Reads input until the first space or newline
+
+		if input == "n" {
+			return
+		}
+
+		count := rand.Intn(10)
+		commands := make([][]byte, count)
+		for i := range count {
+			commands[i] = []byte("a")
+		}
+		fmt.Printf("Appending %v entries\n", commands)
+		g.Append(commands)
+	}
 }

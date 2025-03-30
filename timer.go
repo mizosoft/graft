@@ -9,8 +9,27 @@ import (
 type periodicTimer struct {
 	duration func() time.Duration
 	timer    *time.Timer
-	trigger  func()
+	c        chan struct{}
 	mut      sync.Mutex
+}
+
+func (t *periodicTimer) start(trigger func()) {
+	go func() {
+		for {
+			_, ok := <-t.c
+			if !ok {
+				return
+			}
+			trigger()
+		}
+	}()
+}
+
+func (t *periodicTimer) stop() {
+	t.mut.Lock()
+	defer t.mut.Unlock()
+
+	t.timer.Stop()
 }
 
 func (t *periodicTimer) reset() {
@@ -18,23 +37,33 @@ func (t *periodicTimer) reset() {
 	defer t.mut.Unlock()
 
 	if t.timer != nil {
-		t.timer.Stop()
+		t.timer.Reset(t.duration())
+	} else {
+		t.timer = time.AfterFunc(
+			t.duration(),
+			func() {
+				t.mut.Lock()
+				defer t.mut.Unlock()
+
+				if t.timer != nil {
+					t.c <- struct{}{}
+				}
+			})
 	}
-	t.timer = time.AfterFunc(t.duration(), t.trigger)
 }
 
-func (t *periodicTimer) stop() {
-	t.mut.Lock()
-	defer t.mut.Unlock()
-
-	if t.timer != nil {
-		t.timer.Stop()
-		t.timer = nil
-	}
+func (t *periodicTimer) poke() {
+	// Avoid blocking caller.
+	go func() {
+		t.c <- struct{}{}
+	}()
 }
 
 func newTimer(duration time.Duration) *periodicTimer {
-	return &periodicTimer{duration: func() time.Duration { return duration }}
+	return &periodicTimer{
+		duration: func() time.Duration { return duration },
+		c:        make(chan struct{}),
+	}
 }
 
 func newRandomizedTimer(low time.Duration, high time.Duration) *periodicTimer {
@@ -43,5 +72,6 @@ func newRandomizedTimer(low time.Duration, high time.Duration) *periodicTimer {
 		duration: func() time.Duration {
 			return low + time.Duration(rnd.Int63n(int64(high)-int64(low)+1))
 		},
+		c: make(chan struct{}),
 	}
 }

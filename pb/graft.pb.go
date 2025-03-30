@@ -67,7 +67,8 @@ func (x *AppendRequest) GetCmds() [][]byte {
 
 type AppendResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Success       bool                   `protobuf:"varint,1,opt,name=success,proto3" json:"success,omitempty"`
+	Index         int32                  `protobuf:"varint,1,opt,name=index,proto3" json:"index,omitempty"`
+	Term          int32                  `protobuf:"varint,2,opt,name=term,proto3" json:"term,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -102,11 +103,18 @@ func (*AppendResponse) Descriptor() ([]byte, []int) {
 	return file_graft_proto_rawDescGZIP(), []int{1}
 }
 
-func (x *AppendResponse) GetSuccess() bool {
+func (x *AppendResponse) GetIndex() int32 {
 	if x != nil {
-		return x.Success
+		return x.Index
 	}
-	return false
+	return 0
+}
+
+func (x *AppendResponse) GetTerm() int32 {
+	if x != nil {
+		return x.Term
+	}
+	return 0
 }
 
 var File_graft_proto protoreflect.FileDescriptor
@@ -115,9 +123,10 @@ const file_graft_proto_rawDesc = "" +
 	"\n" +
 	"\vgraft.proto\x12\x05graft\"#\n" +
 	"\rAppendRequest\x12\x12\n" +
-	"\x04cmds\x18\x01 \x03(\fR\x04cmds\"*\n" +
-	"\x0eAppendResponse\x12\x18\n" +
-	"\asuccess\x18\x01 \x01(\bR\asuccess2>\n" +
+	"\x04cmds\x18\x01 \x03(\fR\x04cmds\":\n" +
+	"\x0eAppendResponse\x12\x14\n" +
+	"\x05index\x18\x01 \x01(\x05R\x05index\x12\x12\n" +
+	"\x04term\x18\x02 \x01(\x05R\x04term2>\n" +
 	"\x05Graft\x125\n" +
 	"\x06Append\x12\x14.graft.AppendRequest\x1a\x15.graft.AppendResponseB!Z\x1fgithub.com/mizosoft/graft/pb;pbb\x06proto3"
 
