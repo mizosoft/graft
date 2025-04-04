@@ -29,7 +29,9 @@ func (t *periodicTimer) stop() {
 	t.mut.Lock()
 	defer t.mut.Unlock()
 
-	t.timer.Stop()
+	if t.timer != nil {
+		t.timer.Stop()
+	}
 }
 
 func (t *periodicTimer) reset() {
@@ -53,6 +55,8 @@ func (t *periodicTimer) reset() {
 }
 
 func (t *periodicTimer) poke() {
+	t.stop() // Invalidate schedule event (if any).
+
 	// Avoid blocking caller.
 	go func() {
 		t.c <- struct{}{}

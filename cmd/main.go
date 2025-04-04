@@ -44,20 +44,24 @@ func main() {
 	config := graft.Config{
 		Id:                        *id,
 		Addresses:                 addresses,
-		ElectionTimeoutLowMillis:  1500,
-		ElectionTimeoutHighMillis: 3000,
-		HeartbeatMillis:           500,
+		ElectionTimeoutLowMillis:  150,
+		ElectionTimeoutHighMillis: 300,
+		HeartbeatMillis:           50,
+		Persistence:               graft.NullPersistence(),
+		Committed: func(entries []graft.CommittedEntry) {
+			fmt.Printf("Committed: %v\n", entries)
+		},
 	}
-	g := graft.New(config)
+
+	g, e := graft.New(config)
+	if e != nil {
+		panic(e)
+	}
 
 	go func() {
 		gErr := g.Run()
 		fmt.Println(gErr)
 	}()
-
-	g.Committed = func(entries []graft.CommittedEntry) {
-		fmt.Printf("Committed: %v\n", entries)
-	}
 
 	for {
 		var input string
