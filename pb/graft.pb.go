@@ -117,6 +117,186 @@ func (x *AppendResponse) GetTerm() int32 {
 	return 0
 }
 
+type PersistedState struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	CurrentTerm   int32                  `protobuf:"varint,1,opt,name=currentTerm,proto3" json:"currentTerm,omitempty"`
+	VotedFor      string                 `protobuf:"bytes,2,opt,name=votedFor,proto3" json:"votedFor,omitempty"`
+	CommitIndex   int32                  `protobuf:"varint,3,opt,name=commitIndex,proto3" json:"commitIndex,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PersistedState) Reset() {
+	*x = PersistedState{}
+	mi := &file_graft_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PersistedState) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PersistedState) ProtoMessage() {}
+
+func (x *PersistedState) ProtoReflect() protoreflect.Message {
+	mi := &file_graft_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PersistedState.ProtoReflect.Descriptor instead.
+func (*PersistedState) Descriptor() ([]byte, []int) {
+	return file_graft_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *PersistedState) GetCurrentTerm() int32 {
+	if x != nil {
+		return x.CurrentTerm
+	}
+	return 0
+}
+
+func (x *PersistedState) GetVotedFor() string {
+	if x != nil {
+		return x.VotedFor
+	}
+	return ""
+}
+
+func (x *PersistedState) GetCommitIndex() int32 {
+	if x != nil {
+		return x.CommitIndex
+	}
+	return 0
+}
+
+type Record struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Type          uint32                 `protobuf:"varint,1,opt,name=type,proto3" json:"type,omitempty"`
+	Crc32         uint32                 `protobuf:"varint,3,opt,name=crc32,proto3" json:"crc32,omitempty"`
+	Data          []byte                 `protobuf:"bytes,2,opt,name=data,proto3" json:"data,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Record) Reset() {
+	*x = Record{}
+	mi := &file_graft_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Record) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Record) ProtoMessage() {}
+
+func (x *Record) ProtoReflect() protoreflect.Message {
+	mi := &file_graft_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Record.ProtoReflect.Descriptor instead.
+func (*Record) Descriptor() ([]byte, []int) {
+	return file_graft_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *Record) GetType() uint32 {
+	if x != nil {
+		return x.Type
+	}
+	return 0
+}
+
+func (x *Record) GetCrc32() uint32 {
+	if x != nil {
+		return x.Crc32
+	}
+	return 0
+}
+
+func (x *Record) GetData() []byte {
+	if x != nil {
+		return x.Data
+	}
+	return nil
+}
+
+type WalHeader struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Magic         uint64                 `protobuf:"varint,1,opt,name=magic,proto3" json:"magic,omitempty"`
+	Version       int32                  `protobuf:"varint,2,opt,name=version,proto3" json:"version,omitempty"`
+	Flags         int32                  `protobuf:"varint,3,opt,name=flags,proto3" json:"flags,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *WalHeader) Reset() {
+	*x = WalHeader{}
+	mi := &file_graft_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WalHeader) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WalHeader) ProtoMessage() {}
+
+func (x *WalHeader) ProtoReflect() protoreflect.Message {
+	mi := &file_graft_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WalHeader.ProtoReflect.Descriptor instead.
+func (*WalHeader) Descriptor() ([]byte, []int) {
+	return file_graft_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *WalHeader) GetMagic() uint64 {
+	if x != nil {
+		return x.Magic
+	}
+	return 0
+}
+
+func (x *WalHeader) GetVersion() int32 {
+	if x != nil {
+		return x.Version
+	}
+	return 0
+}
+
+func (x *WalHeader) GetFlags() int32 {
+	if x != nil {
+		return x.Flags
+	}
+	return 0
+}
+
 var File_graft_proto protoreflect.FileDescriptor
 
 const file_graft_proto_rawDesc = "" +
@@ -126,7 +306,19 @@ const file_graft_proto_rawDesc = "" +
 	"\x04cmds\x18\x01 \x03(\fR\x04cmds\":\n" +
 	"\x0eAppendResponse\x12\x14\n" +
 	"\x05index\x18\x01 \x01(\x05R\x05index\x12\x12\n" +
-	"\x04term\x18\x02 \x01(\x05R\x04term2>\n" +
+	"\x04term\x18\x02 \x01(\x05R\x04term\"p\n" +
+	"\x0ePersistedState\x12 \n" +
+	"\vcurrentTerm\x18\x01 \x01(\x05R\vcurrentTerm\x12\x1a\n" +
+	"\bvotedFor\x18\x02 \x01(\tR\bvotedFor\x12 \n" +
+	"\vcommitIndex\x18\x03 \x01(\x05R\vcommitIndex\"F\n" +
+	"\x06Record\x12\x12\n" +
+	"\x04type\x18\x01 \x01(\rR\x04type\x12\x14\n" +
+	"\x05crc32\x18\x03 \x01(\rR\x05crc32\x12\x12\n" +
+	"\x04data\x18\x02 \x01(\fR\x04data\"Q\n" +
+	"\tWalHeader\x12\x14\n" +
+	"\x05magic\x18\x01 \x01(\x04R\x05magic\x12\x18\n" +
+	"\aversion\x18\x02 \x01(\x05R\aversion\x12\x14\n" +
+	"\x05flags\x18\x03 \x01(\x05R\x05flags2>\n" +
 	"\x05Graft\x125\n" +
 	"\x06Append\x12\x14.graft.AppendRequest\x1a\x15.graft.AppendResponseB!Z\x1fgithub.com/mizosoft/graft/pb;pbb\x06proto3"
 
@@ -142,10 +334,13 @@ func file_graft_proto_rawDescGZIP() []byte {
 	return file_graft_proto_rawDescData
 }
 
-var file_graft_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
+var file_graft_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
 var file_graft_proto_goTypes = []any{
 	(*AppendRequest)(nil),  // 0: graft.AppendRequest
 	(*AppendResponse)(nil), // 1: graft.AppendResponse
+	(*PersistedState)(nil), // 2: graft.PersistedState
+	(*Record)(nil),         // 3: graft.Record
+	(*WalHeader)(nil),      // 4: graft.WalHeader
 }
 var file_graft_proto_depIdxs = []int32{
 	0, // 0: graft.Graft.Append:input_type -> graft.AppendRequest
@@ -168,7 +363,7 @@ func file_graft_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_graft_proto_rawDesc), len(file_graft_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   2,
+			NumMessages:   5,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

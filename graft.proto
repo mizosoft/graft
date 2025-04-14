@@ -16,3 +16,21 @@ message AppendResponse {
   int32 index = 1;
   int32 term = 2;
 }
+
+message PersistedState {
+  int32  currentTerm = 1;
+  string votedFor = 2;
+  int32  commitIndex = 3;
+}
+
+message Record {
+  uint32 type = 1;
+  uint32 crc32 = 3;
+  bytes  data = 2;
+}
+
+message WalHeader {
+  uint64 magic = 1;
+  int32 version = 2;
+  int32 flags = 3;
+}

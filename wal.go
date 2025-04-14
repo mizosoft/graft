@@ -1,0 +1,656 @@
+package graft
+
+import (
+	"bytes"
+	"encoding/binary"
+	"errors"
+	"fmt"
+	"hash/crc32"
+	"io"
+	"log"
+	"os"
+	"path"
+	"sort"
+
+	"github.com/mizosoft/graft/pb"
+	"google.golang.org/protobuf/proto"
+)
+
+const (
+	StateType = iota
+	EntryType
+	HeaderType
+)
+
+const (
+	walMagic   uint64 = 0x6420655767271765
+	walVersion int32  = 1
+)
+
+var (
+	errClosed = errors.New("closed")
+)
+
+type wal struct {
+	dir             string
+	softSegmentSize int64
+	segments        []*segment
+	tail            *segment
+	crcTable        *crc32.Table
+	closed          bool
+}
+
+type segment struct {
+	w                     *wal
+	firstIndex, nextIndex int // First & next entry indices.
+	fname                 string
+	f                     *os.File
+	entryOffsets          []int64
+	lastOffset            int64
+	lastState             *pb.PersistedState // Last-written state.
+}
+
+func (s *segment) entryCount() int {
+	return len(s.entryOffsets)
+}
+
+func (s *segment) getEntry(index int) (*pb.LogEntry, error) {
+	localIndex := index - s.firstIndex
+	if localIndex < 0 {
+		return nil, errEntryIndexOutOfRange
+	}
+
+	offset := s.entryOffsets[localIndex]
+	var limit int64
+	if index < len(s.entryOffsets)-1 {
+		limit = s.entryOffsets[localIndex+1]
+	} else {
+		limit = s.lastOffset
+	}
+
+	chunk := make([]byte, limit-offset)
+	if n, err := s.f.ReadAt(chunk, offset); err != nil && n < len(chunk) {
+		return nil, err
+	}
+
+	recordLen := int(binary.BigEndian.Uint32(chunk))
+	record, err := s.w.decodeRecord(chunk[4 : 4+recordLen])
+	if err != nil {
+		return nil, err
+	}
+	if record.Type != EntryType {
+		panic(fmt.Errorf("unexpected record type when expecting an entry: %d", record.Type))
+	}
+
+	var entry pb.LogEntry
+	if err := proto.Unmarshal(record.Data, &entry); err != nil {
+		return nil, err
+	}
+	return &entry, nil
+}
+
+func (s *segment) getEntriesFrom(index int) ([]*pb.LogEntry, error) {
+	localIndex := index - s.firstIndex
+	if localIndex < 0 {
+		return []*pb.LogEntry{}, nil
+	}
+
+	reader := newBufferedReader(newReaderAt(s.f, s.entryOffsets[localIndex]))
+	for entries := []*pb.LogEntry{}; ; {
+		var recordLen int32
+		if err := binary.Read(reader, binary.BigEndian, &recordLen); err != nil {
+			if errors.Is(err, io.EOF) {
+				return entries, nil
+			}
+			return nil, err
+		}
+
+		recordBytes := make([]byte, recordLen)
+		if n, err := reader.Read(recordBytes); err != nil && n < len(recordBytes) {
+			return nil, err
+		}
+
+		record, err := s.w.decodeRecord(recordBytes)
+		if err != nil {
+			return nil, err
+		}
+		if record.Type != EntryType {
+			continue // Might have some non-entry records.
+		}
+
+		var entry pb.LogEntry
+		if err := proto.Unmarshal(record.Data, &entry); err != nil {
+			return nil, err
+		}
+		entries = append(entries, &entry)
+	}
+}
+
+func (s *segment) truncateEntriesFrom(index int) error {
+	localIndex := index - s.firstIndex
+	if localIndex < 0 {
+		return nil // Ignore.
+	}
+
+	offset := s.entryOffsets[localIndex]
+	if err := s.f.Truncate(offset); err != nil {
+		return err
+	}
+	if _, err := s.f.Seek(offset, io.SeekStart); err != nil {
+		return err
+	}
+
+	s.nextIndex = index
+	s.entryOffsets = s.entryOffsets[:localIndex]
+	s.lastOffset = offset
+
+	// Re-append the latest state after truncation if needed.
+	if s.lastState != nil {
+		if err := s.appendState(s.lastState); err != nil {
+			return err
+		}
+	} else if err := s.f.Sync(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *segment) delete() error {
+	if err := s.f.Close(); err != nil {
+		return err
+	}
+	if err := os.Remove(s.fname); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *segment) appendState(state *pb.PersistedState) error {
+	record, err := s.w.recordOf(StateType, state)
+	if err != nil {
+		return err
+	}
+	recordBytes, err := proto.Marshal(record)
+	if err != nil {
+		return err
+	}
+
+	byteCount := 4 + len(recordBytes)
+	chunk := make([]byte, byteCount)
+	binary.BigEndian.PutUint32(chunk, uint32(len(recordBytes)))
+	copy(chunk[4:], recordBytes)
+	if _, err := s.f.Write(chunk); err != nil {
+		return err
+	}
+	if err := s.f.Sync(); err != nil {
+		return err
+	}
+	s.lastState = state
+	s.lastOffset += int64(byteCount)
+	return nil
+}
+
+func (s *segment) append(state *pb.PersistedState, entries []*pb.LogEntry) (int, error) {
+	stateChanged := state != nil && !proto.Equal(s.lastState, state)
+	if !stateChanged && len(entries) == 0 {
+		return s.nextIndex, nil
+	}
+
+	if len(entries) == 0 {
+		return s.nextIndex, s.appendState(state)
+	}
+
+	records := make([]*pb.Record, 0, 1+len(entries))
+	if stateChanged {
+		record, err := s.w.recordOf(StateType, state)
+		if err != nil {
+			return 0, err
+		}
+		records = append(records, record)
+	}
+
+	for _, entry := range entries {
+		record, err := s.w.recordOf(EntryType, entry)
+		if err != nil {
+			return 0, err
+		}
+		records = append(records, record)
+	}
+
+	lastOffset := s.lastOffset
+	var offsets []int64
+	var buf bytes.Buffer
+	for _, record := range records {
+		recordBytes, err := proto.Marshal(record)
+		if err != nil {
+			return 0, err
+		}
+
+		binary.Write(&buf, binary.BigEndian, int32(len(recordBytes)))
+		buf.Write(recordBytes)
+		if record.Type == EntryType {
+			offsets = append(offsets, lastOffset)
+		}
+		lastOffset += int64(4 + len(recordBytes))
+	}
+
+	if _, err := buf.WriteTo(s.f); err != nil {
+		return 0, err
+	}
+
+	if err := s.f.Sync(); err != nil {
+		return 0, err
+	}
+
+	if stateChanged {
+		s.lastState = state
+	}
+	s.entryOffsets = append(s.entryOffsets, offsets...)
+	s.nextIndex += len(offsets)
+	s.lastOffset = lastOffset
+	return s.nextIndex, nil
+}
+
+func openWal(dir string, softSegmentSize int) (*wal, error) {
+	files, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+
+	w := &wal{
+		dir:             dir,
+		softSegmentSize: int64(softSegmentSize),
+		segments:        make([]*segment, 0),
+		crcTable:        crc32.MakeTable(crc32.Castagnoli),
+	}
+
+	// Find segments.
+	segments := make([]*segment, 0)
+	for _, file := range files {
+		if file.IsDir() {
+			log.Printf("Warning: unexpected directory found in WAL directory: %s", file.Name())
+			continue
+		}
+
+		var segNum, firstIndex int
+		if n, err := fmt.Sscanf(file.Name(), "log_%d_%d.dat", &segNum, &firstIndex); err == nil && n == 2 {
+			segments = append(segments, &segment{
+				w:            w,
+				fname:        path.Join(w.dir, file.Name()),
+				firstIndex:   firstIndex,
+				nextIndex:    firstIndex,
+				entryOffsets: []int64{},
+			})
+		} else {
+			log.Printf("Warning: unexpected file in WAL directory: %s", file.Name())
+		}
+	}
+
+	// Sort segment files.
+	sort.Slice(segments, func(i, j int) bool {
+		return segments[i].firstIndex < segments[j].firstIndex
+	})
+
+	for i, seg := range segments {
+		seg.f, err = os.OpenFile(seg.fname, os.O_APPEND|os.O_RDWR, 0644)
+		if err != nil {
+			return nil, err
+		}
+
+		reader := newBufferedReader(newReaderAt(seg.f, 0))
+
+		// Expect header record at the beginning.
+		var recordLen int32
+		if err := binary.Read(reader, binary.BigEndian, &recordLen); err != nil {
+			return nil, err
+		}
+
+		headerBytes := make([]byte, recordLen)
+		if _, err := reader.Read(headerBytes); err != nil {
+			return nil, err
+		}
+
+		record, err := w.decodeRecord(headerBytes)
+		if err != nil {
+			return nil, err
+		}
+		if record.Type != HeaderType {
+			return nil, fmt.Errorf("unexpected record type: %d", record.Type)
+		}
+
+		var header pb.WalHeader
+		if err := proto.Unmarshal(record.Data, &header); err != nil {
+			return nil, err
+		}
+		if header.Magic != walMagic {
+			return nil, fmt.Errorf("invalid WAL magic number in %s", seg.fname)
+		}
+		if header.Version != walVersion {
+			return nil, fmt.Errorf("unsupported WAL version in %s", seg.fname)
+		}
+
+		seg.lastOffset = int64(4 + recordLen)
+
+		for {
+			var recordLen int32
+			if err := binary.Read(reader, binary.BigEndian, &recordLen); err != nil {
+				if err == io.EOF {
+					break
+				}
+				return nil, err
+			}
+
+			recordBytes := make([]byte, recordLen)
+			if _, err := reader.Read(recordBytes); err != nil {
+				return nil, err
+			}
+
+			record, err := w.decodeRecord(recordBytes)
+			if err != nil {
+				return nil, err
+			}
+
+			switch record.Type {
+			case EntryType:
+				seg.entryOffsets = append(seg.entryOffsets, seg.lastOffset)
+				seg.nextIndex++
+			case StateType:
+				var state pb.PersistedState
+				if err := proto.Unmarshal(record.Data, &state); err != nil {
+					return nil, err
+				}
+				seg.lastState = &state
+			case HeaderType:
+				return nil, fmt.Errorf("unexpected header record found in segment %s", seg.fname)
+			default:
+				return nil, fmt.Errorf("unexpected record type: %d", record.Type)
+			}
+			seg.lastOffset += int64(4 + recordLen)
+		}
+
+		// Verify index continuity.
+		if i > 0 {
+			prev := w.segments[i-1]
+			if prev.nextIndex != seg.firstIndex {
+				return nil, fmt.Errorf("gap detected between segments %s (ends at %d) and %s (starts at %d)",
+					prev.fname, prev.nextIndex, seg.fname, seg.firstIndex)
+			}
+		}
+
+		w.segments = append(w.segments, seg)
+	}
+
+	if len(w.segments) > 0 {
+		w.tail = w.segments[len(w.segments)-1]
+	} else if err := w.appendSegment(); err != nil {
+		return nil, err
+	}
+	return w, nil
+}
+
+func (w *wal) verify(record *pb.Record) error {
+	dataCrc32 := w.crc32Of(record.Data)
+	if dataCrc32 != record.Crc32 {
+		return fmt.Errorf("mismatching CRC32s computed: %x, read: %x", dataCrc32, record.Crc32)
+	}
+	return nil
+}
+
+func (w *wal) decodeRecord(recordBytes []byte) (*pb.Record, error) {
+	var record pb.Record
+	if err := proto.Unmarshal(recordBytes, &record); err != nil {
+		return nil, err
+	}
+	if err := w.verify(&record); err != nil {
+		return nil, err
+	}
+	return &record, nil
+}
+
+func (w *wal) GetState() *pb.PersistedState {
+	return w.tail.lastState
+}
+
+func (w *wal) SetState(state *pb.PersistedState) error {
+	if w.closed {
+		return errClosed
+	}
+
+	if err := w.tail.appendState(state); err != nil {
+		return err
+	}
+	if err := w.appendSegmentIfNeeded(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (w *wal) Append(state *pb.PersistedState, entries []*pb.LogEntry) (int, error) {
+	if w.closed {
+		return 0, errClosed
+	}
+
+	nextIndex, err := w.tail.append(state, entries)
+	if err != nil {
+		return 0, err
+	}
+	if err := w.appendSegmentIfNeeded(); err != nil {
+		return 0, err
+	}
+	return nextIndex, nil
+}
+
+func (w *wal) appendSegmentIfNeeded() error {
+	if w.tail == nil || w.tail.lastOffset >= w.softSegmentSize {
+		return w.appendSegment()
+	}
+	return nil
+}
+
+func (w *wal) appendSegment() error {
+	var firstIndex int
+	var lastState *pb.PersistedState
+	if len(w.segments) > 0 {
+		firstIndex = w.tail.nextIndex
+		lastState = w.tail.lastState
+	} else {
+		firstIndex = 0
+	}
+
+	seg := &segment{
+		w:            w,
+		firstIndex:   firstIndex,
+		nextIndex:    firstIndex,
+		fname:        path.Join(w.dir, fmt.Sprintf("log_%d_%d.dat", len(w.segments), firstIndex)),
+		entryOffsets: []int64{},
+	}
+
+	tempFname := seg.fname + ".tmp"
+	tempF, err := os.Create(tempFname)
+	if err != nil {
+		return err
+	}
+
+	var buf bytes.Buffer
+	headerRecord, err := w.recordOf(HeaderType, &pb.WalHeader{Magic: walMagic, Version: walVersion, Flags: 0})
+	if err != nil {
+		return err
+	}
+	recordBytes, err := proto.Marshal(headerRecord)
+	if err != nil {
+		return err
+	}
+	binary.Write(&buf, binary.BigEndian, int32(len(recordBytes)))
+	buf.Write(recordBytes)
+
+	// Append lastState to the new segment if available.
+	if lastState != nil {
+		stateRecord, err := w.recordOf(StateType, lastState)
+		if err != nil {
+			return err
+		}
+		recordBytes, err := proto.Marshal(stateRecord)
+		if err != nil {
+			return err
+		}
+		binary.Write(&buf, binary.BigEndian, int32(len(recordBytes)))
+		buf.Write(recordBytes)
+	}
+
+	writtenCount := buf.Len()
+	err = func() error {
+		if _, err := buf.WriteTo(tempF); err != nil {
+			return err
+		}
+		if err := tempF.Sync(); err != nil {
+			return err
+		}
+		if err := tempF.Close(); err != nil {
+			return err
+		}
+		return nil
+	}()
+	if err != nil {
+		tempF.Close()
+		os.Remove(tempFname)
+		return err
+	}
+
+	if err := os.Rename(tempFname, seg.fname); err != nil {
+		return err
+	}
+
+	// TODO correct fileMode?
+	f, err := os.OpenFile(seg.fname, os.O_APPEND|os.O_RDWR, 0644)
+	if err != nil {
+		return err
+	}
+
+	seg.f = f
+	seg.lastState = lastState
+	seg.lastOffset = int64(writtenCount)
+	w.segments = append(w.segments, seg)
+	w.tail = seg
+	return nil
+}
+
+func (w *wal) TruncateEntriesFrom(index int) error {
+	if w.closed {
+		return errClosed
+	}
+
+	segIndex, err := w.findSegment(index)
+	if err != nil {
+		return err
+	}
+
+	for i := len(w.segments) - 1; i > segIndex; i-- {
+		if err := w.segments[i].delete(); err != nil {
+			return err
+		}
+		w.segments[i] = nil
+	}
+	w.segments = w.segments[0 : segIndex+1]
+	w.tail = w.segments[segIndex]
+	if err := w.tail.truncateEntriesFrom(index); err != nil {
+		return err
+	}
+	if err := w.appendSegmentIfNeeded(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (w *wal) EntryCount() int {
+	if w.tail != nil {
+		return w.tail.nextIndex
+	} else {
+		return 0
+	}
+}
+
+func (w *wal) GetEntry(index int) (*pb.LogEntry, error) {
+	if w.closed {
+		return nil, errClosed
+	}
+
+	segIndex, err := w.findSegment(index)
+	if err != nil {
+		return nil, err
+	}
+	return w.segments[segIndex].getEntry(index)
+}
+
+func (w *wal) GetEntriesFrom(index int) ([]*pb.LogEntry, error) {
+	if w.closed {
+		return nil, errClosed
+	}
+
+	segIndex, err := w.findSegment(index)
+	if err != nil {
+		return nil, err
+	}
+
+	entries, err := w.segments[segIndex].getEntriesFrom(index)
+	if err != nil {
+		return nil, err
+	}
+
+	upTo := len(w.segments) - 1
+	if w.tail.entryCount() == 0 {
+		upTo--
+	}
+	for i := segIndex + 1; i <= upTo; i++ {
+		seg := w.segments[i]
+		segEntries, err := seg.getEntriesFrom(seg.firstIndex)
+		if err != nil {
+			return nil, err
+		}
+		entries = append(entries, segEntries...)
+	}
+	return entries, nil
+}
+
+func (w *wal) Close() error {
+	if w.closed {
+		return nil
+	}
+
+	var errs []error
+	for _, seg := range w.segments {
+		if err := seg.f.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	w.closed = true
+	return errors.Join(errs...)
+}
+
+func (w *wal) findSegment(entryIndex int) (int, error) {
+	lo, hi := 0, len(w.segments)
+	for lo < hi {
+		mid := (lo + hi) / 2
+		if entryIndex >= w.segments[mid].nextIndex {
+			lo = mid + 1
+		} else if entryIndex < w.segments[mid].firstIndex || w.segments[mid].entryCount() == 0 {
+			hi = mid
+		} else {
+			return mid, nil
+		}
+	}
+	return -1, errEntryIndexOutOfRange
+}
+
+func (w *wal) recordOf(recordType uint32, msg proto.Message) (*pb.Record, error) {
+	if data, err := proto.Marshal(msg); err != nil {
+		return nil, err
+	} else {
+		return &pb.Record{Type: recordType, Crc32: w.crc32Of(data), Data: data}, err
+	}
+}
+
+func (w *wal) crc32Of(data []byte) uint32 {
+	hash := crc32.New(w.crcTable)
+	hash.Write(data)
+	return hash.Sum32()
+}
