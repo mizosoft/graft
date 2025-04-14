@@ -1,12 +1,13 @@
 package graft
 
 import (
-	"fmt"
 	"sync"
+	"time"
 
-	pb "github.com/mizosoft/graft/pb"
-	grpc "google.golang.org/grpc"
-	insecure "google.golang.org/grpc/credentials/insecure"
+	"github.com/mizosoft/graft/pb"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/backoff"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 type peer struct {
@@ -16,20 +17,31 @@ type peer struct {
 	mut        sync.Mutex
 }
 
-func (n *peer) client() (pb.RaftClient, error) {
-	n.mut.Lock()
-	defer n.mut.Unlock()
+func (p *peer) client() (pb.RaftClient, error) {
+	p.mut.Lock()
+	defer p.mut.Unlock()
 
-	// TODO add retry logic.
-	client := n.lazyClient
+	// TODO may want to add connection monitor.
+	client := p.lazyClient
 	if client == nil {
-		fmt.Println("Connecting to " + n.address)
-		conn, err := grpc.NewClient(n.address, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		conn, err := grpc.NewClient(
+			p.address,
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithConnectParams(grpc.ConnectParams{
+				Backoff: backoff.Config{
+					BaseDelay:  50 * time.Millisecond,
+					Multiplier: 1.2,
+					Jitter:     0.2,
+					MaxDelay:   500 * time.Millisecond,
+				},
+				MinConnectTimeout: 1 * time.Second,
+			}),
+		)
 		if err != nil {
 			return nil, err
 		}
 		client = pb.NewRaftClient(conn)
-		n.lazyClient = client
+		p.lazyClient = client
 	}
 	return client, nil
 }
