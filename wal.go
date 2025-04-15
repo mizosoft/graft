@@ -42,6 +42,7 @@ type wal struct {
 
 type segment struct {
 	w                     *wal
+	number                int
 	firstIndex, nextIndex int // First & next entry indices.
 	fname                 string
 	f                     *os.File
@@ -56,7 +57,7 @@ func (s *segment) entryCount() int {
 
 func (s *segment) getEntry(index int) (*pb.LogEntry, error) {
 	localIndex := index - s.firstIndex
-	if localIndex < 0 {
+	if localIndex < 0 || localIndex >= s.entryCount() {
 		return nil, errEntryIndexOutOfRange
 	}
 
@@ -91,7 +92,7 @@ func (s *segment) getEntry(index int) (*pb.LogEntry, error) {
 
 func (s *segment) getEntriesFrom(index int) ([]*pb.LogEntry, error) {
 	localIndex := index - s.firstIndex
-	if localIndex < 0 {
+	if localIndex < 0 || localIndex >= s.entryCount() {
 		return []*pb.LogEntry{}, nil
 	}
 
@@ -144,7 +145,7 @@ func (s *segment) truncateEntriesFrom(index int) error {
 	s.entryOffsets = s.entryOffsets[:localIndex]
 	s.lastOffset = offset
 
-	// Re-append the latest state after truncation if needed.
+	// Re-append the latest state after truncation.
 	if s.lastState != nil {
 		if err := s.appendState(s.lastState); err != nil {
 			return err
@@ -237,7 +238,6 @@ func (s *segment) append(state *pb.PersistedState, entries []*pb.LogEntry) (int,
 	if _, err := buf.WriteTo(s.f); err != nil {
 		return 0, err
 	}
-
 	if err := s.f.Sync(); err != nil {
 		return 0, err
 	}
@@ -276,9 +276,10 @@ func openWal(dir string, softSegmentSize int) (*wal, error) {
 		if n, err := fmt.Sscanf(file.Name(), "log_%d_%d.dat", &segNum, &firstIndex); err == nil && n == 2 {
 			segments = append(segments, &segment{
 				w:            w,
-				fname:        path.Join(w.dir, file.Name()),
+				number:       segNum,
 				firstIndex:   firstIndex,
 				nextIndex:    firstIndex,
+				fname:        path.Join(w.dir, file.Name()),
 				entryOffsets: []int64{},
 			})
 		} else {
@@ -318,7 +319,7 @@ func openWal(dir string, softSegmentSize int) (*wal, error) {
 			return nil, fmt.Errorf("unexpected record type: %d", record.Type)
 		}
 
-		var header pb.WalHeader
+		var header pb.WalSegmentHeader
 		if err := proto.Unmarshal(record.Data, &header); err != nil {
 			return nil, err
 		}
@@ -329,7 +330,46 @@ func openWal(dir string, softSegmentSize int) (*wal, error) {
 			return nil, fmt.Errorf("unsupported WAL version in %s", seg.fname)
 		}
 
+		correctedSegmentNumber := seg.number
+		correctedFirstIndex := seg.firstIndex
+		if int(header.SegmentNumber) != seg.number {
+			log.Printf(
+				"Warning: segment number from file name (%s) disagrees with header's (%d), believing the latter",
+				seg.fname, header.SegmentNumber)
+			correctedSegmentNumber = int(header.SegmentNumber)
+		}
+		if int(header.FirstIndex) != seg.firstIndex {
+			log.Printf(
+				"Warning: first index from file name (%s) disagrees with header's (%d), believing the latter",
+				seg.fname, header.FirstIndex)
+			correctedFirstIndex = int(header.FirstIndex)
+		}
+
 		seg.lastOffset = int64(4 + recordLen)
+
+		if correctedSegmentNumber != seg.number || correctedFirstIndex != seg.firstIndex {
+			err := seg.f.Close()
+			if err != nil {
+				return nil, err
+			}
+
+			seg.number = correctedSegmentNumber
+			seg.firstIndex = correctedFirstIndex
+
+			prevFname := seg.fname
+			seg.fname = path.Join(w.dir, fmt.Sprintf("log_%d_%d.dat", seg.number, seg.firstIndex))
+			if err := os.Rename(prevFname, seg.fname); err != nil {
+				return nil, err
+			}
+
+			seg.f, err = os.OpenFile(seg.fname, os.O_APPEND|os.O_RDWR, 0644)
+			if err != nil {
+				return nil, err
+			}
+			if _, err := seg.f.Seek(seg.lastOffset, io.SeekStart); err != nil {
+				return nil, err
+			}
+		}
 
 		for {
 			var recordLen int32
@@ -448,31 +488,32 @@ func (w *wal) appendSegmentIfNeeded() error {
 }
 
 func (w *wal) appendSegment() error {
-	var firstIndex int
+	firstIndex := 0
+	segNumber := 0
 	var lastState *pb.PersistedState
 	if len(w.segments) > 0 {
 		firstIndex = w.tail.nextIndex
+		segNumber = w.tail.number + 1
 		lastState = w.tail.lastState
-	} else {
-		firstIndex = 0
 	}
 
 	seg := &segment{
 		w:            w,
+		number:       segNumber,
 		firstIndex:   firstIndex,
 		nextIndex:    firstIndex,
-		fname:        path.Join(w.dir, fmt.Sprintf("log_%d_%d.dat", len(w.segments), firstIndex)),
+		fname:        path.Join(w.dir, fmt.Sprintf("log_%d_%d.dat", segNumber, firstIndex)),
 		entryOffsets: []int64{},
 	}
 
-	tempFname := seg.fname + ".tmp"
-	tempF, err := os.Create(tempFname)
-	if err != nil {
-		return err
-	}
-
 	var buf bytes.Buffer
-	headerRecord, err := w.recordOf(HeaderType, &pb.WalHeader{Magic: walMagic, Version: walVersion, Flags: 0})
+	headerRecord, err := w.recordOf(HeaderType, &pb.WalSegmentHeader{
+		Magic:         walMagic,
+		Version:       walVersion,
+		Flags:         0,
+		SegmentNumber: int32(seg.number),
+		FirstIndex:    int32(firstIndex),
+	})
 	if err != nil {
 		return err
 	}
@@ -497,6 +538,11 @@ func (w *wal) appendSegment() error {
 		buf.Write(recordBytes)
 	}
 
+	tempFname := seg.fname + ".tmp"
+	tempF, err := os.Create(tempFname)
+	if err != nil {
+		return err
+	}
 	writtenCount := buf.Len()
 	err = func() error {
 		if _, err := buf.WriteTo(tempF); err != nil {
@@ -579,6 +625,44 @@ func (w *wal) GetEntry(index int) (*pb.LogEntry, error) {
 		return nil, err
 	}
 	return w.segments[segIndex].getEntry(index)
+}
+
+func (w *wal) GetEntryTerm(index int) (int, error) {
+	entry, err := w.GetEntry(index)
+	if err != nil {
+		return -1, err
+	}
+	return int(entry.Term), nil
+}
+
+func (w *wal) HeadEntry() (*pb.LogEntry, int, error) {
+	if w.closed {
+		return nil, -1, errClosed
+	}
+
+	seg := w.segments[0]
+	entry, err := seg.getEntry(seg.firstIndex)
+	if errors.Is(err, errEntryIndexOutOfRange) {
+		return nil, -1, nil
+	} else if err != nil {
+		return nil, -1, err
+	}
+	return entry, seg.firstIndex, nil
+}
+
+func (w *wal) TailEntry() (*pb.LogEntry, int, error) {
+	if w.closed {
+		return nil, -1, errClosed
+	}
+
+	seg := w.tail
+	entry, err := seg.getEntry(seg.nextIndex - 1)
+	if errors.Is(err, errEntryIndexOutOfRange) {
+		return nil, -1, nil
+	} else if err != nil {
+		return nil, -1, err
+	}
+	return entry, seg.firstIndex, nil
 }
 
 func (w *wal) GetEntriesFrom(index int) ([]*pb.LogEntry, error) {

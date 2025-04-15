@@ -21,102 +21,6 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-type AppendRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Cmds          [][]byte               `protobuf:"bytes,1,rep,name=cmds,proto3" json:"cmds,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *AppendRequest) Reset() {
-	*x = AppendRequest{}
-	mi := &file_graft_proto_msgTypes[0]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *AppendRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*AppendRequest) ProtoMessage() {}
-
-func (x *AppendRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_graft_proto_msgTypes[0]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use AppendRequest.ProtoReflect.Descriptor instead.
-func (*AppendRequest) Descriptor() ([]byte, []int) {
-	return file_graft_proto_rawDescGZIP(), []int{0}
-}
-
-func (x *AppendRequest) GetCmds() [][]byte {
-	if x != nil {
-		return x.Cmds
-	}
-	return nil
-}
-
-type AppendResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Index         int32                  `protobuf:"varint,1,opt,name=index,proto3" json:"index,omitempty"`
-	Term          int32                  `protobuf:"varint,2,opt,name=term,proto3" json:"term,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *AppendResponse) Reset() {
-	*x = AppendResponse{}
-	mi := &file_graft_proto_msgTypes[1]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *AppendResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*AppendResponse) ProtoMessage() {}
-
-func (x *AppendResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_graft_proto_msgTypes[1]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use AppendResponse.ProtoReflect.Descriptor instead.
-func (*AppendResponse) Descriptor() ([]byte, []int) {
-	return file_graft_proto_rawDescGZIP(), []int{1}
-}
-
-func (x *AppendResponse) GetIndex() int32 {
-	if x != nil {
-		return x.Index
-	}
-	return 0
-}
-
-func (x *AppendResponse) GetTerm() int32 {
-	if x != nil {
-		return x.Term
-	}
-	return 0
-}
-
 type PersistedState struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	CurrentTerm   int32                  `protobuf:"varint,1,opt,name=currentTerm,proto3" json:"currentTerm,omitempty"`
@@ -128,7 +32,7 @@ type PersistedState struct {
 
 func (x *PersistedState) Reset() {
 	*x = PersistedState{}
-	mi := &file_graft_proto_msgTypes[2]
+	mi := &file_graft_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -140,7 +44,7 @@ func (x *PersistedState) String() string {
 func (*PersistedState) ProtoMessage() {}
 
 func (x *PersistedState) ProtoReflect() protoreflect.Message {
-	mi := &file_graft_proto_msgTypes[2]
+	mi := &file_graft_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -153,7 +57,7 @@ func (x *PersistedState) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PersistedState.ProtoReflect.Descriptor instead.
 func (*PersistedState) Descriptor() ([]byte, []int) {
-	return file_graft_proto_rawDescGZIP(), []int{2}
+	return file_graft_proto_rawDescGZIP(), []int{0}
 }
 
 func (x *PersistedState) GetCurrentTerm() int32 {
@@ -188,7 +92,7 @@ type Record struct {
 
 func (x *Record) Reset() {
 	*x = Record{}
-	mi := &file_graft_proto_msgTypes[3]
+	mi := &file_graft_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -200,7 +104,7 @@ func (x *Record) String() string {
 func (*Record) ProtoMessage() {}
 
 func (x *Record) ProtoReflect() protoreflect.Message {
-	mi := &file_graft_proto_msgTypes[3]
+	mi := &file_graft_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -213,7 +117,7 @@ func (x *Record) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Record.ProtoReflect.Descriptor instead.
 func (*Record) Descriptor() ([]byte, []int) {
-	return file_graft_proto_rawDescGZIP(), []int{3}
+	return file_graft_proto_rawDescGZIP(), []int{1}
 }
 
 func (x *Record) GetType() uint32 {
@@ -237,30 +141,32 @@ func (x *Record) GetData() []byte {
 	return nil
 }
 
-type WalHeader struct {
+type WalSegmentHeader struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Magic         uint64                 `protobuf:"varint,1,opt,name=magic,proto3" json:"magic,omitempty"`
 	Version       int32                  `protobuf:"varint,2,opt,name=version,proto3" json:"version,omitempty"`
 	Flags         int32                  `protobuf:"varint,3,opt,name=flags,proto3" json:"flags,omitempty"`
+	SegmentNumber int32                  `protobuf:"varint,4,opt,name=segmentNumber,proto3" json:"segmentNumber,omitempty"`
+	FirstIndex    int32                  `protobuf:"varint,5,opt,name=firstIndex,proto3" json:"firstIndex,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *WalHeader) Reset() {
-	*x = WalHeader{}
-	mi := &file_graft_proto_msgTypes[4]
+func (x *WalSegmentHeader) Reset() {
+	*x = WalSegmentHeader{}
+	mi := &file_graft_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *WalHeader) String() string {
+func (x *WalSegmentHeader) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*WalHeader) ProtoMessage() {}
+func (*WalSegmentHeader) ProtoMessage() {}
 
-func (x *WalHeader) ProtoReflect() protoreflect.Message {
-	mi := &file_graft_proto_msgTypes[4]
+func (x *WalSegmentHeader) ProtoReflect() protoreflect.Message {
+	mi := &file_graft_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -271,28 +177,42 @@ func (x *WalHeader) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use WalHeader.ProtoReflect.Descriptor instead.
-func (*WalHeader) Descriptor() ([]byte, []int) {
-	return file_graft_proto_rawDescGZIP(), []int{4}
+// Deprecated: Use WalSegmentHeader.ProtoReflect.Descriptor instead.
+func (*WalSegmentHeader) Descriptor() ([]byte, []int) {
+	return file_graft_proto_rawDescGZIP(), []int{2}
 }
 
-func (x *WalHeader) GetMagic() uint64 {
+func (x *WalSegmentHeader) GetMagic() uint64 {
 	if x != nil {
 		return x.Magic
 	}
 	return 0
 }
 
-func (x *WalHeader) GetVersion() int32 {
+func (x *WalSegmentHeader) GetVersion() int32 {
 	if x != nil {
 		return x.Version
 	}
 	return 0
 }
 
-func (x *WalHeader) GetFlags() int32 {
+func (x *WalSegmentHeader) GetFlags() int32 {
 	if x != nil {
 		return x.Flags
+	}
+	return 0
+}
+
+func (x *WalSegmentHeader) GetSegmentNumber() int32 {
+	if x != nil {
+		return x.SegmentNumber
+	}
+	return 0
+}
+
+func (x *WalSegmentHeader) GetFirstIndex() int32 {
+	if x != nil {
+		return x.FirstIndex
 	}
 	return 0
 }
@@ -301,12 +221,7 @@ var File_graft_proto protoreflect.FileDescriptor
 
 const file_graft_proto_rawDesc = "" +
 	"\n" +
-	"\vgraft.proto\x12\x05graft\"#\n" +
-	"\rAppendRequest\x12\x12\n" +
-	"\x04cmds\x18\x01 \x03(\fR\x04cmds\":\n" +
-	"\x0eAppendResponse\x12\x14\n" +
-	"\x05index\x18\x01 \x01(\x05R\x05index\x12\x12\n" +
-	"\x04term\x18\x02 \x01(\x05R\x04term\"p\n" +
+	"\vgraft.proto\x12\x05graft\"p\n" +
 	"\x0ePersistedState\x12 \n" +
 	"\vcurrentTerm\x18\x01 \x01(\x05R\vcurrentTerm\x12\x1a\n" +
 	"\bvotedFor\x18\x02 \x01(\tR\bvotedFor\x12 \n" +
@@ -314,13 +229,15 @@ const file_graft_proto_rawDesc = "" +
 	"\x06Record\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\rR\x04type\x12\x14\n" +
 	"\x05crc32\x18\x03 \x01(\rR\x05crc32\x12\x12\n" +
-	"\x04data\x18\x02 \x01(\fR\x04data\"Q\n" +
-	"\tWalHeader\x12\x14\n" +
+	"\x04data\x18\x02 \x01(\fR\x04data\"\x9e\x01\n" +
+	"\x10WalSegmentHeader\x12\x14\n" +
 	"\x05magic\x18\x01 \x01(\x04R\x05magic\x12\x18\n" +
 	"\aversion\x18\x02 \x01(\x05R\aversion\x12\x14\n" +
-	"\x05flags\x18\x03 \x01(\x05R\x05flags2>\n" +
-	"\x05Graft\x125\n" +
-	"\x06Append\x12\x14.graft.AppendRequest\x1a\x15.graft.AppendResponseB!Z\x1fgithub.com/mizosoft/graft/pb;pbb\x06proto3"
+	"\x05flags\x18\x03 \x01(\x05R\x05flags\x12$\n" +
+	"\rsegmentNumber\x18\x04 \x01(\x05R\rsegmentNumber\x12\x1e\n" +
+	"\n" +
+	"firstIndex\x18\x05 \x01(\x05R\n" +
+	"firstIndexB!Z\x1fgithub.com/mizosoft/graft/pb;pbb\x06proto3"
 
 var (
 	file_graft_proto_rawDescOnce sync.Once
@@ -334,19 +251,15 @@ func file_graft_proto_rawDescGZIP() []byte {
 	return file_graft_proto_rawDescData
 }
 
-var file_graft_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
+var file_graft_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
 var file_graft_proto_goTypes = []any{
-	(*AppendRequest)(nil),  // 0: graft.AppendRequest
-	(*AppendResponse)(nil), // 1: graft.AppendResponse
-	(*PersistedState)(nil), // 2: graft.PersistedState
-	(*Record)(nil),         // 3: graft.Record
-	(*WalHeader)(nil),      // 4: graft.WalHeader
+	(*PersistedState)(nil),   // 0: graft.PersistedState
+	(*Record)(nil),           // 1: graft.Record
+	(*WalSegmentHeader)(nil), // 2: graft.WalSegmentHeader
 }
 var file_graft_proto_depIdxs = []int32{
-	0, // 0: graft.Graft.Append:input_type -> graft.AppendRequest
-	1, // 1: graft.Graft.Append:output_type -> graft.AppendResponse
-	1, // [1:2] is the sub-list for method output_type
-	0, // [0:1] is the sub-list for method input_type
+	0, // [0:0] is the sub-list for method output_type
+	0, // [0:0] is the sub-list for method input_type
 	0, // [0:0] is the sub-list for extension type_name
 	0, // [0:0] is the sub-list for extension extendee
 	0, // [0:0] is the sub-list for field type_name
@@ -363,9 +276,9 @@ func file_graft_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_graft_proto_rawDesc), len(file_graft_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   5,
+			NumMessages:   3,
 			NumExtensions: 0,
-			NumServices:   1,
+			NumServices:   0,
 		},
 		GoTypes:           file_graft_proto_goTypes,
 		DependencyIndexes: file_graft_proto_depIdxs,

@@ -2,6 +2,7 @@ package graft
 
 import (
 	"os"
+	"path"
 	"path/filepath"
 	"testing"
 
@@ -63,7 +64,7 @@ func TestWalEmptyWalReopen(t *testing.T) {
 
 	_, err = wal.GetEntriesFrom(100)
 	assert.ErrorIs(t, err, errEntryIndexOutOfRange)
-	assert.Equal(t, es, 0)
+	assert.Equal(t, len(es), 0)
 
 	testutil.AssertNil(t, wal.GetState())
 }
@@ -442,7 +443,8 @@ func TestWalAppendSegmentAfterStateUpdate(t *testing.T) {
 		VotedFor:    "some cool server",
 		CommitIndex: 1,
 	}
-	w1.SetState(state)
+	err = w1.SetState(state)
+	assert.NilError(t, err)
 	assert.Assert(t, proto.Equal(w1.GetState(), state))
 	assert.Equal(t, len(w1.segments), 2)
 
@@ -610,6 +612,7 @@ func TestWalStorageFailures(t *testing.T) {
 
 	w, err := openWal(dir, 1024)
 	assert.NilError(t, err)
+	defer w.Close()
 
 	state := &pb.PersistedState{
 		CurrentTerm: 1,
@@ -635,4 +638,120 @@ func TestWalStorageFailures(t *testing.T) {
 
 	err = w.SetState(state)
 	assert.Assert(t, err != nil)
+}
+
+func TestWalHeadEntry(t *testing.T) {
+	dir := t.TempDir()
+	w, err := openWal(dir, 128)
+	assert.NilError(t, err)
+	defer w.Close()
+
+	entry, index, err := w.HeadEntry()
+	assert.NilError(t, err)
+	testutil.AssertNil(t, entry)
+
+	entries := []*pb.LogEntry{
+		{Term: 1, Command: []byte("cmd1")},
+		{Term: 2, Command: []byte("cmd2")},
+	}
+
+	lastIndex, err := w.Append(nil, entries)
+	assert.NilError(t, err)
+	assert.Equal(t, lastIndex, 2)
+
+	entry, index, err = w.HeadEntry()
+	assert.NilError(t, err)
+	assert.Equal(t, index, 0)
+	assert.Assert(t, proto.Equal(entry, entries[0]))
+}
+
+func TestWalTailEntry(t *testing.T) {
+	dir := t.TempDir()
+	w, err := openWal(dir, 128)
+	assert.NilError(t, err)
+	defer w.Close()
+
+	entry, index, err := w.TailEntry()
+	assert.NilError(t, err)
+	testutil.AssertNil(t, entry)
+
+	entries := []*pb.LogEntry{
+		{Term: 1, Command: []byte("cmd1")},
+		{Term: 2, Command: []byte("cmd2")},
+	}
+
+	lastIndex, err := w.Append(nil, entries)
+	assert.NilError(t, err)
+	assert.Equal(t, lastIndex, 2)
+
+	entry, index, err = w.TailEntry()
+	assert.NilError(t, err)
+	assert.Equal(t, index, 0)
+	assert.Assert(t, proto.Equal(entry, entries[1]))
+}
+
+func TestWalMismatchingSegNumber(t *testing.T) {
+	dir := t.TempDir()
+	w1, err := openWal(dir, 128)
+	assert.NilError(t, err)
+	defer w1.Close()
+
+	lastIndex, err := w1.Append(nil, []*pb.LogEntry{
+		{Term: 1, Command: []byte("cmd1")},
+	})
+	assert.NilError(t, err)
+	assert.Equal(t, lastIndex, 1)
+	assert.Assert(t, len(w1.segments) == 1, len(w1.segments))
+
+	_, fname := path.Split(w1.tail.fname)
+	assert.Equal(t, fname, "log_0_0.dat")
+
+	w1.Close()
+
+	if err := os.Rename(w1.tail.fname, path.Join(dir, "log_1_0.dat")); err != nil {
+		assert.NilError(t, err)
+	}
+
+	w2, err := openWal(dir, 128)
+	assert.NilError(t, err)
+	defer w1.Close()
+
+	_, fname = path.Split(w2.tail.fname)
+	assert.Equal(t, fname, "log_0_0.dat")
+	_, fname = path.Split(w2.tail.f.Name())
+	assert.Equal(t, fname, "log_0_0.dat")
+	assert.Equal(t, w2.tail.number, 0)
+}
+
+func TestWalMismatchingFirstIndex(t *testing.T) {
+	dir := t.TempDir()
+	w1, err := openWal(dir, 128)
+	assert.NilError(t, err)
+	defer w1.Close()
+
+	lastIndex, err := w1.Append(nil, []*pb.LogEntry{
+		{Term: 1, Command: []byte("cmd1")},
+	})
+	assert.NilError(t, err)
+	assert.Equal(t, lastIndex, 1)
+	assert.Assert(t, len(w1.segments) == 1, len(w1.segments))
+
+	_, fname := path.Split(w1.tail.fname)
+	assert.Equal(t, fname, "log_0_0.dat")
+
+	w1.Close()
+
+	if err := os.Rename(w1.tail.fname, path.Join(dir, "log_0_1.dat")); err != nil {
+		assert.NilError(t, err)
+	}
+
+	w2, err := openWal(dir, 128)
+	assert.NilError(t, err)
+	defer w1.Close()
+
+	_, fname = path.Split(w2.tail.fname)
+	assert.Equal(t, fname, "log_0_0.dat")
+	_, fname = path.Split(w2.tail.f.Name())
+	assert.Equal(t, fname, "log_0_0.dat")
+	assert.Equal(t, w2.tail.firstIndex, 0)
 }

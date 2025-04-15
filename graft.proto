@@ -4,19 +4,6 @@ package graft;
 
 option go_package = "github.com/mizosoft/graft/pb;pb";
 
-service Graft {
-  rpc Append (AppendRequest) returns (AppendResponse);
-}
-
-message AppendRequest {
-  repeated bytes cmds = 1;
-}
-
-message AppendResponse {
-  int32 index = 1;
-  int32 term = 2;
-}
-
 message PersistedState {
   int32  currentTerm = 1;
   string votedFor = 2;
@@ -29,8 +16,10 @@ message Record {
   bytes  data = 2;
 }
 
-message WalHeader {
+message WalSegmentHeader {
   uint64 magic = 1;
   int32 version = 2;
   int32 flags = 3;
+  int32 segmentNumber = 4;
+  int32 firstIndex = 5;
 }
