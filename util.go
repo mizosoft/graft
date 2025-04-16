@@ -4,6 +4,8 @@ import (
 	"io"
 	"os"
 	"sync"
+
+	"github.com/mizosoft/graft/pb"
 )
 
 type uncopyable struct {
@@ -74,4 +76,13 @@ func (b *bufferedReader) Read(p []byte) (int, error) {
 			b.count, b.err = b.reader.Read(b.buf)
 		}
 	}
+}
+
+func toLogEntries(term int, nextIndex int, commands [][]byte) []*pb.LogEntry {
+	entries := make([]*pb.LogEntry, len(commands))
+	for i, command := range commands {
+		entries[i] = &pb.LogEntry{Term: int32(term), Index: int32(nextIndex), Command: command}
+		nextIndex++
+	}
+	return entries
 }

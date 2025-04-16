@@ -38,5 +38,6 @@ message AppendEntriesResponse {
 
 message LogEntry {
     int32 term = 1;
-    bytes command = 2;
+    int32 index = 2;
+    bytes command = 3;
 }

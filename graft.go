@@ -12,7 +12,7 @@ import (
 	"google.golang.org/grpc"
 )
 
-const unknownLeader = "UNKNOWN"
+const UnknownLeader = "UNKNOWN"
 
 type state int
 
@@ -54,7 +54,7 @@ type Graft struct {
 	id             string
 	leaderId       string
 	cluster        *cluster
-	electionTimer  *periodicTimer ``
+	electionTimer  *periodicTimer
 	heartbeatTimer *periodicTimer
 	server         server
 	mut            sync.Mutex
@@ -70,7 +70,7 @@ func (g *Graft) String() string {
 		g.state, g.currentTerm, g.votedFor, g.commitIndex, g.lastApplied, g.leaderId, g.Persistence.EntryCount())
 }
 
-func (g *Graft) info(format string, vals ...any) {
+func (g *Graft) log(format string, vals ...any) {
 	log.Printf("%s: %v\n", g.id, fmt.Sprintf(format, vals...))
 }
 
@@ -79,9 +79,9 @@ func (g *Graft) fatal(err any) {
 }
 
 type CommittedEntry struct {
-	Index int
-	Term  int
-	Cmd   []byte
+	Index   int
+	Term    int
+	Command []byte
 }
 
 type Config struct {
@@ -105,6 +105,10 @@ func New(config Config) (*Graft, error) {
 	if err := config.Persistence.SetState(state); err != nil {
 		return nil, err
 	}
+	if config.Id == UnknownLeader {
+		return nil, fmt.Errorf("sever ID cannot be %s", UnknownLeader)
+	}
+
 	return &Graft{
 		raftState: raftState{
 			state:       Follower,
@@ -132,13 +136,13 @@ type graftKey struct{}
 // TODO add some running & closed booleans.
 // TODO make read failures reacoverable, but write failures fatal.
 
-func (g *Graft) Run() error {
+func (g *Graft) Serve() error {
 	listener, err := net.Listen("tcp", g.address)
 	if err != nil {
 		return err
 	}
 
-	g.info("Listening on %v", listener.Addr())
+	g.log("listening on %v", listener.Addr())
 
 	grpcServer := grpc.NewServer(
 		grpc.UnaryInterceptor(
@@ -146,7 +150,6 @@ func (g *Graft) Run() error {
 				return handler(context.WithValue(ctx, graftKey{}, g), req)
 			}))
 	pb.RegisterRaftServer(grpcServer, &g.server)
-	pb.RegisterGraftServer(grpcServer, &gserver{})
 
 	g.electionTimer.start(g.triggerElectionTimeout)
 	g.heartbeatTimer.start(g.triggerHeartbeat)
@@ -182,12 +185,12 @@ func (g *Graft) triggerElectionTimeout() {
 
 	if g.state == Leader {
 		// We might've already won an election for this term but couldn't stop the timer on time.
-		g.info("Election timed out too late, we are the leader now")
+		g.log("Election timed out too late, we are the leader now")
 		return
 	}
 
 	if g.state == Candidate {
-		g.info("Candidate election timed out")
+		g.log("Candidate election timed out")
 	}
 
 	g.unguardedTransitionToCandidate()
@@ -198,7 +201,7 @@ func (g *Graft) triggerElectionTimeout() {
 	for _, p := range g.cluster.peers {
 		go func(peer *peer) {
 			if client, cerr := peer.client(); cerr != nil {
-				g.info("Error connecting to peer %s: %v", peer.id, cerr)
+				g.log("Error connecting to peer %s: %v", peer.id, cerr)
 			} else {
 				var lastLogIndex int
 				var lastLogTerm int
@@ -210,11 +213,15 @@ func (g *Graft) triggerElectionTimeout() {
 						return false
 					}
 
-					entry, index, err := g.Persistence.TailEntry()
+					entry, err := g.Persistence.TailEntry()
 					if err != nil {
 						g.fatal(err)
 					}
-					lastLogIndex = index
+
+					lastLogIndex = -1
+					if entry != nil {
+						lastLogIndex = int(entry.Index)
+					}
 					if lastLogIndex >= 0 {
 						lastLogTerm = int(entry.Term)
 					} else {
@@ -234,12 +241,12 @@ func (g *Graft) triggerElectionTimeout() {
 					LastLogTerm:  int32(lastLogTerm),
 				}
 				if res, rerr := client.RequestVote(context.Background(), request); rerr != nil {
-					g.info("RequestVote to %s failed: %v", peer.id, rerr)
+					g.log("RequestVote to %s failed: %v", peer.id, rerr)
 				} else {
 					g.mut.Lock()
 					defer g.mut.Unlock()
 
-					g.info("RequestVote(%v) to %s at election (%d) got {%v}, state=%v", request, peer.id, electionTerm, res, g)
+					g.log("RequestVote(%v) to %s at election (%d) got {%v}, state=%v", request, peer.id, electionTerm, res, g)
 
 					if res.Term > int32(g.currentTerm) {
 						g.unguardedTransitionToFollower(int(res.Term))
@@ -266,7 +273,7 @@ func (g *Graft) triggerHeartbeat() {
 }
 
 func (g *Graft) unguardedTransitionToLeader() {
-	g.info("Transitioning to Leader, state=%v", g)
+	g.log("Transitioning to Leader, state=%v", g)
 	g.state = Leader
 	g.nextIndex = make(map[string]int)
 	g.matchIndex = make(map[string]int)
@@ -276,21 +283,21 @@ func (g *Graft) unguardedTransitionToLeader() {
 	}
 	g.leaderId = g.id
 	g.electionTimer.stop()
-	g.heartbeatTimer.poke() // Establish aurhotiry.
+	g.heartbeatTimer.poke() // Establish authority.
 }
 
 func (g *Graft) unguardedTransitionToCandidate() {
-	g.info("Transitioning to Candidate, state=%v", g)
+	g.log("Transitioning to Candidate, state=%v", g)
 	g.state = Candidate
 	g.currentTerm++
 	g.votedFor = g.id // Vote for self.
-	g.leaderId = unknownLeader
+	g.leaderId = UnknownLeader
 	g.electionTimer.reset()
 	g.heartbeatTimer.stop()
 }
 
 func (g *Graft) unguardedTransitionToFollower(term int) {
-	g.info("Transitioning to Follower at (%d), state=%v", term, g)
+	g.log("Transitioning to Follower at (%d), state=%v", term, g)
 	g.state = Follower
 	g.currentTerm = term
 	g.votedFor = ""
@@ -306,7 +313,7 @@ func (g *Graft) unguardedBroadcast() {
 	for _, p := range g.cluster.peers {
 		go func(peer *peer) {
 			if client, cerr := peer.client(); cerr != nil {
-				g.info("Error connecting to peer %s: %v", peer.id, cerr)
+				g.log("Error connecting to peer %s: %v", peer.id, cerr)
 			} else {
 				for {
 					var prevLogIndex int
@@ -356,13 +363,13 @@ func (g *Graft) unguardedBroadcast() {
 							LeaderCommitIndex: int32(commitIndex),
 						}
 						if res, rerr := client.AppendEntries(context.Background(), request); rerr != nil {
-							g.info("AppendEntries to %s failed: %v", peer.id, rerr)
+							g.log("AppendEntries to %s failed: %v", peer.id, rerr)
 							return false
 						} else {
 							g.mut.Lock()
 							defer g.mut.Unlock()
 
-							g.info("AppendEntries(%v) to %s got {%v}, state=%v", request, peer.id, res, g)
+							g.log("AppendEntries(%v) to %s got {%v}, state=%v", request, peer.id, res, g)
 
 							if res.Term > int32(g.currentTerm) {
 								g.unguardedTransitionToFollower(int(res.Term))
@@ -421,9 +428,9 @@ func (g *Graft) unguardedFlushCommittedEntries() {
 				g.fatal(err)
 			}
 			committedEntries = append(committedEntries, CommittedEntry{
-				Index: i,
-				Term:  int(entry.Term),
-				Cmd:   entry.Command,
+				Index:   i,
+				Term:    int(entry.Term),
+				Command: entry.Command,
 			})
 		}
 		g.commitIndex = newCommitIndex
@@ -443,7 +450,7 @@ func (g *Graft) requestVote(ctx context.Context, request *pb.RequestVoteRequest)
 	g.mut.Lock()
 	defer g.mut.Unlock()
 
-	g.info("Received RequestVote(%v), state=%v", request, g)
+	g.log("Received RequestVote(%v), state=%v", request, g)
 
 	if request.Term < int32(g.currentTerm) {
 		return &pb.RequestVoteResponse{
@@ -477,11 +484,15 @@ func (g *Graft) requestVote(ctx context.Context, request *pb.RequestVoteRequest)
 
 func (g *Graft) unguardedIsCandidateLogUpToDate(request *pb.RequestVoteRequest) bool {
 	var myLastLogTerm int
-	entry, index, err := g.Persistence.TailEntry()
+	entry, err := g.Persistence.TailEntry()
 	if err != nil {
 		g.fatal(err)
 	}
-	myLastLogIndex := index
+
+	myLastLogIndex := -1
+	if entry != nil {
+		myLastLogIndex = int(entry.Index)
+	}
 	if myLastLogIndex >= 0 {
 		myLastLogTerm = int(entry.Term)
 	} else {
@@ -495,7 +506,7 @@ func (g *Graft) appendEntries(ctx context.Context, request *pb.AppendEntriesRequ
 	g.mut.Lock()
 	defer g.mut.Unlock()
 
-	g.info("Received AppendEntries(%v), state=%v", request, g)
+	g.log("Received AppendEntries(%v), state=%v", request, g)
 
 	term := int(request.Term)
 	if term < g.currentTerm {
@@ -505,13 +516,14 @@ func (g *Graft) appendEntries(ctx context.Context, request *pb.AppendEntriesRequ
 		}, nil
 	}
 
-	g.electionTimer.reset()
 	if term > g.currentTerm {
 		g.unguardedTransitionToFollower(term)
+	} else {
+		g.electionTimer.reset()
 	}
 
 	if g.leaderId != request.LeaderId {
-		g.info("Changed leadership (%s -> %s), state=%v", g.leaderId, request.LeaderId, g)
+		g.log("Changed leadership (%s -> %s), state=%v", g.leaderId, request.LeaderId, g)
 		g.leaderId = request.LeaderId
 	}
 
@@ -525,7 +537,7 @@ func (g *Graft) appendEntries(ctx context.Context, request *pb.AppendEntriesRequ
 	if request.PrevLogTerm >= 0 {
 		myPrevLogTerm, err := g.Persistence.GetEntryTerm(int(request.PrevLogIndex))
 		if err != nil {
-			return nil, err // TODO make errChan
+			return nil, err
 		}
 		if request.PrevLogTerm != int32(myPrevLogTerm) {
 			return &pb.AppendEntriesResponse{
@@ -536,14 +548,14 @@ func (g *Graft) appendEntries(ctx context.Context, request *pb.AppendEntriesRequ
 	}
 
 	if request.PrevLogIndex >= 0 && int(request.PrevLogIndex) < g.Persistence.EntryCount()-1 {
-		if err := g.Persistence.TruncatEntriesFrom(int(request.PrevLogIndex) + 1); err != nil {
-			return nil, err // TODO make errChan
+		if err := g.Persistence.TruncateEntriesFrom(int(request.PrevLogIndex) + 1); err != nil {
+			return nil, err
 		}
 	}
 
 	nextIndex, err := g.Persistence.Append(g.unguardedCapturePersistedState(), request.Entries)
 	if err != nil {
-		return nil, err // TODO make errChan
+		return nil, err
 	}
 	lastIndex := nextIndex - 1
 	if int(request.LeaderCommitIndex) > g.commitIndex {
@@ -555,39 +567,31 @@ func (g *Graft) appendEntries(ctx context.Context, request *pb.AppendEntriesRequ
 	}, nil
 }
 
-func (g *Graft) Append(cmds [][]byte) (index int, term int, err error) {
+type NotLeaderError struct {
+	Id       string
+	LeaderId string
+}
+
+func (e NotLeaderError) Error() string {
+	return fmt.Sprintf("we (%s) are not the leader, ask (%s)", e.Id, e.LeaderId)
+}
+
+func (g *Graft) Append(cmds [][]byte) ([]*pb.LogEntry, error) {
 	g.mut.Lock()
 	defer g.mut.Unlock()
 
 	if g.state != Leader {
-		return -1, g.currentTerm, nil
+		return nil, NotLeaderError{Id: g.id, LeaderId: g.leaderId}
 	}
 
-	var entries []*pb.LogEntry
-	for _, cmd := range cmds {
-		entries = append(entries, &pb.LogEntry{Term: int32(g.currentTerm), Command: cmd})
-	}
-	lastIndex, err := g.Persistence.Append(g.unguardedCapturePersistedState(), entries)
-	if err != nil {
-		return g.Persistence.EntryCount(), g.currentTerm, err // TODO make errorChan
-	}
-	g.heartbeatTimer.poke() // Broadcast new entries.
-	return lastIndex, g.currentTerm, err
-}
-
-type gserver struct {
-	pb.UnimplementedGraftServer
-}
-
-func (s *gserver) Append(ctx context.Context, request *pb.AppendRequest) (*pb.AppendResponse, error) {
-	g, ok := ctx.Value(graftKey{}).(*Graft)
-	if !ok {
-		g.fatal("unable to find Graft instance in context")
+	if len(cmds) == 0 {
+		return []*pb.LogEntry{}, nil
 	}
 
-	index, term, err := g.Append(request.Cmds)
+	entries, err := g.Persistence.AppendCommands(g.unguardedCapturePersistedState(), cmds)
 	if err != nil {
 		return nil, err
 	}
-	return &pb.AppendResponse{Index: int32(index), Term: int32(term)}, nil
+	g.heartbeatTimer.poke() // Broadcast new entries.
+	return entries, err
 }

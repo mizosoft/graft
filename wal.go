@@ -199,13 +199,16 @@ func (s *segment) append(state *pb.PersistedState, entries []*pb.LogEntry) (int,
 
 	if len(entries) == 0 {
 		return s.nextIndex, s.appendState(state)
+	} else if int(entries[0].Index) != s.nextIndex {
+		return -1, fmt.Errorf(
+			"appending entries with mismatching index continuity, expected %d, got %d", s.nextIndex, entries[0].Term)
 	}
 
 	records := make([]*pb.Record, 0, 1+len(entries))
 	if stateChanged {
 		record, err := s.w.recordOf(StateType, state)
 		if err != nil {
-			return 0, err
+			return -1, err
 		}
 		records = append(records, record)
 	}
@@ -213,7 +216,7 @@ func (s *segment) append(state *pb.PersistedState, entries []*pb.LogEntry) (int,
 	for _, entry := range entries {
 		record, err := s.w.recordOf(EntryType, entry)
 		if err != nil {
-			return 0, err
+			return -1, err
 		}
 		records = append(records, record)
 	}
@@ -224,7 +227,7 @@ func (s *segment) append(state *pb.PersistedState, entries []*pb.LogEntry) (int,
 	for _, record := range records {
 		recordBytes, err := proto.Marshal(record)
 		if err != nil {
-			return 0, err
+			return -1, err
 		}
 
 		binary.Write(&buf, binary.BigEndian, int32(len(recordBytes)))
@@ -236,10 +239,10 @@ func (s *segment) append(state *pb.PersistedState, entries []*pb.LogEntry) (int,
 	}
 
 	if _, err := buf.WriteTo(s.f); err != nil {
-		return 0, err
+		return -1, err
 	}
 	if err := s.f.Sync(); err != nil {
-		return 0, err
+		return -1, err
 	}
 
 	if stateChanged {
@@ -467,17 +470,41 @@ func (w *wal) SetState(state *pb.PersistedState) error {
 
 func (w *wal) Append(state *pb.PersistedState, entries []*pb.LogEntry) (int, error) {
 	if w.closed {
-		return 0, errClosed
+		return -1, errClosed
 	}
 
+	nextIndex := w.tail.nextIndex
+	for _, entry := range entries {
+		entry.Index = int32(nextIndex)
+		nextIndex++
+	}
 	nextIndex, err := w.tail.append(state, entries)
 	if err != nil {
-		return 0, err
+		return -1, err
 	}
 	if err := w.appendSegmentIfNeeded(); err != nil {
-		return 0, err
+		return -1, err
 	}
 	return nextIndex, nil
+}
+
+func (w *wal) AppendCommands(state *pb.PersistedState, commands [][]byte) ([]*pb.LogEntry, error) {
+	if w.closed {
+		return nil, errClosed
+	}
+
+	entries := toLogEntries(int(state.CurrentTerm), w.tail.nextIndex, commands)
+	nextIndex, err := w.tail.append(state, entries)
+	if len(entries) > 0 && nextIndex != int(entries[len(entries)-1].Index)+1 {
+		log.Fatalf("Next indices not equal, expected %d got %d", entries[len(entries)-1].Index+1, nextIndex)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if err := w.appendSegmentIfNeeded(); err != nil {
+		return nil, err
+	}
+	return entries, nil
 }
 
 func (w *wal) appendSegmentIfNeeded() error {

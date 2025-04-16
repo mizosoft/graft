@@ -15,7 +15,9 @@ type Persistence interface {
 
 	Append(state *pb.PersistedState, entries []*pb.LogEntry) (int, error)
 
-	TruncatEntriesFrom(index int) error
+	AppendCommands(state *pb.PersistedState, commands [][]byte) ([]*pb.LogEntry, error)
+
+	TruncateEntriesFrom(index int) error
 
 	EntryCount() int
 
@@ -25,9 +27,9 @@ type Persistence interface {
 
 	GetEntriesFrom(index int) ([]*pb.LogEntry, error)
 
-	HeadEntry() (*pb.LogEntry, int, error)
+	HeadEntry() (*pb.LogEntry, error)
 
-	TailEntry() (*pb.LogEntry, int, error)
+	TailEntry() (*pb.LogEntry, error)
 
 	Close() error
 }
@@ -52,11 +54,22 @@ func (p *nullPersistence) SetState(state *pb.PersistedState) error {
 
 func (p *nullPersistence) Append(state *pb.PersistedState, entries []*pb.LogEntry) (int, error) {
 	p.state = state
+	nextIndex := len(p.log) - 1
+	for _, entry := range entries {
+		entry.Index = int32(nextIndex)
+		nextIndex++
+	}
 	p.log = append(p.log, entries...)
-	return len(p.log), nil
+	return nextIndex, nil
 }
 
-func (p *nullPersistence) TruncatEntriesFrom(index int) error {
+func (p *nullPersistence) AppendCommands(state *pb.PersistedState, commands [][]byte) ([]*pb.LogEntry, error) {
+	entries := toLogEntries(int(state.CurrentTerm), len(p.log), commands)
+	p.log = append(p.log, entries...)
+	return entries, nil
+}
+
+func (p *nullPersistence) TruncateEntriesFrom(index int) error {
 	p.log = p.log[:index]
 	return nil
 }
@@ -87,16 +100,16 @@ func (p *nullPersistence) GetEntriesFrom(index int) ([]*pb.LogEntry, error) {
 	return p.log[index:], nil
 }
 
-func (p *nullPersistence) HeadEntry() (*pb.LogEntry, int, error) {
-	return p.log[0], 0, nil
+func (p *nullPersistence) HeadEntry() (*pb.LogEntry, error) {
+	return p.log[0], nil
 }
 
-func (p *nullPersistence) TailEntry() (*pb.LogEntry, int, error) {
+func (p *nullPersistence) TailEntry() (*pb.LogEntry, error) {
 	lastIndex := len(p.log) - 1
 	if lastIndex < 0 {
-		return nil, -1, nil
+		return nil, nil
 	}
-	return p.log[lastIndex], lastIndex, nil
+	return p.log[lastIndex], nil
 }
 
 func (p *nullPersistence) Close() error {

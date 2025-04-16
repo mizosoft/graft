@@ -106,7 +106,8 @@ func TestWalAppendSingleEntry(t *testing.T) {
 	// Retrieve entry and verify.
 	retrievedEntry, err := w.GetEntry(0)
 	assert.NilError(t, err)
-	assert.Assert(t, proto.Equal(entry, retrievedEntry))
+	assert.Assert(t, proto.Equal(retrievedEntry, entry))
+	assert.Equal(t, retrievedEntry.Index, int32(0))
 }
 
 func TestWalAppendMultipleEntries(t *testing.T) {
@@ -138,6 +139,7 @@ func TestWalAppendMultipleEntries(t *testing.T) {
 	assert.Equal(t, len(retrievedEntries), len(entries))
 	for i, entry := range entries {
 		assert.Assert(t, proto.Equal(retrievedEntries[i], entry))
+		assert.Equal(t, retrievedEntries[i].Index, int32(i))
 	}
 }
 
@@ -167,9 +169,12 @@ func TestWalGetEntriesFromMiddle(t *testing.T) {
 	retrievedEntries, err := w.GetEntriesFrom(2)
 	assert.NilError(t, err)
 	assert.Equal(t, len(retrievedEntries), 3)
-	assert.Assert(t, proto.Equal(entries[2], retrievedEntries[0]))
-	assert.Assert(t, proto.Equal(entries[3], retrievedEntries[1]))
-	assert.Assert(t, proto.Equal(entries[4], retrievedEntries[2]))
+	assert.Assert(t, proto.Equal(retrievedEntries[0], entries[2]))
+	assert.Equal(t, retrievedEntries[0].Index, int32(2))
+	assert.Assert(t, proto.Equal(retrievedEntries[1], entries[3]))
+	assert.Equal(t, retrievedEntries[1].Index, int32(3))
+	assert.Assert(t, proto.Equal(retrievedEntries[2], entries[4]))
+	assert.Equal(t, retrievedEntries[2].Index, int32(4))
 }
 
 func TestWalSetState(t *testing.T) {
@@ -522,9 +527,9 @@ func TestWalAppendAfterTruncating(t *testing.T) {
 	assert.Equal(t, len(retrievedEntries), 3, len(retrievedEntries))
 
 	expectedEntries := []*pb.LogEntry{
-		{Term: 1, Command: []byte("a")},
-		{Term: 3, Command: []byte("c")},
-		{Term: 4, Command: []byte("d")},
+		{Term: 1, Index: 0, Command: []byte("a")},
+		{Term: 3, Index: 1, Command: []byte("c")},
+		{Term: 4, Index: 2, Command: []byte("d")},
 	}
 	for i := 0; i < len(expectedEntries); i++ {
 		assert.Assert(t, proto.Equal(retrievedEntries[i], expectedEntries[i]))
@@ -754,4 +759,35 @@ func TestWalMismatchingFirstIndex(t *testing.T) {
 	_, fname = path.Split(w2.tail.f.Name())
 	assert.Equal(t, fname, "log_0_0.dat")
 	assert.Equal(t, w2.tail.firstIndex, 0)
+}
+
+func TestWalAppendCommands(t *testing.T) {
+	dir := t.TempDir()
+	w, err := openWal(dir, 128)
+	assert.NilError(t, err)
+	defer w.Close()
+
+	state := &pb.PersistedState{
+		CurrentTerm: 2,
+		VotedFor:    "s1",
+		CommitIndex: 0,
+	}
+
+	commands := [][]byte{[]byte("cmd1"), []byte("cmd2"), []byte("cmd3"), []byte("cmd4")}
+
+	entries, err := w.AppendCommands(state, commands[0:2])
+	assert.NilError(t, err)
+	assert.Assert(t, len(entries) == 2, len(entries))
+
+	entries2, err := w.AppendCommands(state, commands[2:])
+	assert.NilError(t, err)
+	assert.Assert(t, len(entries2) == 2, len(entries2))
+
+	assert.Equal(t, w.EntryCount(), 4)
+
+	entries = append(entries, entries2...)
+	for i, entry := range entries {
+		assert.Equal(t, entry.Term, state.CurrentTerm)
+		assert.Equal(t, string(entry.Command), string(commands[i]))
+	}
 }

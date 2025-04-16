@@ -59,7 +59,7 @@ func main() {
 	}
 
 	go func() {
-		gErr := g.Run()
+		gErr := g.Serve()
 		fmt.Println(gErr)
 	}()
 
