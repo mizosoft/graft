@@ -21,19 +21,19 @@ func TestWalNewWalOpen(t *testing.T) {
 	assert.Equal(t, wal.EntryCount(), 0)
 
 	e, err := wal.GetEntry(0)
-	assert.ErrorIs(t, err, errEntryIndexOutOfRange)
+	assert.ErrorType(t, err, indexOutOfRangeError{})
 	testutil.AssertNil(t, e)
 
 	e, err = wal.GetEntry(100)
-	assert.ErrorIs(t, err, errEntryIndexOutOfRange)
+	assert.ErrorType(t, err, indexOutOfRangeError{})
 	testutil.AssertNil(t, e)
 
 	es, err := wal.GetEntriesFrom(0)
-	assert.ErrorIs(t, err, errEntryIndexOutOfRange)
+	assert.ErrorType(t, err, indexOutOfRangeError{})
 	assert.Equal(t, len(es), 0)
 
 	_, err = wal.GetEntriesFrom(100)
-	assert.ErrorIs(t, err, errEntryIndexOutOfRange)
+	assert.ErrorType(t, err, indexOutOfRangeError{})
 	assert.Equal(t, len(es), 0)
 	testutil.AssertNil(t, wal.GetState())
 }
@@ -51,19 +51,19 @@ func TestWalEmptyWalReopen(t *testing.T) {
 	assert.Equal(t, wal.EntryCount(), 0)
 
 	e, err := wal.GetEntry(0)
-	assert.ErrorIs(t, err, errEntryIndexOutOfRange)
+	assert.ErrorType(t, err, indexOutOfRangeError{})
 	testutil.AssertNil(t, e)
 
 	e, err = wal.GetEntry(100)
-	assert.Equal(t, err, errEntryIndexOutOfRange)
+	assert.ErrorType(t, err, indexOutOfRangeError{})
 	testutil.AssertNil(t, e)
 
 	es, err := wal.GetEntriesFrom(0)
-	assert.ErrorIs(t, err, errEntryIndexOutOfRange)
+	assert.ErrorType(t, err, indexOutOfRangeError{})
 	assert.Equal(t, len(es), 0)
 
 	_, err = wal.GetEntriesFrom(100)
-	assert.ErrorIs(t, err, errEntryIndexOutOfRange)
+	assert.ErrorType(t, err, indexOutOfRangeError{})
 	assert.Equal(t, len(es), 0)
 
 	testutil.AssertNil(t, wal.GetState())
@@ -340,7 +340,7 @@ func TestWalErrorCases(t *testing.T) {
 	defer w.Close()
 
 	_, err = w.GetEntry(100)
-	assert.ErrorIs(t, err, errEntryIndexOutOfRange)
+	assert.ErrorType(t, err, indexOutOfRangeError{})
 
 	// TestWal using closed WAL
 	w.Close()
@@ -454,7 +454,7 @@ func TestWalAppendSegmentAfterStateUpdate(t *testing.T) {
 	assert.Equal(t, len(w1.segments), 2)
 
 	// Last segment retains state.
-	assert.Assert(t, proto.Equal(w1.tail.lastState, state))
+	assert.Assert(t, proto.Equal(w1.lastState, state))
 
 	w1.Close()
 
@@ -464,7 +464,7 @@ func TestWalAppendSegmentAfterStateUpdate(t *testing.T) {
 	defer w2.Close()
 	assert.Assert(t, proto.Equal(w2.GetState(), state))
 	assert.Equal(t, len(w2.segments), 2)
-	assert.Assert(t, proto.Equal(w2.tail.lastState, state))
+	assert.Assert(t, proto.Equal(w2.lastState, state))
 }
 
 func TestWalTruncateAfterStateUpdate(t *testing.T) {
@@ -641,7 +641,11 @@ func TestWalStorageFailures(t *testing.T) {
 	_, err = w.Append(state, entries)
 	assert.Assert(t, err != nil)
 
-	err = w.SetState(state)
+	err = w.SetState(&pb.PersistedState{
+		CurrentTerm: 2,
+		VotedFor:    "s2",
+		CommitIndex: 0,
+	})
 	assert.Assert(t, err != nil)
 }
 
@@ -651,7 +655,7 @@ func TestWalHeadEntry(t *testing.T) {
 	assert.NilError(t, err)
 	defer w.Close()
 
-	entry, index, err := w.HeadEntry()
+	entry, err := w.HeadEntry()
 	assert.NilError(t, err)
 	testutil.AssertNil(t, entry)
 
@@ -664,19 +668,19 @@ func TestWalHeadEntry(t *testing.T) {
 	assert.NilError(t, err)
 	assert.Equal(t, lastIndex, 2)
 
-	entry, index, err = w.HeadEntry()
+	entry, err = w.HeadEntry()
 	assert.NilError(t, err)
-	assert.Equal(t, index, 0)
+	assert.Equal(t, entry.Index, int32(0))
 	assert.Assert(t, proto.Equal(entry, entries[0]))
 }
 
 func TestWalTailEntry(t *testing.T) {
 	dir := t.TempDir()
-	w, err := openWal(dir, 128)
+	w, err := openWal(dir, 32)
 	assert.NilError(t, err)
 	defer w.Close()
 
-	entry, index, err := w.TailEntry()
+	entry, err := w.TailEntry()
 	assert.NilError(t, err)
 	testutil.AssertNil(t, entry)
 
@@ -689,10 +693,42 @@ func TestWalTailEntry(t *testing.T) {
 	assert.NilError(t, err)
 	assert.Equal(t, lastIndex, 2)
 
-	entry, index, err = w.TailEntry()
+	entry, err = w.TailEntry()
 	assert.NilError(t, err)
-	assert.Equal(t, index, 0)
 	assert.Assert(t, proto.Equal(entry, entries[1]))
+	assert.Equal(t, entry.Index, int32(1))
+}
+
+func TestWalTailEntryWithEmptySegments(t *testing.T) {
+	dir := t.TempDir()
+	w, err := openWal(dir, 20)
+	assert.NilError(t, err)
+	defer w.Close()
+
+	entry, err := w.TailEntry()
+	assert.NilError(t, err)
+	testutil.AssertNil(t, entry)
+
+	entries := []*pb.LogEntry{
+		{Term: 1, Command: []byte("cmd1")},
+		{Term: 1, Command: []byte("cmd2")},
+	}
+	lastIndex, err := w.Append(nil, entries)
+	assert.NilError(t, err)
+	assert.Equal(t, lastIndex, 2)
+
+	err = w.SetState(&pb.PersistedState{CurrentTerm: 1, VotedFor: "s1", CommitIndex: 0})
+	assert.NilError(t, err)
+
+	err = w.SetState(&pb.PersistedState{CurrentTerm: 2, VotedFor: "s2", CommitIndex: 1})
+	assert.NilError(t, err)
+
+	assert.Assert(t, len(w.segments) > 2, len(w.segments))
+
+	entry, err = w.TailEntry()
+	assert.NilError(t, err)
+	assert.Assert(t, proto.Equal(entry, entries[1]))
+	assert.Equal(t, entry.Index, int32(1))
 }
 
 func TestWalMismatchingSegNumber(t *testing.T) {

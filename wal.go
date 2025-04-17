@@ -38,6 +38,8 @@ type wal struct {
 	tail            *segment
 	crcTable        *crc32.Table
 	closed          bool
+	lastState       *pb.PersistedState // Last-written state.
+	lastLogTerm     int
 }
 
 type segment struct {
@@ -48,7 +50,6 @@ type segment struct {
 	f                     *os.File
 	entryOffsets          []int64
 	lastOffset            int64
-	lastState             *pb.PersistedState // Last-written state.
 }
 
 func (s *segment) entryCount() int {
@@ -58,13 +59,30 @@ func (s *segment) entryCount() int {
 func (s *segment) getEntry(index int) (*pb.LogEntry, error) {
 	localIndex := index - s.firstIndex
 	if localIndex < 0 || localIndex >= s.entryCount() {
-		return nil, errEntryIndexOutOfRange
+		return nil, indexOutOfRange(index)
 	}
+	return s.getEntryAtOffset(localIndex)
+}
 
-	offset := s.entryOffsets[localIndex]
+func (s *segment) headEntry() (*pb.LogEntry, error) {
+	if s.entryCount() == 0 {
+		return nil, nil
+	}
+	return s.getEntryAtOffset(0)
+}
+
+func (s *segment) tailEntry() (*pb.LogEntry, error) {
+	if s.entryCount() == 0 {
+		return nil, nil
+	}
+	return s.getEntryAtOffset(len(s.entryOffsets) - 1)
+}
+
+func (s *segment) getEntryAtOffset(offsetIndex int) (*pb.LogEntry, error) {
+	offset := s.entryOffsets[offsetIndex]
 	var limit int64
-	if index < len(s.entryOffsets)-1 {
-		limit = s.entryOffsets[localIndex+1]
+	if offsetIndex < len(s.entryOffsets)-1 {
+		limit = s.entryOffsets[offsetIndex+1]
 	} else {
 		limit = s.lastOffset
 	}
@@ -129,7 +147,7 @@ func (s *segment) getEntriesFrom(index int) ([]*pb.LogEntry, error) {
 
 func (s *segment) truncateEntriesFrom(index int) error {
 	localIndex := index - s.firstIndex
-	if localIndex < 0 {
+	if localIndex < 0 || localIndex >= s.entryCount() {
 		return nil // Ignore.
 	}
 
@@ -146,8 +164,8 @@ func (s *segment) truncateEntriesFrom(index int) error {
 	s.lastOffset = offset
 
 	// Re-append the latest state after truncation.
-	if s.lastState != nil {
-		if err := s.appendState(s.lastState); err != nil {
+	if s.w.lastState != nil {
+		if err := s.appendState(s.w.lastState); err != nil {
 			return err
 		}
 	} else if err := s.f.Sync(); err != nil {
@@ -186,14 +204,12 @@ func (s *segment) appendState(state *pb.PersistedState) error {
 	if err := s.f.Sync(); err != nil {
 		return err
 	}
-	s.lastState = state
 	s.lastOffset += int64(byteCount)
 	return nil
 }
 
 func (s *segment) append(state *pb.PersistedState, entries []*pb.LogEntry) (int, error) {
-	stateChanged := state != nil && !proto.Equal(s.lastState, state)
-	if !stateChanged && len(entries) == 0 {
+	if state == nil && len(entries) == 0 {
 		return s.nextIndex, nil
 	}
 
@@ -205,16 +221,16 @@ func (s *segment) append(state *pb.PersistedState, entries []*pb.LogEntry) (int,
 	}
 
 	records := make([]*pb.Record, 0, 1+len(entries))
-	if stateChanged {
-		record, err := s.w.recordOf(StateType, state)
+	for _, entry := range entries {
+		record, err := s.w.recordOf(EntryType, entry)
 		if err != nil {
 			return -1, err
 		}
 		records = append(records, record)
 	}
 
-	for _, entry := range entries {
-		record, err := s.w.recordOf(EntryType, entry)
+	if state != nil {
+		record, err := s.w.recordOf(StateType, state)
 		if err != nil {
 			return -1, err
 		}
@@ -245,9 +261,6 @@ func (s *segment) append(state *pb.PersistedState, entries []*pb.LogEntry) (int,
 		return -1, err
 	}
 
-	if stateChanged {
-		s.lastState = state
-	}
 	s.entryOffsets = append(s.entryOffsets, offsets...)
 	s.nextIndex += len(offsets)
 	s.lastOffset = lastOffset
@@ -268,7 +281,7 @@ func openWal(dir string, softSegmentSize int) (*wal, error) {
 	}
 
 	// Find segments.
-	segments := make([]*segment, 0)
+	var segments []*segment
 	for _, file := range files {
 		if file.IsDir() {
 			log.Printf("Warning: unexpected directory found in WAL directory: %s", file.Name())
@@ -276,26 +289,20 @@ func openWal(dir string, softSegmentSize int) (*wal, error) {
 		}
 
 		var segNum, firstIndex int
-		if n, err := fmt.Sscanf(file.Name(), "log_%d_%d.dat", &segNum, &firstIndex); err == nil && n == 2 {
-			segments = append(segments, &segment{
-				w:            w,
-				number:       segNum,
-				firstIndex:   firstIndex,
-				nextIndex:    firstIndex,
-				fname:        path.Join(w.dir, file.Name()),
-				entryOffsets: []int64{},
-			})
-		} else {
+		if n, err := fmt.Sscanf(file.Name(), "log_%d_%d.dat", &segNum, &firstIndex); err != nil || n != 2 {
 			log.Printf("Warning: unexpected file in WAL directory: %s", file.Name())
+			continue
 		}
-	}
 
-	// Sort segment files.
-	sort.Slice(segments, func(i, j int) bool {
-		return segments[i].firstIndex < segments[j].firstIndex
-	})
+		seg := &segment{
+			w:            w,
+			number:       segNum,
+			firstIndex:   firstIndex,
+			nextIndex:    firstIndex,
+			fname:        path.Join(w.dir, file.Name()),
+			entryOffsets: []int64{},
+		}
 
-	for i, seg := range segments {
 		seg.f, err = os.OpenFile(seg.fname, os.O_APPEND|os.O_RDWR, 0644)
 		if err != nil {
 			return nil, err
@@ -372,6 +379,8 @@ func openWal(dir string, softSegmentSize int) (*wal, error) {
 			if _, err := seg.f.Seek(seg.lastOffset, io.SeekStart); err != nil {
 				return nil, err
 			}
+
+			reader = newBufferedReader(newReaderAt(seg.f, seg.lastOffset))
 		}
 
 		for {
@@ -402,7 +411,7 @@ func openWal(dir string, softSegmentSize int) (*wal, error) {
 				if err := proto.Unmarshal(record.Data, &state); err != nil {
 					return nil, err
 				}
-				seg.lastState = &state
+				w.lastState = &state
 			case HeaderType:
 				return nil, fmt.Errorf("unexpected header record found in segment %s", seg.fname)
 			default:
@@ -410,17 +419,37 @@ func openWal(dir string, softSegmentSize int) (*wal, error) {
 			}
 			seg.lastOffset += int64(4 + recordLen)
 		}
+		w.segments = append(w.segments, seg)
+	}
 
-		// Verify index continuity.
+	// Sort segment files.
+	sort.Slice(segments, func(i, j int) bool {
+		return segments[i].number < segments[j].number
+	})
+
+	// Verify index continuity.
+	for i, seg := range w.segments {
 		if i > 0 {
 			prev := w.segments[i-1]
+			if prev.firstIndex > seg.firstIndex {
+				return nil, fmt.Errorf("firstIndex is not ordered: %d (%d) > %d (%d)",
+					prev.firstIndex, prev.number, seg.firstIndex, seg.number)
+			}
 			if prev.nextIndex != seg.firstIndex {
 				return nil, fmt.Errorf("gap detected between segments %s (ends at %d) and %s (starts at %d)",
 					prev.fname, prev.nextIndex, seg.fname, seg.firstIndex)
 			}
 		}
+	}
 
-		w.segments = append(w.segments, seg)
+	tail, err := w.TailEntry()
+	if err != nil {
+		return nil, err
+	}
+	if tail != nil {
+		w.lastLogTerm = int(tail.Term)
+	} else {
+		w.lastLogTerm = -1
 	}
 
 	if len(w.segments) > 0 {
@@ -451,12 +480,16 @@ func (w *wal) decodeRecord(recordBytes []byte) (*pb.Record, error) {
 }
 
 func (w *wal) GetState() *pb.PersistedState {
-	return w.tail.lastState
+	return w.lastState
 }
 
 func (w *wal) SetState(state *pb.PersistedState) error {
 	if w.closed {
 		return errClosed
+	}
+
+	if proto.Equal(state, w.lastState) {
+		return nil
 	}
 
 	if err := w.tail.appendState(state); err != nil {
@@ -465,12 +498,17 @@ func (w *wal) SetState(state *pb.PersistedState) error {
 	if err := w.appendSegmentIfNeeded(); err != nil {
 		return err
 	}
+	w.lastState = state
 	return nil
 }
 
 func (w *wal) Append(state *pb.PersistedState, entries []*pb.LogEntry) (int, error) {
 	if w.closed {
 		return -1, errClosed
+	}
+
+	if proto.Equal(state, w.lastState) {
+		state = nil // Don't append.
 	}
 
 	nextIndex := w.tail.nextIndex
@@ -482,6 +520,14 @@ func (w *wal) Append(state *pb.PersistedState, entries []*pb.LogEntry) (int, err
 	if err != nil {
 		return -1, err
 	}
+
+	if state != nil {
+		w.lastState = state
+	}
+	if len(entries) > 0 {
+		w.lastLogTerm = int(entries[len(entries)-1].Term)
+	}
+
 	if err := w.appendSegmentIfNeeded(); err != nil {
 		return -1, err
 	}
@@ -501,6 +547,12 @@ func (w *wal) AppendCommands(state *pb.PersistedState, commands [][]byte) ([]*pb
 	if err != nil {
 		return nil, err
 	}
+
+	w.lastState = state
+	if len(entries) > 0 {
+		w.lastLogTerm = int(entries[len(entries)-1].Term)
+	}
+
 	if err := w.appendSegmentIfNeeded(); err != nil {
 		return nil, err
 	}
@@ -521,7 +573,7 @@ func (w *wal) appendSegment() error {
 	if len(w.segments) > 0 {
 		firstIndex = w.tail.nextIndex
 		segNumber = w.tail.number + 1
-		lastState = w.tail.lastState
+		lastState = w.lastState
 	}
 
 	seg := &segment{
@@ -600,7 +652,6 @@ func (w *wal) appendSegment() error {
 	}
 
 	seg.f = f
-	seg.lastState = lastState
 	seg.lastOffset = int64(writtenCount)
 	w.segments = append(w.segments, seg)
 	w.tail = seg
@@ -635,11 +686,11 @@ func (w *wal) TruncateEntriesFrom(index int) error {
 }
 
 func (w *wal) EntryCount() int {
-	if w.tail != nil {
-		return w.tail.nextIndex
-	} else {
-		return 0
+	count := 0
+	for _, seg := range w.segments {
+		count += seg.entryCount()
 	}
+	return count
 }
 
 func (w *wal) GetEntry(index int) (*pb.LogEntry, error) {
@@ -662,34 +713,46 @@ func (w *wal) GetEntryTerm(index int) (int, error) {
 	return int(entry.Term), nil
 }
 
-func (w *wal) HeadEntry() (*pb.LogEntry, int, error) {
+func (w *wal) HeadEntry() (*pb.LogEntry, error) {
 	if w.closed {
-		return nil, -1, errClosed
+		return nil, errClosed
 	}
 
-	seg := w.segments[0]
-	entry, err := seg.getEntry(seg.firstIndex)
-	if errors.Is(err, errEntryIndexOutOfRange) {
-		return nil, -1, nil
-	} else if err != nil {
-		return nil, -1, err
+	// Search for the first segment from the start that has an entry.
+	for i := 0; i < len(w.segments); i++ {
+		seg := w.segments[i]
+		entry, err := seg.headEntry()
+		if err != nil {
+			return nil, err
+		}
+		if entry != nil {
+			return entry, nil
+		}
 	}
-	return entry, seg.firstIndex, nil
+	return nil, nil
 }
 
-func (w *wal) TailEntry() (*pb.LogEntry, int, error) {
+func (w *wal) TailEntry() (*pb.LogEntry, error) {
 	if w.closed {
-		return nil, -1, errClosed
+		return nil, errClosed
 	}
 
-	seg := w.tail
-	entry, err := seg.getEntry(seg.nextIndex - 1)
-	if errors.Is(err, errEntryIndexOutOfRange) {
-		return nil, -1, nil
-	} else if err != nil {
-		return nil, -1, err
+	// Search for the first segment from the end that has an entry.
+	for i := len(w.segments) - 1; i >= 0; i-- {
+		seg := w.segments[i]
+		entry, err := seg.tailEntry()
+		if err != nil {
+			return nil, err
+		}
+		if entry != nil {
+			return entry, nil
+		}
 	}
-	return entry, seg.firstIndex, nil
+	return nil, nil
+}
+
+func (w *wal) LastLogIndexAndTerm() (int, int) {
+	return w.tail.nextIndex - 1, w.lastLogTerm
 }
 
 func (w *wal) GetEntriesFrom(index int) ([]*pb.LogEntry, error) {
@@ -707,11 +770,7 @@ func (w *wal) GetEntriesFrom(index int) ([]*pb.LogEntry, error) {
 		return nil, err
 	}
 
-	upTo := len(w.segments) - 1
-	if w.tail.entryCount() == 0 {
-		upTo--
-	}
-	for i := segIndex + 1; i <= upTo; i++ {
+	for i := segIndex + 1; i < len(w.segments); i++ {
 		seg := w.segments[i]
 		segEntries, err := seg.getEntriesFrom(seg.firstIndex)
 		if err != nil {
@@ -749,7 +808,7 @@ func (w *wal) findSegment(entryIndex int) (int, error) {
 			return mid, nil
 		}
 	}
-	return -1, errEntryIndexOutOfRange
+	return -1, indexOutOfRange(entryIndex)
 }
 
 func (w *wal) recordOf(recordType uint32, msg proto.Message) (*pb.Record, error) {

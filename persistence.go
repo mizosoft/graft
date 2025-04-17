@@ -1,12 +1,30 @@
 package graft
 
 import (
-	"errors"
-
+	"fmt"
 	"github.com/mizosoft/graft/pb"
 )
 
-var errEntryIndexOutOfRange = errors.New("entry index out of range")
+type indexOutOfRangeError struct {
+	Index int
+	Count int
+}
+
+func (e indexOutOfRangeError) Error() string {
+	s := fmt.Sprintf("index out of range: [%d]", e.Index)
+	if e.Count >= 0 {
+		s += fmt.Sprintf(" %d", e.Count)
+	}
+	return s
+}
+
+func indexOutOfRange(index int) error {
+	return indexOutOfRangeError{index, -1}
+}
+
+func indexOutOfRangeWithCount(index int, count int) error {
+	return indexOutOfRangeError{index, count}
+}
 
 type Persistence interface {
 	GetState() *pb.PersistedState
@@ -27,15 +45,17 @@ type Persistence interface {
 
 	GetEntriesFrom(index int) ([]*pb.LogEntry, error)
 
-	HeadEntry() (*pb.LogEntry, error)
-
-	TailEntry() (*pb.LogEntry, error)
+	LastLogIndexAndTerm() (int, int)
 
 	Close() error
 }
 
 func NullPersistence() Persistence {
 	return &nullPersistence{}
+}
+
+func OpenWal(dir string, softSegmentSize int) (Persistence, error) {
+	return openWal(dir, softSegmentSize)
 }
 
 type nullPersistence struct {
@@ -80,7 +100,7 @@ func (p *nullPersistence) EntryCount() int {
 
 func (p *nullPersistence) GetEntry(index int) (*pb.LogEntry, error) {
 	if index >= p.EntryCount() {
-		return nil, errEntryIndexOutOfRange
+		return nil, indexOutOfRangeWithCount(index, p.EntryCount())
 	}
 	return p.log[index], nil
 }
@@ -88,19 +108,22 @@ func (p *nullPersistence) GetEntry(index int) (*pb.LogEntry, error) {
 func (p *nullPersistence) GetEntryTerm(index int) (int, error) {
 	entry, err := p.GetEntry(index)
 	if err != nil {
-		return 0, err
+		return -1, err
 	}
 	return int(entry.Term), nil
 }
 
 func (p *nullPersistence) GetEntriesFrom(index int) ([]*pb.LogEntry, error) {
 	if index >= p.EntryCount() {
-		return []*pb.LogEntry{}, nil
+		return []*pb.LogEntry{}, indexOutOfRangeWithCount(index, p.EntryCount())
 	}
 	return p.log[index:], nil
 }
 
 func (p *nullPersistence) HeadEntry() (*pb.LogEntry, error) {
+	if len(p.log) == 0 {
+		return nil, nil
+	}
 	return p.log[0], nil
 }
 
@@ -110,6 +133,14 @@ func (p *nullPersistence) TailEntry() (*pb.LogEntry, error) {
 		return nil, nil
 	}
 	return p.log[lastIndex], nil
+}
+
+func (p *nullPersistence) LastLogIndexAndTerm() (int, int) {
+	entry, _ := p.TailEntry()
+	if entry == nil {
+		return -1, -1
+	}
+	return int(entry.Index), int(entry.Term)
 }
 
 func (p *nullPersistence) Close() error {

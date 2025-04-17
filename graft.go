@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -75,7 +76,7 @@ func (g *Graft) log(format string, vals ...any) {
 }
 
 func (g *Graft) fatal(err any) {
-	log.Fatalf("Graft%v encountered a fatal error: %v\n", g, err)
+	log.Fatalf("Graft%v encountered a fatal error: %v\n%s", g, err, debug.Stack())
 }
 
 type CommittedEntry struct {
@@ -101,9 +102,6 @@ func New(config Config) (*Graft, error) {
 	state := config.Persistence.GetState()
 	if state == nil {
 		state = &pb.PersistedState{CurrentTerm: 0, VotedFor: "", CommitIndex: -1}
-	}
-	if err := config.Persistence.SetState(state); err != nil {
-		return nil, err
 	}
 	if config.Id == UnknownLeader {
 		return nil, fmt.Errorf("sever ID cannot be %s", UnknownLeader)
@@ -212,21 +210,7 @@ func (g *Graft) triggerElectionTimeout() {
 					if electionTerm != g.currentTerm {
 						return false
 					}
-
-					entry, err := g.Persistence.TailEntry()
-					if err != nil {
-						g.fatal(err)
-					}
-
-					lastLogIndex = -1
-					if entry != nil {
-						lastLogIndex = int(entry.Index)
-					}
-					if lastLogIndex >= 0 {
-						lastLogTerm = int(entry.Term)
-					} else {
-						lastLogTerm = -1
-					}
+					lastLogIndex, lastLogTerm = g.Persistence.LastLogIndexAndTerm()
 					return true
 				}()
 
@@ -278,7 +262,8 @@ func (g *Graft) unguardedTransitionToLeader() {
 	g.nextIndex = make(map[string]int)
 	g.matchIndex = make(map[string]int)
 	for id := range g.cluster.peers {
-		g.nextIndex[id] = g.Persistence.EntryCount()
+		lastIndex, _ := g.Persistence.LastLogIndexAndTerm()
+		g.nextIndex[id] = lastIndex + 1
 		g.matchIndex[id] = 0
 	}
 	g.leaderId = g.id
@@ -331,21 +316,25 @@ func (g *Graft) unguardedBroadcast() {
 						nextIndex := g.nextIndex[peer.id]
 						prevLogIndex = nextIndex - 1
 						if prevLogIndex >= 0 {
-							term, err := g.Persistence.GetEntryTerm(prevLogIndex)
-							if err != nil {
+							if term, err := g.Persistence.GetEntryTerm(prevLogIndex); err != nil {
 								g.fatal(err)
+							} else {
+								prevLogTerm = term
 							}
-							prevLogTerm = term
 						} else {
 							prevLogTerm = -1
 						}
 
-						es, err := g.Persistence.GetEntriesFrom(nextIndex)
-						if err != nil {
-							g.fatal(err)
+						lastIndex, _ := g.Persistence.LastLogIndexAndTerm()
+						fmt.Printf("here: %d - %d\n", nextIndex, lastIndex)
+						if nextIndex > 0 && nextIndex <= lastIndex {
+							if es, err := g.Persistence.GetEntriesFrom(nextIndex); err != nil {
+								g.fatal(err)
+							} else {
+								entries = es
+								newNextIndex = nextIndex + len(entries)
+							}
 						}
-						entries = es
-						newNextIndex = nextIndex + len(entries)
 						return true
 					}()
 
@@ -483,21 +472,7 @@ func (g *Graft) requestVote(ctx context.Context, request *pb.RequestVoteRequest)
 }
 
 func (g *Graft) unguardedIsCandidateLogUpToDate(request *pb.RequestVoteRequest) bool {
-	var myLastLogTerm int
-	entry, err := g.Persistence.TailEntry()
-	if err != nil {
-		g.fatal(err)
-	}
-
-	myLastLogIndex := -1
-	if entry != nil {
-		myLastLogIndex = int(entry.Index)
-	}
-	if myLastLogIndex >= 0 {
-		myLastLogTerm = int(entry.Term)
-	} else {
-		myLastLogTerm = -1
-	}
+	myLastLogIndex, myLastLogTerm := g.Persistence.LastLogIndexAndTerm()
 	return myLastLogTerm < int(request.LastLogTerm) ||
 		(myLastLogTerm == int(request.LastLogTerm) && myLastLogIndex <= int(request.LastLogIndex))
 }
@@ -555,7 +530,7 @@ func (g *Graft) appendEntries(ctx context.Context, request *pb.AppendEntriesRequ
 
 	nextIndex, err := g.Persistence.Append(g.unguardedCapturePersistedState(), request.Entries)
 	if err != nil {
-		return nil, err
+		g.fatal(err)
 	}
 	lastIndex := nextIndex - 1
 	if int(request.LeaderCommitIndex) > g.commitIndex {

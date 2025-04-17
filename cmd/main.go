@@ -41,13 +41,19 @@ func main() {
 		panic(err)
 	}
 
+	walDir := "log" + *id
+	if os.MkdirAll(walDir, 0777) != nil {
+		panic(err)
+	}
+
+	wal, err := graft.OpenWal(walDir, 1*1024*1024) // 1MB
 	config := graft.Config{
 		Id:                        *id,
 		Addresses:                 addresses,
-		ElectionTimeoutLowMillis:  150,
-		ElectionTimeoutHighMillis: 300,
-		HeartbeatMillis:           50,
-		Persistence:               graft.NullPersistence(),
+		ElectionTimeoutLowMillis:  1500,
+		ElectionTimeoutHighMillis: 3000,
+		HeartbeatMillis:           500,
+		Persistence:               wal,
 		Committed: func(entries []graft.CommittedEntry) {
 			fmt.Printf("Committed: %v\n", entries)
 		},
