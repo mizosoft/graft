@@ -39,14 +39,14 @@ func (s state) String() string {
 
 type raftState struct {
 	state       state
-	currentTerm int
+	currentTerm int64
 	votedFor    string
-	commitIndex int
-	lastApplied int
+	commitIndex int64
+	lastApplied int64
 
 	// Leader-specific state.
-	nextIndex  map[string]int
-	matchIndex map[string]int
+	nextIndex  map[string]int64
+	matchIndex map[string]int64
 }
 
 type Graft struct {
@@ -80,8 +80,8 @@ func (g *Graft) fatal(err any) {
 }
 
 type CommittedEntry struct {
-	Index   int
-	Term    int
+	Index   int64
+	Term    int64
 	Command []byte
 }
 
@@ -110,9 +110,9 @@ func New(config Config) (*Graft, error) {
 	return &Graft{
 		raftState: raftState{
 			state:       Follower,
-			currentTerm: int(state.CurrentTerm),
+			currentTerm: state.CurrentTerm,
 			votedFor:    state.VotedFor,
-			commitIndex: int(state.CommitIndex),
+			commitIndex: state.CommitIndex,
 			lastApplied: -1,
 		},
 		id:      config.Id,
@@ -201,8 +201,8 @@ func (g *Graft) triggerElectionTimeout() {
 			if client, cerr := peer.client(); cerr != nil {
 				g.log("Error connecting to peer %s: %v", peer.id, cerr)
 			} else {
-				var lastLogIndex int
-				var lastLogTerm int
+				var lastLogIndex int64
+				var lastLogTerm int64
 				requestVote := func() bool {
 					g.mut.Lock()
 					defer g.mut.Unlock()
@@ -219,10 +219,10 @@ func (g *Graft) triggerElectionTimeout() {
 				}
 
 				request := &pb.RequestVoteRequest{
-					Term:         int32(electionTerm),
+					Term:         electionTerm,
 					CandidateId:  g.id,
-					LastLogIndex: int32(lastLogIndex),
-					LastLogTerm:  int32(lastLogTerm),
+					LastLogIndex: lastLogIndex,
+					LastLogTerm:  lastLogTerm,
 				}
 				if res, rerr := client.RequestVote(context.Background(), request); rerr != nil {
 					g.log("RequestVote to %s failed: %v", peer.id, rerr)
@@ -232,8 +232,8 @@ func (g *Graft) triggerElectionTimeout() {
 
 					g.log("RequestVote(%v) to %s at election (%d) got {%v}, state=%v", request, peer.id, electionTerm, res, g)
 
-					if res.Term > int32(g.currentTerm) {
-						g.unguardedTransitionToFollower(int(res.Term))
+					if res.Term > g.currentTerm {
+						g.unguardedTransitionToFollower(res.Term)
 					} else if res.VoteGranted && g.currentTerm == electionTerm && g.state == Candidate { // Check that the election isn't invalidated.
 						voteCount++
 						if voteCount >= g.cluster.majorityCount() {
@@ -259,8 +259,8 @@ func (g *Graft) triggerHeartbeat() {
 func (g *Graft) unguardedTransitionToLeader() {
 	g.log("Transitioning to Leader, state=%v", g)
 	g.state = Leader
-	g.nextIndex = make(map[string]int)
-	g.matchIndex = make(map[string]int)
+	g.nextIndex = make(map[string]int64)
+	g.matchIndex = make(map[string]int64)
 	for id := range g.cluster.peers {
 		lastIndex, _ := g.Persistence.LastLogIndexAndTerm()
 		g.nextIndex[id] = lastIndex + 1
@@ -281,7 +281,7 @@ func (g *Graft) unguardedTransitionToCandidate() {
 	g.heartbeatTimer.stop()
 }
 
-func (g *Graft) unguardedTransitionToFollower(term int) {
+func (g *Graft) unguardedTransitionToFollower(term int64) {
 	g.log("Transitioning to Follower at (%d), state=%v", term, g)
 	g.state = Follower
 	g.currentTerm = term
@@ -301,10 +301,10 @@ func (g *Graft) unguardedBroadcast() {
 				g.log("Error connecting to peer %s: %v", peer.id, cerr)
 			} else {
 				for {
-					var prevLogIndex int
-					var prevLogTerm int
+					var prevLogIndex int64
+					var prevLogTerm int64
 					var entries []*pb.LogEntry
-					var newNextIndex int
+					var newNextIndex int64
 					broadcast := func() bool {
 						g.mut.Lock()
 						defer g.mut.Unlock()
@@ -332,7 +332,7 @@ func (g *Graft) unguardedBroadcast() {
 								g.fatal(err)
 							} else {
 								entries = es
-								newNextIndex = nextIndex + len(entries)
+								newNextIndex = nextIndex + int64(len(entries))
 							}
 						}
 						return true
@@ -344,12 +344,12 @@ func (g *Graft) unguardedBroadcast() {
 
 					retry := func() bool {
 						request := &pb.AppendEntriesRequest{
-							Term:              int32(witnessTerm),
+							Term:              witnessTerm,
 							LeaderId:          me,
-							PrevLogIndex:      int32(prevLogIndex),
-							PrevLogTerm:       int32(prevLogTerm),
+							PrevLogIndex:      prevLogIndex,
+							PrevLogTerm:       prevLogTerm,
 							Entries:           entries,
-							LeaderCommitIndex: int32(commitIndex),
+							LeaderCommitIndex: commitIndex,
 						}
 						if res, rerr := client.AppendEntries(context.Background(), request); rerr != nil {
 							g.log("AppendEntries to %s failed: %v", peer.id, rerr)
@@ -360,8 +360,8 @@ func (g *Graft) unguardedBroadcast() {
 
 							g.log("AppendEntries(%v) to %s got {%v}, state=%v", request, peer.id, res, g)
 
-							if res.Term > int32(g.currentTerm) {
-								g.unguardedTransitionToFollower(int(res.Term))
+							if res.Term > g.currentTerm {
+								g.unguardedTransitionToFollower(res.Term)
 								return false
 							} else if witnessTerm != g.currentTerm {
 								return false
@@ -418,7 +418,7 @@ func (g *Graft) unguardedFlushCommittedEntries() {
 			}
 			committedEntries = append(committedEntries, CommittedEntry{
 				Index:   i,
-				Term:    int(entry.Term),
+				Term:    entry.Term,
 				Command: entry.Command,
 			})
 		}
@@ -430,9 +430,10 @@ func (g *Graft) unguardedFlushCommittedEntries() {
 
 func (g *Graft) unguardedCapturePersistedState() *pb.PersistedState {
 	return &pb.PersistedState{
-		CurrentTerm: int32(g.currentTerm),
+		CurrentTerm: g.currentTerm,
 		VotedFor:    g.votedFor,
-		CommitIndex: int32(g.commitIndex)}
+		CommitIndex: g.commitIndex,
+	}
 }
 
 func (g *Graft) requestVote(ctx context.Context, request *pb.RequestVoteRequest) (*pb.RequestVoteResponse, error) {
@@ -441,16 +442,16 @@ func (g *Graft) requestVote(ctx context.Context, request *pb.RequestVoteRequest)
 
 	g.log("Received RequestVote(%v), state=%v", request, g)
 
-	if request.Term < int32(g.currentTerm) {
+	if request.Term < g.currentTerm {
 		return &pb.RequestVoteResponse{
-			Term:        int32(g.currentTerm),
+			Term:        g.currentTerm,
 			VoteGranted: false,
 		}, nil
 	}
 
 	electionTimerIsReset := false
-	if request.Term > int32(g.currentTerm) {
-		g.unguardedTransitionToFollower(int(request.Term))
+	if request.Term > g.currentTerm {
+		g.unguardedTransitionToFollower(request.Term)
 		electionTimerIsReset = true
 	}
 
@@ -466,15 +467,15 @@ func (g *Graft) requestVote(ctx context.Context, request *pb.RequestVoteRequest)
 		return nil, err
 	}
 	return &pb.RequestVoteResponse{
-		Term:        int32(g.currentTerm),
+		Term:        g.currentTerm,
 		VoteGranted: grantVote,
 	}, nil
 }
 
 func (g *Graft) unguardedIsCandidateLogUpToDate(request *pb.RequestVoteRequest) bool {
 	myLastLogIndex, myLastLogTerm := g.Persistence.LastLogIndexAndTerm()
-	return myLastLogTerm < int(request.LastLogTerm) ||
-		(myLastLogTerm == int(request.LastLogTerm) && myLastLogIndex <= int(request.LastLogIndex))
+	return myLastLogTerm < request.LastLogTerm ||
+		(myLastLogTerm == request.LastLogTerm && myLastLogIndex <= request.LastLogIndex)
 }
 
 func (g *Graft) appendEntries(ctx context.Context, request *pb.AppendEntriesRequest) (*pb.AppendEntriesResponse, error) {
@@ -483,10 +484,10 @@ func (g *Graft) appendEntries(ctx context.Context, request *pb.AppendEntriesRequ
 
 	g.log("Received AppendEntries(%v), state=%v", request, g)
 
-	term := int(request.Term)
+	term := request.Term
 	if term < g.currentTerm {
 		return &pb.AppendEntriesResponse{
-			Term:    int32(g.currentTerm),
+			Term:    g.currentTerm,
 			Success: false,
 		}, nil
 	}
@@ -502,28 +503,28 @@ func (g *Graft) appendEntries(ctx context.Context, request *pb.AppendEntriesRequ
 		g.leaderId = request.LeaderId
 	}
 
-	if int(request.PrevLogIndex) >= g.Persistence.EntryCount() {
+	if request.PrevLogIndex >= g.Persistence.EntryCount() {
 		return &pb.AppendEntriesResponse{
-			Term:    int32(term),
+			Term:    term,
 			Success: false,
 		}, nil
 	}
 
 	if request.PrevLogTerm >= 0 {
-		myPrevLogTerm, err := g.Persistence.GetEntryTerm(int(request.PrevLogIndex))
+		myPrevLogTerm, err := g.Persistence.GetEntryTerm(request.PrevLogIndex)
 		if err != nil {
 			return nil, err
 		}
-		if request.PrevLogTerm != int32(myPrevLogTerm) {
+		if request.PrevLogTerm != myPrevLogTerm {
 			return &pb.AppendEntriesResponse{
-				Term:    int32(term),
+				Term:    term,
 				Success: false,
 			}, nil
 		}
 	}
 
-	if request.PrevLogIndex >= 0 && int(request.PrevLogIndex) < g.Persistence.EntryCount()-1 {
-		if err := g.Persistence.TruncateEntriesFrom(int(request.PrevLogIndex) + 1); err != nil {
+	if request.PrevLogIndex >= 0 && request.PrevLogIndex < g.Persistence.EntryCount()-1 {
+		if err := g.Persistence.TruncateEntriesFrom(request.PrevLogIndex + 1); err != nil {
 			return nil, err
 		}
 	}
@@ -533,11 +534,11 @@ func (g *Graft) appendEntries(ctx context.Context, request *pb.AppendEntriesRequ
 		g.fatal(err)
 	}
 	lastIndex := nextIndex - 1
-	if int(request.LeaderCommitIndex) > g.commitIndex {
-		g.commitIndex = min(int(request.LeaderCommitIndex), lastIndex)
+	if request.LeaderCommitIndex > g.commitIndex {
+		g.commitIndex = min(request.LeaderCommitIndex, lastIndex)
 	}
 	return &pb.AppendEntriesResponse{
-		Term:    int32(term),
+		Term:    term,
 		Success: true,
 	}, nil
 }

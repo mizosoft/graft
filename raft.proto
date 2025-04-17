@@ -11,33 +11,33 @@ service Raft {
 }
 
 message RequestVoteRequest {
-    int32 term = 1;
+    int64 term = 1;
     string candidateId = 2;
-    int32 lastLogIndex = 3;
-    int32 lastLogTerm = 4;
+    int64 lastLogIndex = 3;
+    int64 lastLogTerm = 4;
 }
 
 message RequestVoteResponse {
-    int32 term = 1;
+    int64 term = 1;
     bool voteGranted = 2;
 }
 
 message AppendEntriesRequest {
-    int32 term = 1;
+    int64 term = 1;
     string leaderId = 2;
-    int32 prevLogIndex = 3;
-    int32 prevLogTerm = 4;
+    int64 prevLogIndex = 3;
+    int64 prevLogTerm = 4;
     repeated LogEntry entries = 5;
-    int32 leaderCommitIndex = 6;
+    int64 leaderCommitIndex = 6;
 }
 
 message AppendEntriesResponse {
-    int32 term = 1;
+    int64 term = 1;
     bool success = 2;
 }
 
 message LogEntry {
-    int32 term = 1;
-    int32 index = 2;
+    int64 term = 1;
+    int64 index = 2;
     bytes command = 3;
 }

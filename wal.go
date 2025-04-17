@@ -39,13 +39,13 @@ type wal struct {
 	crcTable        *crc32.Table
 	closed          bool
 	lastState       *pb.PersistedState // Last-written state.
-	lastLogTerm     int
+	lastLogTerm     int64
 }
 
 type segment struct {
 	w                     *wal
 	number                int
-	firstIndex, nextIndex int // First & next entry indices.
+	firstIndex, nextIndex int64 // First & next entry indices.
 	fname                 string
 	f                     *os.File
 	entryOffsets          []int64
@@ -56,8 +56,8 @@ func (s *segment) entryCount() int {
 	return len(s.entryOffsets)
 }
 
-func (s *segment) getEntry(index int) (*pb.LogEntry, error) {
-	localIndex := index - s.firstIndex
+func (s *segment) getEntry(index int64) (*pb.LogEntry, error) {
+	localIndex := int(index - s.firstIndex)
 	if localIndex < 0 || localIndex >= s.entryCount() {
 		return nil, indexOutOfRange(index)
 	}
@@ -108,8 +108,8 @@ func (s *segment) getEntryAtOffset(offsetIndex int) (*pb.LogEntry, error) {
 	return &entry, nil
 }
 
-func (s *segment) getEntriesFrom(index int) ([]*pb.LogEntry, error) {
-	localIndex := index - s.firstIndex
+func (s *segment) getEntriesFrom(index int64) ([]*pb.LogEntry, error) {
+	localIndex := int(index - s.firstIndex)
 	if localIndex < 0 || localIndex >= s.entryCount() {
 		return []*pb.LogEntry{}, nil
 	}
@@ -145,8 +145,8 @@ func (s *segment) getEntriesFrom(index int) ([]*pb.LogEntry, error) {
 	}
 }
 
-func (s *segment) truncateEntriesFrom(index int) error {
-	localIndex := index - s.firstIndex
+func (s *segment) truncateEntriesFrom(index int64) error {
+	localIndex := int(index - s.firstIndex)
 	if localIndex < 0 || localIndex >= s.entryCount() {
 		return nil // Ignore.
 	}
@@ -208,14 +208,14 @@ func (s *segment) appendState(state *pb.PersistedState) error {
 	return nil
 }
 
-func (s *segment) append(state *pb.PersistedState, entries []*pb.LogEntry) (int, error) {
+func (s *segment) append(state *pb.PersistedState, entries []*pb.LogEntry) (int64, error) {
 	if state == nil && len(entries) == 0 {
 		return s.nextIndex, nil
 	}
 
 	if len(entries) == 0 {
 		return s.nextIndex, s.appendState(state)
-	} else if int(entries[0].Index) != s.nextIndex {
+	} else if entries[0].Index != s.nextIndex {
 		return -1, fmt.Errorf(
 			"appending entries with mismatching index continuity, expected %d, got %d", s.nextIndex, entries[0].Term)
 	}
@@ -262,12 +262,12 @@ func (s *segment) append(state *pb.PersistedState, entries []*pb.LogEntry) (int,
 	}
 
 	s.entryOffsets = append(s.entryOffsets, offsets...)
-	s.nextIndex += len(offsets)
+	s.nextIndex += int64(len(offsets))
 	s.lastOffset = lastOffset
 	return s.nextIndex, nil
 }
 
-func openWal(dir string, softSegmentSize int) (*wal, error) {
+func openWal(dir string, softSegmentSize int64) (*wal, error) {
 	files, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, err
@@ -275,7 +275,7 @@ func openWal(dir string, softSegmentSize int) (*wal, error) {
 
 	w := &wal{
 		dir:             dir,
-		softSegmentSize: int64(softSegmentSize),
+		softSegmentSize: softSegmentSize,
 		segments:        make([]*segment, 0),
 		crcTable:        crc32.MakeTable(crc32.Castagnoli),
 	}
@@ -288,7 +288,8 @@ func openWal(dir string, softSegmentSize int) (*wal, error) {
 			continue
 		}
 
-		var segNum, firstIndex int
+		var segNum int
+		var firstIndex int64
 		if n, err := fmt.Sscanf(file.Name(), "log_%d_%d.dat", &segNum, &firstIndex); err != nil || n != 2 {
 			log.Printf("Warning: unexpected file in WAL directory: %s", file.Name())
 			continue
@@ -348,11 +349,11 @@ func openWal(dir string, softSegmentSize int) (*wal, error) {
 				seg.fname, header.SegmentNumber)
 			correctedSegmentNumber = int(header.SegmentNumber)
 		}
-		if int(header.FirstIndex) != seg.firstIndex {
+		if header.FirstIndex != seg.firstIndex {
 			log.Printf(
 				"Warning: first index from file name (%s) disagrees with header's (%d), believing the latter",
 				seg.fname, header.FirstIndex)
-			correctedFirstIndex = int(header.FirstIndex)
+			correctedFirstIndex = header.FirstIndex
 		}
 
 		seg.lastOffset = int64(4 + recordLen)
@@ -447,7 +448,7 @@ func openWal(dir string, softSegmentSize int) (*wal, error) {
 		return nil, err
 	}
 	if tail != nil {
-		w.lastLogTerm = int(tail.Term)
+		w.lastLogTerm = tail.Term
 	} else {
 		w.lastLogTerm = -1
 	}
@@ -502,7 +503,7 @@ func (w *wal) SetState(state *pb.PersistedState) error {
 	return nil
 }
 
-func (w *wal) Append(state *pb.PersistedState, entries []*pb.LogEntry) (int, error) {
+func (w *wal) Append(state *pb.PersistedState, entries []*pb.LogEntry) (int64, error) {
 	if w.closed {
 		return -1, errClosed
 	}
@@ -513,7 +514,7 @@ func (w *wal) Append(state *pb.PersistedState, entries []*pb.LogEntry) (int, err
 
 	nextIndex := w.tail.nextIndex
 	for _, entry := range entries {
-		entry.Index = int32(nextIndex)
+		entry.Index = nextIndex
 		nextIndex++
 	}
 	nextIndex, err := w.tail.append(state, entries)
@@ -525,7 +526,7 @@ func (w *wal) Append(state *pb.PersistedState, entries []*pb.LogEntry) (int, err
 		w.lastState = state
 	}
 	if len(entries) > 0 {
-		w.lastLogTerm = int(entries[len(entries)-1].Term)
+		w.lastLogTerm = entries[len(entries)-1].Term
 	}
 
 	if err := w.appendSegmentIfNeeded(); err != nil {
@@ -539,9 +540,9 @@ func (w *wal) AppendCommands(state *pb.PersistedState, commands [][]byte) ([]*pb
 		return nil, errClosed
 	}
 
-	entries := toLogEntries(int(state.CurrentTerm), w.tail.nextIndex, commands)
+	entries := toLogEntries(state.CurrentTerm, w.tail.nextIndex, commands)
 	nextIndex, err := w.tail.append(state, entries)
-	if len(entries) > 0 && nextIndex != int(entries[len(entries)-1].Index)+1 {
+	if len(entries) > 0 && nextIndex != entries[len(entries)-1].Index+1 {
 		log.Fatalf("Next indices not equal, expected %d got %d", entries[len(entries)-1].Index+1, nextIndex)
 	}
 	if err != nil {
@@ -550,7 +551,7 @@ func (w *wal) AppendCommands(state *pb.PersistedState, commands [][]byte) ([]*pb
 
 	w.lastState = state
 	if len(entries) > 0 {
-		w.lastLogTerm = int(entries[len(entries)-1].Term)
+		w.lastLogTerm = entries[len(entries)-1].Term
 	}
 
 	if err := w.appendSegmentIfNeeded(); err != nil {
@@ -567,7 +568,7 @@ func (w *wal) appendSegmentIfNeeded() error {
 }
 
 func (w *wal) appendSegment() error {
-	firstIndex := 0
+	firstIndex := int64(0)
 	segNumber := 0
 	var lastState *pb.PersistedState
 	if len(w.segments) > 0 {
@@ -591,7 +592,7 @@ func (w *wal) appendSegment() error {
 		Version:       walVersion,
 		Flags:         0,
 		SegmentNumber: int32(seg.number),
-		FirstIndex:    int32(firstIndex),
+		FirstIndex:    firstIndex,
 	})
 	if err != nil {
 		return err
@@ -658,7 +659,7 @@ func (w *wal) appendSegment() error {
 	return nil
 }
 
-func (w *wal) TruncateEntriesFrom(index int) error {
+func (w *wal) TruncateEntriesFrom(index int64) error {
 	if w.closed {
 		return errClosed
 	}
@@ -685,15 +686,15 @@ func (w *wal) TruncateEntriesFrom(index int) error {
 	return nil
 }
 
-func (w *wal) EntryCount() int {
-	count := 0
+func (w *wal) EntryCount() int64 {
+	count := int64(0)
 	for _, seg := range w.segments {
-		count += seg.entryCount()
+		count += int64(seg.entryCount())
 	}
 	return count
 }
 
-func (w *wal) GetEntry(index int) (*pb.LogEntry, error) {
+func (w *wal) GetEntry(index int64) (*pb.LogEntry, error) {
 	if w.closed {
 		return nil, errClosed
 	}
@@ -705,12 +706,12 @@ func (w *wal) GetEntry(index int) (*pb.LogEntry, error) {
 	return w.segments[segIndex].getEntry(index)
 }
 
-func (w *wal) GetEntryTerm(index int) (int, error) {
+func (w *wal) GetEntryTerm(index int64) (int64, error) {
 	entry, err := w.GetEntry(index)
 	if err != nil {
 		return -1, err
 	}
-	return int(entry.Term), nil
+	return entry.Term, nil
 }
 
 func (w *wal) HeadEntry() (*pb.LogEntry, error) {
@@ -751,11 +752,11 @@ func (w *wal) TailEntry() (*pb.LogEntry, error) {
 	return nil, nil
 }
 
-func (w *wal) LastLogIndexAndTerm() (int, int) {
+func (w *wal) LastLogIndexAndTerm() (int64, int64) {
 	return w.tail.nextIndex - 1, w.lastLogTerm
 }
 
-func (w *wal) GetEntriesFrom(index int) ([]*pb.LogEntry, error) {
+func (w *wal) GetEntriesFrom(index int64) ([]*pb.LogEntry, error) {
 	if w.closed {
 		return nil, errClosed
 	}
@@ -796,7 +797,7 @@ func (w *wal) Close() error {
 	return errors.Join(errs...)
 }
 
-func (w *wal) findSegment(entryIndex int) (int, error) {
+func (w *wal) findSegment(entryIndex int64) (int, error) {
 	lo, hi := 0, len(w.segments)
 	for lo < hi {
 		mid := (lo + hi) / 2

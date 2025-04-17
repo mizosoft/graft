@@ -23,9 +23,9 @@ const (
 
 type PersistedState struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	CurrentTerm   int32                  `protobuf:"varint,1,opt,name=currentTerm,proto3" json:"currentTerm,omitempty"`
+	CurrentTerm   int64                  `protobuf:"varint,1,opt,name=currentTerm,proto3" json:"currentTerm,omitempty"`
 	VotedFor      string                 `protobuf:"bytes,2,opt,name=votedFor,proto3" json:"votedFor,omitempty"`
-	CommitIndex   int32                  `protobuf:"varint,3,opt,name=commitIndex,proto3" json:"commitIndex,omitempty"`
+	CommitIndex   int64                  `protobuf:"varint,3,opt,name=commitIndex,proto3" json:"commitIndex,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -60,7 +60,7 @@ func (*PersistedState) Descriptor() ([]byte, []int) {
 	return file_graft_proto_rawDescGZIP(), []int{0}
 }
 
-func (x *PersistedState) GetCurrentTerm() int32 {
+func (x *PersistedState) GetCurrentTerm() int64 {
 	if x != nil {
 		return x.CurrentTerm
 	}
@@ -74,7 +74,7 @@ func (x *PersistedState) GetVotedFor() string {
 	return ""
 }
 
-func (x *PersistedState) GetCommitIndex() int32 {
+func (x *PersistedState) GetCommitIndex() int64 {
 	if x != nil {
 		return x.CommitIndex
 	}
@@ -145,9 +145,9 @@ type WalSegmentHeader struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Magic         uint64                 `protobuf:"varint,1,opt,name=magic,proto3" json:"magic,omitempty"`
 	Version       int32                  `protobuf:"varint,2,opt,name=version,proto3" json:"version,omitempty"`
-	Flags         int32                  `protobuf:"varint,3,opt,name=flags,proto3" json:"flags,omitempty"`
+	Flags         uint32                 `protobuf:"varint,3,opt,name=flags,proto3" json:"flags,omitempty"`
 	SegmentNumber int32                  `protobuf:"varint,4,opt,name=segmentNumber,proto3" json:"segmentNumber,omitempty"`
-	FirstIndex    int32                  `protobuf:"varint,5,opt,name=firstIndex,proto3" json:"firstIndex,omitempty"`
+	FirstIndex    int64                  `protobuf:"varint,5,opt,name=firstIndex,proto3" json:"firstIndex,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -196,7 +196,7 @@ func (x *WalSegmentHeader) GetVersion() int32 {
 	return 0
 }
 
-func (x *WalSegmentHeader) GetFlags() int32 {
+func (x *WalSegmentHeader) GetFlags() uint32 {
 	if x != nil {
 		return x.Flags
 	}
@@ -210,7 +210,7 @@ func (x *WalSegmentHeader) GetSegmentNumber() int32 {
 	return 0
 }
 
-func (x *WalSegmentHeader) GetFirstIndex() int32 {
+func (x *WalSegmentHeader) GetFirstIndex() int64 {
 	if x != nil {
 		return x.FirstIndex
 	}
@@ -223,9 +223,9 @@ const file_graft_proto_rawDesc = "" +
 	"\n" +
 	"\vgraft.proto\x12\x05graft\"p\n" +
 	"\x0ePersistedState\x12 \n" +
-	"\vcurrentTerm\x18\x01 \x01(\x05R\vcurrentTerm\x12\x1a\n" +
+	"\vcurrentTerm\x18\x01 \x01(\x03R\vcurrentTerm\x12\x1a\n" +
 	"\bvotedFor\x18\x02 \x01(\tR\bvotedFor\x12 \n" +
-	"\vcommitIndex\x18\x03 \x01(\x05R\vcommitIndex\"F\n" +
+	"\vcommitIndex\x18\x03 \x01(\x03R\vcommitIndex\"F\n" +
 	"\x06Record\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\rR\x04type\x12\x14\n" +
 	"\x05crc32\x18\x03 \x01(\rR\x05crc32\x12\x12\n" +
@@ -233,10 +233,10 @@ const file_graft_proto_rawDesc = "" +
 	"\x10WalSegmentHeader\x12\x14\n" +
 	"\x05magic\x18\x01 \x01(\x04R\x05magic\x12\x18\n" +
 	"\aversion\x18\x02 \x01(\x05R\aversion\x12\x14\n" +
-	"\x05flags\x18\x03 \x01(\x05R\x05flags\x12$\n" +
+	"\x05flags\x18\x03 \x01(\rR\x05flags\x12$\n" +
 	"\rsegmentNumber\x18\x04 \x01(\x05R\rsegmentNumber\x12\x1e\n" +
 	"\n" +
-	"firstIndex\x18\x05 \x01(\x05R\n" +
+	"firstIndex\x18\x05 \x01(\x03R\n" +
 	"firstIndexB!Z\x1fgithub.com/mizosoft/graft/pb;pbb\x06proto3"
 
 var (
