@@ -113,6 +113,8 @@ func New(config Config) (*Graft, error) {
 			currentTerm: state.CurrentTerm,
 			votedFor:    state.VotedFor,
 			commitIndex: state.CommitIndex,
+			nextIndex:   make(map[string]int64),
+			matchIndex:  make(map[string]int64),
 			lastApplied: -1,
 		},
 		id:      config.Id,
@@ -259,8 +261,6 @@ func (g *Graft) triggerHeartbeat() {
 func (g *Graft) unguardedTransitionToLeader() {
 	g.log("Transitioning to Leader, state=%v", g)
 	g.state = Leader
-	g.nextIndex = make(map[string]int64)
-	g.matchIndex = make(map[string]int64)
 	for id := range g.cluster.peers {
 		lastIndex, _ := g.Persistence.LastLogIndexAndTerm()
 		g.nextIndex[id] = lastIndex + 1
@@ -292,19 +292,18 @@ func (g *Graft) unguardedTransitionToFollower(term int64) {
 
 // TODO will it be of practical benefit to send log entries in batches if there are many?
 func (g *Graft) unguardedBroadcast() {
-	me := g.id
 	witnessTerm := g.currentTerm
-	commitIndex := g.commitIndex
 	for _, p := range g.cluster.peers {
 		go func(peer *peer) {
 			if client, cerr := peer.client(); cerr != nil {
 				g.log("Error connecting to peer %s: %v", peer.id, cerr)
 			} else {
 				for {
+					var commitIndex int64
+					var nextIndex int64
 					var prevLogIndex int64
 					var prevLogTerm int64
 					var entries []*pb.LogEntry
-					var newNextIndex int64
 					broadcast := func() bool {
 						g.mut.Lock()
 						defer g.mut.Unlock()
@@ -313,26 +312,28 @@ func (g *Graft) unguardedBroadcast() {
 							return false
 						}
 
-						nextIndex := g.nextIndex[peer.id]
+						commitIndex = g.commitIndex
+						nextIndex = g.nextIndex[peer.id]
 						prevLogIndex = nextIndex - 1
-						if prevLogIndex >= 0 {
+						firstIndex, _ := g.Persistence.FirstLogIndexAndTerm()
+						if prevLogIndex >= firstIndex && firstIndex >= 0 {
 							if term, err := g.Persistence.GetEntryTerm(prevLogIndex); err != nil {
 								g.fatal(err)
 							} else {
 								prevLogTerm = term
 							}
 						} else {
+							// TODO we'll want to check the snapshot here when we implement snapshotting
+							prevLogIndex = -1
 							prevLogTerm = -1
 						}
 
 						lastIndex, _ := g.Persistence.LastLogIndexAndTerm()
-						fmt.Printf("here: %d - %d\n", nextIndex, lastIndex)
-						if nextIndex > 0 && nextIndex <= lastIndex {
+						if nextIndex <= lastIndex && nextIndex >= 0 {
 							if es, err := g.Persistence.GetEntriesFrom(nextIndex); err != nil {
 								g.fatal(err)
 							} else {
 								entries = es
-								newNextIndex = nextIndex + int64(len(entries))
 							}
 						}
 						return true
@@ -345,7 +346,7 @@ func (g *Graft) unguardedBroadcast() {
 					retry := func() bool {
 						request := &pb.AppendEntriesRequest{
 							Term:              witnessTerm,
-							LeaderId:          me,
+							LeaderId:          g.id,
 							PrevLogIndex:      prevLogIndex,
 							PrevLogTerm:       prevLogTerm,
 							Entries:           entries,
@@ -358,7 +359,7 @@ func (g *Graft) unguardedBroadcast() {
 							g.mut.Lock()
 							defer g.mut.Unlock()
 
-							g.log("AppendEntries(%v) to %s got {%v}, state=%v", request, peer.id, res, g)
+							g.log("AppendEntries(%v) to %s got {%v}, state=%v, retry=%t", request, peer.id, res, g)
 
 							if res.Term > g.currentTerm {
 								g.unguardedTransitionToFollower(res.Term)
@@ -366,8 +367,8 @@ func (g *Graft) unguardedBroadcast() {
 							} else if witnessTerm != g.currentTerm {
 								return false
 							} else if res.Success {
-								g.nextIndex[peer.id] = newNextIndex
-								g.matchIndex[peer.id] = newNextIndex - 1
+								g.nextIndex[peer.id] = nextIndex + int64(len(entries))
+								g.matchIndex[peer.id] = g.nextIndex[peer.id] - 1
 								g.unguardedFlushCommittedEntries()
 								return false
 							} else {
@@ -388,7 +389,8 @@ func (g *Graft) unguardedBroadcast() {
 
 func (g *Graft) unguardedFlushCommittedEntries() {
 	newCommitIndex := g.commitIndex
-	for i := max(0, g.commitIndex); i < g.Persistence.EntryCount(); i++ {
+	lastIndex, _ := g.Persistence.LastLogIndexAndTerm()
+	for i := g.commitIndex + 1; i <= lastIndex; i++ { // Note that commitIndex is initialized to -1 initially.
 		// We must only commit entries from current term. See paper section 5.4.2.
 		term, err := g.Persistence.GetEntryTerm(i)
 		if err != nil {
@@ -474,6 +476,8 @@ func (g *Graft) requestVote(ctx context.Context, request *pb.RequestVoteRequest)
 
 func (g *Graft) unguardedIsCandidateLogUpToDate(request *pb.RequestVoteRequest) bool {
 	myLastLogIndex, myLastLogTerm := g.Persistence.LastLogIndexAndTerm()
+
+	// Note that this comparison works with the -1 sentinel values.
 	return myLastLogTerm < request.LastLogTerm ||
 		(myLastLogTerm == request.LastLogTerm && myLastLogIndex <= request.LastLogIndex)
 }
@@ -484,16 +488,15 @@ func (g *Graft) appendEntries(ctx context.Context, request *pb.AppendEntriesRequ
 
 	g.log("Received AppendEntries(%v), state=%v", request, g)
 
-	term := request.Term
-	if term < g.currentTerm {
+	if request.Term < g.currentTerm {
 		return &pb.AppendEntriesResponse{
 			Term:    g.currentTerm,
 			Success: false,
 		}, nil
 	}
 
-	if term > g.currentTerm {
-		g.unguardedTransitionToFollower(term)
+	if request.Term > g.currentTerm {
+		g.unguardedTransitionToFollower(request.Term)
 	} else {
 		g.electionTimer.reset()
 	}
@@ -503,27 +506,29 @@ func (g *Graft) appendEntries(ctx context.Context, request *pb.AppendEntriesRequ
 		g.leaderId = request.LeaderId
 	}
 
-	if request.PrevLogIndex >= g.Persistence.EntryCount() {
+	lastIndex, _ := g.Persistence.LastLogIndexAndTerm()
+	if request.PrevLogIndex > lastIndex {
 		return &pb.AppendEntriesResponse{
-			Term:    term,
+			Term:    request.Term,
 			Success: false,
 		}, nil
 	}
 
-	if request.PrevLogTerm >= 0 {
+	firstIndex, _ := g.Persistence.FirstLogIndexAndTerm()
+	if request.PrevLogIndex >= firstIndex && firstIndex >= 0 {
 		myPrevLogTerm, err := g.Persistence.GetEntryTerm(request.PrevLogIndex)
 		if err != nil {
 			return nil, err
 		}
 		if request.PrevLogTerm != myPrevLogTerm {
 			return &pb.AppendEntriesResponse{
-				Term:    term,
+				Term:    request.Term,
 				Success: false,
 			}, nil
 		}
 	}
 
-	if request.PrevLogIndex >= 0 && request.PrevLogIndex < g.Persistence.EntryCount()-1 {
+	if request.PrevLogIndex+1 <= lastIndex {
 		if err := g.Persistence.TruncateEntriesFrom(request.PrevLogIndex + 1); err != nil {
 			return nil, err
 		}
@@ -533,12 +538,11 @@ func (g *Graft) appendEntries(ctx context.Context, request *pb.AppendEntriesRequ
 	if err != nil {
 		g.fatal(err)
 	}
-	lastIndex := nextIndex - 1
 	if request.LeaderCommitIndex > g.commitIndex {
-		g.commitIndex = min(request.LeaderCommitIndex, lastIndex)
+		g.commitIndex = min(request.LeaderCommitIndex, nextIndex-1)
 	}
 	return &pb.AppendEntriesResponse{
-		Term:    term,
+		Term:    request.Term,
 		Success: true,
 	}, nil
 }

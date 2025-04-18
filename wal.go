@@ -32,14 +32,14 @@ var (
 )
 
 type wal struct {
-	dir             string
-	softSegmentSize int64
-	segments        []*segment
-	tail            *segment
-	crcTable        *crc32.Table
-	closed          bool
-	lastState       *pb.PersistedState // Last-written state.
-	lastLogTerm     int64
+	dir                       string
+	softSegmentSize           int64
+	segments                  []*segment
+	tail                      *segment
+	crcTable                  *crc32.Table
+	closed                    bool
+	lastState                 *pb.PersistedState // Last-written state.
+	firstLogTerm, lastLogTerm int64
 }
 
 type segment struct {
@@ -453,6 +453,16 @@ func openWal(dir string, softSegmentSize int64) (*wal, error) {
 		w.lastLogTerm = -1
 	}
 
+	head, err := w.HeadEntry()
+	if err != nil {
+		return nil, err
+	}
+	if head != nil {
+		w.firstLogTerm = head.Term
+	} else {
+		w.firstLogTerm = -1
+	}
+
 	if len(w.segments) > 0 {
 		w.tail = w.segments[len(w.segments)-1]
 	} else if err := w.appendSegment(); err != nil {
@@ -752,7 +762,23 @@ func (w *wal) TailEntry() (*pb.LogEntry, error) {
 	return nil, nil
 }
 
+func (w *wal) FirstLogIndexAndTerm() (int64, int64) {
+	if w.EntryCount() == 0 {
+		return -1, -1
+	}
+
+	// Node that this specific segment might not carry any entries but firstIndex carries over to first segment
+	// with entries.
+	return w.segments[0].firstIndex, w.firstLogTerm
+}
+
 func (w *wal) LastLogIndexAndTerm() (int64, int64) {
+	if w.EntryCount() == 0 {
+		return -1, -1
+	}
+
+	// Node that this specific segment might not carry any entries but nextIndex is carried over from last segment
+	// with entries.
 	return w.tail.nextIndex - 1, w.lastLogTerm
 }
 

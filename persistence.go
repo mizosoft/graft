@@ -45,6 +45,8 @@ type Persistence interface {
 
 	GetEntriesFrom(index int64) ([]*pb.LogEntry, error)
 
+	FirstLogIndexAndTerm() (int64, int64)
+
 	LastLogIndexAndTerm() (int64, int64)
 
 	Close() error
@@ -74,7 +76,7 @@ func (p *memoryPersistence) SetState(state *pb.PersistedState) error {
 
 func (p *memoryPersistence) Append(state *pb.PersistedState, entries []*pb.LogEntry) (int64, error) {
 	p.state = state
-	nextIndex := len(p.log) - 1
+	nextIndex := len(p.log)
 	for _, entry := range entries {
 		entry.Index = int64(nextIndex)
 		nextIndex++
@@ -133,6 +135,14 @@ func (p *memoryPersistence) TailEntry() (*pb.LogEntry, error) {
 		return nil, nil
 	}
 	return p.log[lastIndex], nil
+}
+
+func (p *memoryPersistence) FirstLogIndexAndTerm() (int64, int64) {
+	entry, _ := p.HeadEntry()
+	if entry == nil {
+		return -1, -1
+	}
+	return entry.Index, entry.Term
 }
 
 func (p *memoryPersistence) LastLogIndexAndTerm() (int64, int64) {

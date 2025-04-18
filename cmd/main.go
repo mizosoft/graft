@@ -52,8 +52,9 @@ func main() {
 		Addresses:                 addresses,
 		ElectionTimeoutLowMillis:  1500,
 		ElectionTimeoutHighMillis: 3000,
-		HeartbeatMillis:           500,
+		HeartbeatMillis:           1000,
 		Persistence:               wal,
+		//Persistence:               graft.MemoryPersistence(),
 		Committed: func(entries []graft.CommittedEntry) {
 			fmt.Printf("Committed: %v\n", entries)
 		},
