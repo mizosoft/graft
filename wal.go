@@ -108,13 +108,13 @@ func (s *segment) getEntryAtOffset(offsetIndex int) (*pb.LogEntry, error) {
 	return &entry, nil
 }
 
-func (s *segment) getEntriesFrom(index int64) ([]*pb.LogEntry, error) {
-	localIndex := int(index - s.firstIndex)
-	if localIndex < 0 || localIndex >= s.entryCount() {
+func (s *segment) getEntriesFrom(from int64) ([]*pb.LogEntry, error) {
+	localFrom := int(from - s.firstIndex)
+	if localFrom < 0 || localFrom >= s.entryCount() {
 		return []*pb.LogEntry{}, nil
 	}
 
-	reader := newBufferedReader(newReaderAt(s.f, s.entryOffsets[localIndex]))
+	reader := newBufferedReader(newReaderAt(s.f, s.entryOffsets[localFrom]))
 	for entries := []*pb.LogEntry{}; ; {
 		var recordLen int32
 		if err := binary.Read(reader, binary.BigEndian, &recordLen); err != nil {
@@ -143,6 +143,46 @@ func (s *segment) getEntriesFrom(index int64) ([]*pb.LogEntry, error) {
 		}
 		entries = append(entries, &entry)
 	}
+}
+
+func (s *segment) getEntriesTo(to int64) ([]*pb.LogEntry, error) {
+	localTo := int(to - s.firstIndex)
+	if localTo < 0 || localTo >= s.entryCount() {
+		return []*pb.LogEntry{}, nil
+	}
+
+	reader := newBufferedReader(newReaderAt(s.f, s.entryOffsets[0]))
+	var entries []*pb.LogEntry
+	for index := s.firstIndex; index <= to; {
+		var recordLen int32
+		if err := binary.Read(reader, binary.BigEndian, &recordLen); err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil, io.ErrUnexpectedEOF
+			}
+			return nil, err
+		}
+
+		recordBytes := make([]byte, recordLen)
+		if n, err := reader.Read(recordBytes); err != nil && n < len(recordBytes) {
+			return nil, err
+		}
+
+		record, err := s.w.decodeRecord(recordBytes)
+		if err != nil {
+			return nil, err
+		}
+		if record.Type != EntryType {
+			continue // Might have some non-entry records.
+		}
+
+		var entry pb.LogEntry
+		if err := proto.Unmarshal(record.Data, &entry); err != nil {
+			return nil, err
+		}
+		entries = append(entries, &entry)
+		index++
+	}
+	return entries, nil
 }
 
 func (s *segment) truncateEntriesFrom(index int64) error {
@@ -722,6 +762,54 @@ func (w *wal) GetEntryTerm(index int64) (int64, error) {
 		return -1, err
 	}
 	return entry.Term, nil
+}
+
+func (w *wal) GetEntries(from, to int64) ([]*pb.LogEntry, error) {
+	if from > to {
+		return nil, fmt.Errorf("from (%d) must be smaller than or equal to (%d)", from, to)
+	}
+
+	if from == to {
+		entry, err := w.GetEntry(from)
+		if err != nil {
+			return nil, err
+		}
+		return []*pb.LogEntry{entry}, nil
+	}
+
+	firstSegIndex, err := w.findSegment(from)
+	if err != nil {
+		return nil, err
+	}
+
+	lastSegIndex, err := w.findSegment(to)
+	if err != nil {
+		return nil, err
+	}
+
+	entries, err := w.segments[firstSegIndex].getEntriesFrom(from)
+	if err != nil {
+		return nil, err
+	}
+
+	if firstSegIndex == lastSegIndex {
+		return entries[0 : to-from+1], nil
+	} else {
+		for i := firstSegIndex + 1; i < lastSegIndex; i++ {
+			seg := w.segments[i]
+			middleEntries, err := seg.getEntriesFrom(seg.firstIndex)
+			if err != nil {
+				return nil, err
+			}
+			entries = append(entries, middleEntries...)
+		}
+
+		tailEntries, err := w.segments[lastSegIndex].getEntriesTo(to)
+		if err != nil {
+			return nil, err
+		}
+		return append(entries, tailEntries...), nil
+	}
 }
 
 func (w *wal) HeadEntry() (*pb.LogEntry, error) {

@@ -15,11 +15,7 @@ type periodicTimer struct {
 
 func (t *periodicTimer) start(trigger func()) {
 	go func() {
-		for {
-			_, ok := <-t.c
-			if !ok {
-				return
-			}
+		for range t.c {
 			trigger()
 		}
 	}()
@@ -31,6 +27,7 @@ func (t *periodicTimer) stop() {
 
 	if t.timer != nil {
 		t.timer.Stop()
+		t.timer = nil
 	}
 }
 
@@ -41,26 +38,20 @@ func (t *periodicTimer) reset() {
 	if t.timer != nil {
 		t.timer.Reset(t.duration())
 	} else {
-		t.timer = time.AfterFunc(
-			t.duration(),
-			func() {
-				t.mut.Lock()
-				defer t.mut.Unlock()
-
-				if t.timer != nil {
-					t.c <- struct{}{}
-				}
-			})
+		t.timer = time.AfterFunc(t.duration(), t.tick)
 	}
 }
 
 func (t *periodicTimer) poke() {
 	t.stop() // Invalidate schedule event (if any).
+	t.tick()
+}
 
-	// Avoid blocking caller.
-	go func() {
-		t.c <- struct{}{}
-	}()
+func (t *periodicTimer) tick() {
+	t.mut.Lock()
+	defer t.mut.Unlock()
+
+	t.c <- struct{}{}
 }
 
 func newTimer(duration time.Duration) *periodicTimer {

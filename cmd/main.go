@@ -54,9 +54,9 @@ func main() {
 		ElectionTimeoutHighMillis: 3000,
 		HeartbeatMillis:           1000,
 		Persistence:               wal,
-		//Persistence:               graft.MemoryPersistence(),
-		Committed: func(entries []graft.CommittedEntry) {
-			fmt.Printf("Committed: %v\n", entries)
+		Commit: func(commit graft.Commit) {
+			fmt.Printf("Commit: %v\n", commit.Entries)
+			commit.Applied()
 		},
 	}
 
@@ -66,7 +66,7 @@ func main() {
 	}
 
 	go func() {
-		gErr := g.Serve()
+		gErr := g.Start()
 		fmt.Println(gErr)
 	}()
 

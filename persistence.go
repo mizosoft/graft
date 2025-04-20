@@ -45,6 +45,8 @@ type Persistence interface {
 
 	GetEntriesFrom(index int64) ([]*pb.LogEntry, error)
 
+	GetEntries(from, to int64) ([]*pb.LogEntry, error)
+
 	FirstLogIndexAndTerm() (int64, int64)
 
 	LastLogIndexAndTerm() (int64, int64)
@@ -120,6 +122,20 @@ func (p *memoryPersistence) GetEntriesFrom(index int64) ([]*pb.LogEntry, error) 
 		return []*pb.LogEntry{}, indexOutOfRangeWithCount(index, p.EntryCount())
 	}
 	return p.log[index:], nil
+}
+
+func (p *memoryPersistence) GetEntries(from, to int64) ([]*pb.LogEntry, error) {
+	firstIndex, _ := p.FirstLogIndexAndTerm()
+	if from < firstIndex {
+		return []*pb.LogEntry{}, indexOutOfRange(firstIndex)
+	}
+
+	lastIndex, _ := p.LastLogIndexAndTerm()
+	if to > lastIndex {
+		return []*pb.LogEntry{}, indexOutOfRange(firstIndex)
+	}
+
+	return p.log[from:to], nil
 }
 
 func (p *memoryPersistence) HeadEntry() (*pb.LogEntry, error) {

@@ -59,10 +59,14 @@ type Graft struct {
 	heartbeatTimer *periodicTimer
 	server         server
 	mut            sync.Mutex
-	committedChan  chan []CommittedEntry
+	commitChan     chan Commit
+	appliedChan    chan int64
+	electionChan   chan int64
+	heartbeatChan  chan int64
+	broadcastChans map[string]chan struct{}
 
 	Persistence Persistence
-	Committed   func([]CommittedEntry)
+	Commit      func(Commit)
 }
 
 func (g *Graft) String() string {
@@ -79,10 +83,9 @@ func (g *Graft) fatal(err any) {
 	log.Fatalf("Graft%v encountered a fatal error: %v\n%s", g, err, debug.Stack())
 }
 
-type CommittedEntry struct {
-	Index   int64
-	Term    int64
-	Command []byte
+type Commit struct {
+	Entries []*pb.LogEntry
+	Applied func()
 }
 
 type Config struct {
@@ -92,19 +95,27 @@ type Config struct {
 	ElectionTimeoutHighMillis int
 	HeartbeatMillis           int
 	Persistence               Persistence
-	Committed                 func([]CommittedEntry)
+	Commit                    func(Commit)
 }
 
 func New(config Config) (*Graft, error) {
 	addresses := config.Addresses
 	myAddress := addresses[config.Id]
 	delete(addresses, config.Id)
+
 	state := config.Persistence.GetState()
 	if state == nil {
 		state = &pb.PersistedState{CurrentTerm: 0, VotedFor: "", CommitIndex: -1}
 	}
 	if config.Id == UnknownLeader {
 		return nil, fmt.Errorf("sever ID cannot be %s", UnknownLeader)
+	}
+
+	cluster := newCluster(addresses)
+
+	broadcastChans := make(map[string]chan struct{})
+	for peerId := range cluster.peers {
+		broadcastChans[peerId] = make(chan struct{}, 1) // We only need an additional (keep_broadcasting) signal.
 	}
 
 	return &Graft{
@@ -119,15 +130,19 @@ func New(config Config) (*Graft, error) {
 		},
 		id:      config.Id,
 		address: myAddress,
-		cluster: newCluster(addresses),
+		cluster: cluster,
 		electionTimer: newRandomizedTimer(
 			time.Duration(config.ElectionTimeoutLowMillis)*time.Millisecond,
 			time.Duration(config.ElectionTimeoutHighMillis)*time.Millisecond),
 		heartbeatTimer: newTimer(time.Duration(config.HeartbeatMillis) * time.Millisecond),
 		server:         server{},
-		committedChan:  make(chan []CommittedEntry, 1024), // Buffer the channel so that a slow client doesn't immediately block workflow.
-		Committed:      config.Committed,
+		commitChan:     make(chan Commit, 1024), // Buffer the channel so that a slow client doesn't immediately block workflow.
+		appliedChan:    make(chan int64),
+		electionChan:   make(chan int64),
+		heartbeatChan:  make(chan int64),
+		broadcastChans: broadcastChans,
 		Persistence:    config.Persistence,
+		Commit:         config.Commit,
 	}, nil
 }
 
@@ -136,7 +151,21 @@ type graftKey struct{}
 // TODO add some running & closed booleans.
 // TODO make read failures reacoverable, but write failures fatal.
 
-func (g *Graft) Serve() error {
+func (g *Graft) GetCurrentTerm() int64 {
+	g.mut.Lock()
+	defer g.mut.Unlock()
+	return g.currentTerm
+}
+
+func (g *Graft) GetLastEntryIndex() int64 {
+	g.mut.Lock()
+	defer g.mut.Unlock()
+
+	lastIndex, _ := g.Persistence.LastLogIndexAndTerm()
+	return lastIndex
+}
+
+func (g *Graft) Start() error {
 	listener, err := net.Listen("tcp", g.address)
 	if err != nil {
 		return err
@@ -151,18 +180,27 @@ func (g *Graft) Serve() error {
 			}))
 	pb.RegisterRaftServer(grpcServer, &g.server)
 
-	g.electionTimer.start(g.triggerElectionTimeout)
-	g.heartbeatTimer.start(g.triggerHeartbeat)
-	g.electionTimer.reset()
+	go g.appliedWorker()
+	go g.commitWorker()
+	go g.electionWorker()
+	go g.heartbeatWorker()
+	for _, peer := range g.cluster.peers {
+		go g.broadcastWorker(peer, g.broadcastChans[peer.id])
+	}
 
-	go func() {
-		for {
-			committed, ok := <-g.committedChan
-			if !ok {
-				return
-			}
-			g.Committed(committed)
-		}
+	g.electionTimer.start(func() {
+		g.electionChan <- g.GetCurrentTerm()
+	})
+	g.heartbeatTimer.start(func() {
+		g.heartbeatChan <- g.GetLastEntryIndex()
+	})
+
+	// Begin as follower.
+	func() {
+		g.mut.Lock()
+		defer g.mut.Unlock()
+
+		g.unguardedTransitionToFollower(g.currentTerm)
 	}()
 
 	errChan := make(chan error)
@@ -179,9 +217,39 @@ func (g *Graft) Close() {
 	// TODO how to close.
 }
 
-func (g *Graft) triggerElectionTimeout() {
+func (g *Graft) appliedWorker() {
+	for index := range g.appliedChan {
+		func() {
+			g.mut.Lock()
+			defer g.mut.Unlock()
+
+			if index > g.lastApplied {
+				g.lastApplied = index
+				g.log("Applied to: %v", g.lastApplied)
+			}
+		}()
+	}
+}
+
+func (g *Graft) commitWorker() {
+	for commit := range g.commitChan {
+		g.Commit(commit)
+	}
+}
+
+func (g *Graft) electionWorker() {
+	for timeoutTerm := range g.electionChan {
+		g.runElection(timeoutTerm)
+	}
+}
+
+func (g *Graft) runElection(timeoutTerm int64) {
 	g.mut.Lock()
 	defer g.mut.Unlock()
+
+	if timeoutTerm != g.currentTerm {
+		return // Outdated election.
+	}
 
 	if g.state == Leader {
 		// We might've already won an election for this term but couldn't stop the timer on time.
@@ -197,9 +265,9 @@ func (g *Graft) triggerElectionTimeout() {
 
 	// Request votes from peers.
 	voteCount := 1 // Vote for self.
-	electionTerm := g.currentTerm
-	for _, p := range g.cluster.peers {
-		go func(peer *peer) {
+	electionTerm := timeoutTerm + 1
+	for _, peer := range g.cluster.peers {
+		go func() {
 			if client, cerr := peer.client(); cerr != nil {
 				g.log("Error connecting to peer %s: %v", peer.id, cerr)
 			} else {
@@ -209,7 +277,7 @@ func (g *Graft) triggerElectionTimeout() {
 					g.mut.Lock()
 					defer g.mut.Unlock()
 
-					if electionTerm != g.currentTerm {
+					if g.currentTerm != electionTerm {
 						return false
 					}
 					lastLogIndex, lastLogTerm = g.Persistence.LastLogIndexAndTerm()
@@ -244,18 +312,113 @@ func (g *Graft) triggerElectionTimeout() {
 					}
 				}
 			}
-		}(p)
+		}()
 	}
 }
 
-func (g *Graft) triggerHeartbeat() {
+func (g *Graft) heartbeatWorker() {
+	for range g.heartbeatChan {
+		g.runHeartbeat()
+	}
+}
+
+func (g *Graft) runHeartbeat() {
 	g.mut.Lock()
 	defer g.mut.Unlock()
 
 	if g.state == Leader {
 		g.heartbeatTimer.reset()
-		g.unguardedBroadcast()
+		for _, c := range g.broadcastChans {
+			select {
+			case c <- struct{}{}:
+			default:
+				// Ignore; c has a capacity of 1 so a new AppendEntries is surely running in the future and that is all
+				// what we need to know.
+			}
+		}
 	}
+}
+
+// TODO will it be of practical benefit to send log entries in batches if there are many?
+func (g *Graft) broadcastWorker(peer *peer, broadcastChan chan struct{}) {
+	for range broadcastChan {
+	retry:
+		if req := g.appendEntriesRequestIfLeader(peer.id); req != nil {
+			if client, err := peer.client(); err != nil {
+				g.log("Error connecting to peer %s: %v", peer.id, err)
+			} else if res, err := client.AppendEntries(context.Background(), req); err != nil {
+				g.log("AppendEntries to %s failed: %v", peer.id, err)
+			} else {
+				doRetry := func() bool {
+					g.mut.Lock()
+					defer g.mut.Unlock()
+
+					g.log("AppendEntries(%v) to %s got {%v}, state=%v", req, peer.id, res, g)
+
+					if g.state != Leader {
+						return false
+					}
+
+					if res.Term > g.currentTerm {
+						g.unguardedTransitionToFollower(res.Term)
+						return false
+					} else if res.Success {
+						if len(req.Entries) > 0 {
+							g.nextIndex[peer.id] = req.Entries[len(req.Entries)-1].Index + 1
+							g.matchIndex[peer.id] = g.nextIndex[peer.id] - 1
+							g.unguardedFlushCommittedEntries()
+						}
+						return false
+					} else {
+						g.nextIndex[peer.id]--
+						return true
+					}
+				}()
+
+				if doRetry {
+					goto retry
+				}
+			}
+		}
+	}
+}
+
+func (g *Graft) appendEntriesRequestIfLeader(peerId string) *pb.AppendEntriesRequest {
+	g.mut.Lock()
+	defer g.mut.Unlock()
+
+	if g.state != Leader {
+		return nil
+	}
+
+	request := &pb.AppendEntriesRequest{
+		Term:              g.currentTerm,
+		LeaderId:          g.id,
+		LeaderCommitIndex: g.commitIndex,
+	}
+
+	nextIndex := g.nextIndex[peerId]
+	prevLogIndex := nextIndex - 1
+	firstIndex, _ := g.Persistence.FirstLogIndexAndTerm()
+	if prevLogIndex >= firstIndex && firstIndex >= 0 {
+		term, err := g.Persistence.GetEntryTerm(prevLogIndex)
+		if err != nil {
+			g.fatal(err)
+		}
+		request.PrevLogIndex, request.PrevLogTerm = prevLogIndex, term
+	} else {
+		request.PrevLogIndex, request.PrevLogTerm = -1, -1
+	}
+
+	lastIndex, _ := g.Persistence.LastLogIndexAndTerm()
+	if nextIndex <= lastIndex && nextIndex >= 0 {
+		entries, err := g.Persistence.GetEntriesFrom(nextIndex)
+		if err != nil {
+			g.fatal(err)
+		}
+		request.Entries = entries
+	}
+	return request
 }
 
 func (g *Graft) unguardedTransitionToLeader() {
@@ -290,112 +453,16 @@ func (g *Graft) unguardedTransitionToFollower(term int64) {
 	g.heartbeatTimer.stop() // If we were a leader.
 }
 
-// TODO will it be of practical benefit to send log entries in batches if there are many?
-func (g *Graft) unguardedBroadcast() {
-	witnessTerm := g.currentTerm
-	for _, p := range g.cluster.peers {
-		go func(peer *peer) {
-			if client, cerr := peer.client(); cerr != nil {
-				g.log("Error connecting to peer %s: %v", peer.id, cerr)
-			} else {
-				for {
-					var commitIndex int64
-					var nextIndex int64
-					var prevLogIndex int64
-					var prevLogTerm int64
-					var entries []*pb.LogEntry
-					broadcast := func() bool {
-						g.mut.Lock()
-						defer g.mut.Unlock()
-
-						if witnessTerm != g.currentTerm {
-							return false
-						}
-
-						commitIndex = g.commitIndex
-						nextIndex = g.nextIndex[peer.id]
-						prevLogIndex = nextIndex - 1
-						firstIndex, _ := g.Persistence.FirstLogIndexAndTerm()
-						if prevLogIndex >= firstIndex && firstIndex >= 0 {
-							if term, err := g.Persistence.GetEntryTerm(prevLogIndex); err != nil {
-								g.fatal(err)
-							} else {
-								prevLogTerm = term
-							}
-						} else {
-							// TODO we'll want to check the snapshot here when we implement snapshotting
-							prevLogIndex = -1
-							prevLogTerm = -1
-						}
-
-						lastIndex, _ := g.Persistence.LastLogIndexAndTerm()
-						if nextIndex <= lastIndex && nextIndex >= 0 {
-							if es, err := g.Persistence.GetEntriesFrom(nextIndex); err != nil {
-								g.fatal(err)
-							} else {
-								entries = es
-							}
-						}
-						return true
-					}()
-
-					if !broadcast {
-						return
-					}
-
-					retry := func() bool {
-						request := &pb.AppendEntriesRequest{
-							Term:              witnessTerm,
-							LeaderId:          g.id,
-							PrevLogIndex:      prevLogIndex,
-							PrevLogTerm:       prevLogTerm,
-							Entries:           entries,
-							LeaderCommitIndex: commitIndex,
-						}
-						if res, rerr := client.AppendEntries(context.Background(), request); rerr != nil {
-							g.log("AppendEntries to %s failed: %v", peer.id, rerr)
-							return false
-						} else {
-							g.mut.Lock()
-							defer g.mut.Unlock()
-
-							g.log("AppendEntries(%v) to %s got {%v}, state=%v, retry=%t", request, peer.id, res, g)
-
-							if res.Term > g.currentTerm {
-								g.unguardedTransitionToFollower(res.Term)
-								return false
-							} else if witnessTerm != g.currentTerm {
-								return false
-							} else if res.Success {
-								g.nextIndex[peer.id] = nextIndex + int64(len(entries))
-								g.matchIndex[peer.id] = g.nextIndex[peer.id] - 1
-								g.unguardedFlushCommittedEntries()
-								return false
-							} else {
-								g.nextIndex[peer.id]--
-								return true
-							}
-						}
-					}()
-
-					if !retry {
-						break
-					}
-				}
-			}
-		}(p)
-	}
-}
-
 func (g *Graft) unguardedFlushCommittedEntries() {
 	newCommitIndex := g.commitIndex
 	lastIndex, _ := g.Persistence.LastLogIndexAndTerm()
 	for i := g.commitIndex + 1; i <= lastIndex; i++ { // Note that commitIndex is initialized to -1 initially.
-		// We must only commit entries from current term. See paper section 5.4.2.
 		term, err := g.Persistence.GetEntryTerm(i)
 		if err != nil {
 			g.fatal(err)
 		}
+
+		// We must only commit entries from current term. See paper section 5.4.2.
 		if term == g.currentTerm {
 			matchCount := 1 // Count self.
 			for peerId := range g.cluster.peers {
@@ -412,21 +479,18 @@ func (g *Graft) unguardedFlushCommittedEntries() {
 	}
 
 	if g.commitIndex != newCommitIndex {
-		var committedEntries []CommittedEntry
-		for i := g.commitIndex + 1; i <= newCommitIndex; i++ {
-			entry, err := g.Persistence.GetEntry(i)
-			if err != nil {
-				g.fatal(err)
-			}
-			committedEntries = append(committedEntries, CommittedEntry{
-				Index:   i,
-				Term:    entry.Term,
-				Command: entry.Command,
-			})
+		entries, err := g.Persistence.GetEntries(g.commitIndex, newCommitIndex)
+		if err != nil {
+			g.fatal(err)
 		}
 		g.commitIndex = newCommitIndex
 		g.heartbeatTimer.poke() // Broadcast new commitIndex.
-		g.committedChan <- committedEntries
+		g.commitChan <- Commit{
+			Entries: entries,
+			Applied: func() {
+				g.appliedChan <- newCommitIndex
+			},
+		}
 	}
 }
 
@@ -539,6 +603,7 @@ func (g *Graft) appendEntries(ctx context.Context, request *pb.AppendEntriesRequ
 		g.fatal(err)
 	}
 	if request.LeaderCommitIndex > g.commitIndex {
+		// TODO send Commit event
 		g.commitIndex = min(request.LeaderCommitIndex, nextIndex-1)
 	}
 	return &pb.AppendEntriesResponse{
@@ -556,7 +621,7 @@ func (e NotLeaderError) Error() string {
 	return fmt.Sprintf("we (%s) are not the leader, ask (%s)", e.Id, e.LeaderId)
 }
 
-func (g *Graft) Append(cmds [][]byte) ([]*pb.LogEntry, error) {
+func (g *Graft) Append(commands [][]byte) ([]*pb.LogEntry, error) {
 	g.mut.Lock()
 	defer g.mut.Unlock()
 
@@ -564,11 +629,11 @@ func (g *Graft) Append(cmds [][]byte) ([]*pb.LogEntry, error) {
 		return nil, NotLeaderError{Id: g.id, LeaderId: g.leaderId}
 	}
 
-	if len(cmds) == 0 {
+	if len(commands) == 0 {
 		return []*pb.LogEntry{}, nil
 	}
 
-	entries, err := g.Persistence.AppendCommands(g.unguardedCapturePersistedState(), cmds)
+	entries, err := g.Persistence.AppendCommands(g.unguardedCapturePersistedState(), commands)
 	if err != nil {
 		return nil, err
 	}

@@ -23,3 +23,8 @@ message WalSegmentHeader {
   int32 segmentNumber = 4;
   int64 firstIndex = 5;
 }
+
+message SnapshotMetadata {
+  int64 lastAppliedIndex = 1;
+  int64 lastAppliedTerm = 2;
+}

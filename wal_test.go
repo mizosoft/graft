@@ -1,6 +1,7 @@
 package graft
 
 import (
+	"fmt"
 	"os"
 	"path"
 	"path/filepath"
@@ -825,5 +826,84 @@ func TestWalAppendCommands(t *testing.T) {
 	for i, entry := range entries {
 		assert.Equal(t, entry.Term, state.CurrentTerm)
 		assert.Equal(t, string(entry.Command), string(commands[i]))
+	}
+}
+
+func TestWalGetEntriesFromTo(t *testing.T) {
+	dir := t.TempDir()
+	w, err := openWal(dir, 128)
+	assert.NilError(t, err)
+	defer w.Close()
+
+	entryCount := 40
+	var entries []*pb.LogEntry
+	for range entryCount / 2 {
+		term := int64(len(entries))
+		entries = append(entries, &pb.LogEntry{
+			Term:    term,
+			Command: []byte(fmt.Sprintf("entry data %d that is long enough to force segment creation", term)),
+		})
+	}
+
+	checkEntries := func(retrieved []*pb.LogEntry, expected []*pb.LogEntry) {
+		assert.Equal(t, len(retrieved), len(expected))
+		for j, entry := range expected {
+			assert.Assert(t, proto.Equal(retrieved[j], entry), retrieved[j].String(), entry.String())
+		}
+	}
+
+	for i := range entries {
+		state := &pb.PersistedState{CurrentTerm: int64(i), VotedFor: "s1"}
+		nextIndex, err := w.Append(state, []*pb.LogEntry{entries[i]})
+		assert.NilError(t, err)
+		assert.Equal(t, nextIndex, int64(i+1))
+
+		retrieved, err := w.GetEntries(0, int64(i))
+		assert.NilError(t, err)
+		checkEntries(retrieved, entries[:i+1])
+	}
+
+	// Put a bunch of states to make segments with not entries.
+	segCount := len(w.segments)
+	_, lastTerm := w.LastLogIndexAndTerm()
+	for segCount == len(w.segments) {
+		err := w.SetState(&pb.PersistedState{CurrentTerm: lastTerm, VotedFor: "s1"})
+		assert.NilError(t, err)
+		lastTerm++
+	}
+
+	for range entryCount / 2 {
+		term := int64(len(entries))
+		entries = append(entries, &pb.LogEntry{
+			Term:    term,
+			Command: []byte(fmt.Sprintf("entry data %d that is long enough to force segment creation", term)),
+		})
+	}
+
+	for i := entryCount / 2; i < entryCount; i++ {
+		state := &pb.PersistedState{CurrentTerm: int64(i), VotedFor: "s1"}
+		nextIndex, err := w.Append(state, []*pb.LogEntry{entries[i]})
+		assert.NilError(t, err)
+		assert.Equal(t, nextIndex, int64(i+1))
+
+		retrieved, err := w.GetEntries(0, int64(i))
+		assert.NilError(t, err)
+		checkEntries(retrieved, entries[:i+1])
+	}
+
+	lastIndex, _ := w.LastLogIndexAndTerm()
+	for i := range entries {
+		retrieved, err := w.GetEntries(int64(i), lastIndex)
+		assert.NilError(t, err)
+		checkEntries(retrieved, entries[i:])
+	}
+
+	// Try all valid index sequences.
+	for i := 0; i < entryCount; i++ {
+		for j := i; j < entryCount; j++ {
+			retrieved, err := w.GetEntries(int64(i), int64(j))
+			assert.NilError(t, err)
+			checkEntries(retrieved, entries[i:j+1])
+		}
 	}
 }
