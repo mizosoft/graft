@@ -2,6 +2,7 @@ package graft
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -21,6 +22,10 @@ const (
 	Follower state = iota
 	Candidate
 	Leader
+)
+
+var (
+	errNotLeader = errors.New("not leader")
 )
 
 func (s state) String() string {
@@ -50,6 +55,8 @@ type raftState struct {
 }
 
 type Graft struct {
+	_ uncopyable
+
 	raftState
 	address        string
 	id             string
@@ -83,9 +90,32 @@ func (g *Graft) fatal(err any) {
 	log.Fatalf("Graft%v encountered a fatal error: %v\n%s", g, err, debug.Stack())
 }
 
-type Commit struct {
-	Entries []*pb.LogEntry
-	Applied func()
+type Commit interface {
+	Entries() []*pb.LogEntry
+
+	Applied(snapshotData []byte) error
+}
+
+type commit struct {
+	g       *Graft
+	entries []*pb.LogEntry
+}
+
+func (c *commit) Entries() []*pb.LogEntry {
+	return c.entries
+}
+
+func (c *commit) Applied(snapshotData []byte) error {
+	lastEntry := c.entries[len(c.entries)-1]
+
+	var snapshot Snapshot
+	if snapshotData != nil {
+		snapshot = NewSnapshot(&pb.SnapshotMetadata{
+			LastAppliedIndex: lastEntry.Index,
+			LastAppliedTerm:  lastEntry.Term,
+		}, snapshotData)
+	}
+	return c.g.applied(lastEntry.Index, snapshot)
 }
 
 type Config struct {
@@ -103,7 +133,7 @@ func New(config Config) (*Graft, error) {
 	myAddress := addresses[config.Id]
 	delete(addresses, config.Id)
 
-	state := config.Persistence.GetState()
+	state := config.Persistence.RetrieveState()
 	if state == nil {
 		state = &pb.PersistedState{CurrentTerm: 0, VotedFor: "", CommitIndex: -1}
 	}
@@ -180,7 +210,6 @@ func (g *Graft) Start() error {
 			}))
 	pb.RegisterRaftServer(grpcServer, &g.server)
 
-	go g.appliedWorker()
 	go g.commitWorker()
 	go g.electionWorker()
 	go g.heartbeatWorker()
@@ -215,20 +244,6 @@ func (g *Graft) Start() error {
 
 func (g *Graft) Close() {
 	// TODO how to close.
-}
-
-func (g *Graft) appliedWorker() {
-	for index := range g.appliedChan {
-		func() {
-			g.mut.Lock()
-			defer g.mut.Unlock()
-
-			if index > g.lastApplied {
-				g.lastApplied = index
-				g.log("Applied to: %v", g.lastApplied)
-			}
-		}()
-	}
 }
 
 func (g *Graft) commitWorker() {
@@ -332,7 +347,7 @@ func (g *Graft) runHeartbeat() {
 			select {
 			case c <- struct{}{}:
 			default:
-				// Ignore; c has a capacity of 1 so a new AppendEntries is surely running in the future and that is all
+				// Ignore: c has a capacity of 1 so a new AppendEntries is surely running in the future and that is all
 				// what we need to know.
 			}
 		}
@@ -484,13 +499,11 @@ func (g *Graft) unguardedFlushCommittedEntries() {
 			g.fatal(err)
 		}
 		g.commitIndex = newCommitIndex
-		g.heartbeatTimer.poke() // Broadcast new commitIndex.
-		g.commitChan <- Commit{
-			Entries: entries,
-			Applied: func() {
-				g.appliedChan <- newCommitIndex
-			},
+		g.commitChan <- &commit{
+			g:       g,
+			entries: cloneMsgs(entries),
 		}
+		g.heartbeatTimer.poke() // Broadcast new commitIndex.
 	}
 }
 
@@ -529,7 +542,7 @@ func (g *Graft) requestVote(ctx context.Context, request *pb.RequestVoteRequest)
 		}
 	}
 
-	if err := g.Persistence.SetState(g.unguardedCapturePersistedState()); err != nil {
+	if err := g.Persistence.SaveState(g.unguardedCapturePersistedState()); err != nil {
 		return nil, err
 	}
 	return &pb.RequestVoteResponse{
@@ -603,8 +616,19 @@ func (g *Graft) appendEntries(ctx context.Context, request *pb.AppendEntriesRequ
 		g.fatal(err)
 	}
 	if request.LeaderCommitIndex > g.commitIndex {
-		// TODO send Commit event
-		g.commitIndex = min(request.LeaderCommitIndex, nextIndex-1)
+		newCommitIndex := min(request.LeaderCommitIndex, nextIndex-1)
+		if g.commitIndex != newCommitIndex {
+			entries, err := g.Persistence.GetEntries(g.commitIndex, newCommitIndex)
+			if err != nil {
+				g.log("Failed to get entries for committing: %v", err)
+			} else {
+				g.commitIndex = newCommitIndex
+				g.commitChan <- &commit{
+					g:       g,
+					entries: cloneMsgs(entries),
+				}
+			}
+		}
 	}
 	return &pb.AppendEntriesResponse{
 		Term:    request.Term,
@@ -612,31 +636,38 @@ func (g *Graft) appendEntries(ctx context.Context, request *pb.AppendEntriesRequ
 	}, nil
 }
 
-type NotLeaderError struct {
-	Id       string
-	LeaderId string
-}
-
-func (e NotLeaderError) Error() string {
-	return fmt.Sprintf("we (%s) are not the leader, ask (%s)", e.Id, e.LeaderId)
-}
-
-func (g *Graft) Append(commands [][]byte) ([]*pb.LogEntry, error) {
+func (g *Graft) Append(commands [][]byte) (int64, error) {
 	g.mut.Lock()
 	defer g.mut.Unlock()
 
 	if g.state != Leader {
-		return nil, NotLeaderError{Id: g.id, LeaderId: g.leaderId}
+		return -1, errNotLeader
 	}
 
 	if len(commands) == 0 {
-		return []*pb.LogEntry{}, nil
+		lastIndex, _ := g.Persistence.LastLogIndexAndTerm()
+		return lastIndex, nil
 	}
 
 	entries, err := g.Persistence.AppendCommands(g.unguardedCapturePersistedState(), commands)
 	if err != nil {
-		return nil, err
+		return -1, err
 	}
 	g.heartbeatTimer.poke() // Broadcast new entries.
-	return entries, err
+	return entries[len(entries)-1].Index, err
+}
+
+func (g *Graft) applied(lastIndex int64, snapshot Snapshot) error {
+	g.mut.Lock()
+	defer g.mut.Unlock()
+
+	if lastIndex > g.lastApplied {
+		g.log("Applied %d with snapshot %v", lastIndex, snapshot)
+
+		g.lastApplied = lastIndex
+		if snapshot != nil {
+			return g.Persistence.SaveSnapshot(snapshot)
+		}
+	}
+	return nil
 }

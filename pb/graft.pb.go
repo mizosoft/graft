@@ -217,6 +217,58 @@ func (x *WalSegmentHeader) GetFirstIndex() int64 {
 	return 0
 }
 
+type SnapshotMetadata struct {
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	LastAppliedIndex int64                  `protobuf:"varint,1,opt,name=lastAppliedIndex,proto3" json:"lastAppliedIndex,omitempty"`
+	LastAppliedTerm  int64                  `protobuf:"varint,2,opt,name=lastAppliedTerm,proto3" json:"lastAppliedTerm,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *SnapshotMetadata) Reset() {
+	*x = SnapshotMetadata{}
+	mi := &file_graft_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SnapshotMetadata) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SnapshotMetadata) ProtoMessage() {}
+
+func (x *SnapshotMetadata) ProtoReflect() protoreflect.Message {
+	mi := &file_graft_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SnapshotMetadata.ProtoReflect.Descriptor instead.
+func (*SnapshotMetadata) Descriptor() ([]byte, []int) {
+	return file_graft_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *SnapshotMetadata) GetLastAppliedIndex() int64 {
+	if x != nil {
+		return x.LastAppliedIndex
+	}
+	return 0
+}
+
+func (x *SnapshotMetadata) GetLastAppliedTerm() int64 {
+	if x != nil {
+		return x.LastAppliedTerm
+	}
+	return 0
+}
+
 var File_graft_proto protoreflect.FileDescriptor
 
 const file_graft_proto_rawDesc = "" +
@@ -237,7 +289,10 @@ const file_graft_proto_rawDesc = "" +
 	"\rsegmentNumber\x18\x04 \x01(\x05R\rsegmentNumber\x12\x1e\n" +
 	"\n" +
 	"firstIndex\x18\x05 \x01(\x03R\n" +
-	"firstIndexB!Z\x1fgithub.com/mizosoft/graft/pb;pbb\x06proto3"
+	"firstIndex\"h\n" +
+	"\x10SnapshotMetadata\x12*\n" +
+	"\x10lastAppliedIndex\x18\x01 \x01(\x03R\x10lastAppliedIndex\x12(\n" +
+	"\x0flastAppliedTerm\x18\x02 \x01(\x03R\x0flastAppliedTermB!Z\x1fgithub.com/mizosoft/graft/pb;pbb\x06proto3"
 
 var (
 	file_graft_proto_rawDescOnce sync.Once
@@ -251,11 +306,12 @@ func file_graft_proto_rawDescGZIP() []byte {
 	return file_graft_proto_rawDescData
 }
 
-var file_graft_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
+var file_graft_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
 var file_graft_proto_goTypes = []any{
 	(*PersistedState)(nil),   // 0: graft.PersistedState
 	(*Record)(nil),           // 1: graft.Record
 	(*WalSegmentHeader)(nil), // 2: graft.WalSegmentHeader
+	(*SnapshotMetadata)(nil), // 3: graft.SnapshotMetadata
 }
 var file_graft_proto_depIdxs = []int32{
 	0, // [0:0] is the sub-list for method output_type
@@ -276,7 +332,7 @@ func file_graft_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_graft_proto_rawDesc), len(file_graft_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   3,
+			NumMessages:   4,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

@@ -17,9 +17,10 @@ import (
 )
 
 const (
-	StateType = iota
-	EntryType
-	HeaderType
+	headerRecordType = iota
+	stateRecordType
+	entryRecordType
+	snapshotMetadataRecordType
 )
 
 const (
@@ -38,7 +39,8 @@ type wal struct {
 	tail                      *segment
 	crcTable                  *crc32.Table
 	closed                    bool
-	lastState                 *pb.PersistedState // Last-written state.
+	lastState                 *pb.PersistedState
+	lastSnapshot              *pb.SnapshotMetadata // TODO we might want to make sure this is appended on truncation.
 	firstLogTerm, lastLogTerm int64
 }
 
@@ -46,10 +48,33 @@ type segment struct {
 	w                     *wal
 	number                int
 	firstIndex, nextIndex int64 // First & next entry indices.
-	fname                 string
+	fpath                 string
 	f                     *os.File
 	entryOffsets          []int64
 	lastOffset            int64
+}
+
+func segFileName(number int, firstIndex int64) string {
+	return fmt.Sprintf("log_%d_%d.dat", number, firstIndex)
+}
+
+func snapFileName(metadata *pb.SnapshotMetadata) string {
+	return fmt.Sprintf("snap_%d_%d.dat", metadata.LastAppliedIndex, metadata.LastAppliedTerm)
+}
+
+func appendRecord(f *os.File, record *pb.Record) (int, error) {
+	recordBytes := protoMarshal(record)
+	byteCount := 4 + len(recordBytes)
+	chunk := make([]byte, byteCount)
+	binary.BigEndian.PutUint32(chunk, uint32(len(recordBytes)))
+	copy(chunk[4:], recordBytes)
+	if _, err := f.Write(chunk); err != nil {
+		return 0, err
+	}
+	if err := f.Sync(); err != nil {
+		return 0, err
+	}
+	return byteCount, nil
 }
 
 func (s *segment) entryCount() int {
@@ -97,7 +122,7 @@ func (s *segment) getEntryAtOffset(offsetIndex int) (*pb.LogEntry, error) {
 	if err != nil {
 		return nil, err
 	}
-	if record.Type != EntryType {
+	if record.Type != entryRecordType {
 		panic(fmt.Errorf("unexpected record type when expecting an entry: %d", record.Type))
 	}
 
@@ -133,7 +158,7 @@ func (s *segment) getEntriesFrom(from int64) ([]*pb.LogEntry, error) {
 		if err != nil {
 			return nil, err
 		}
-		if record.Type != EntryType {
+		if record.Type != entryRecordType {
 			continue // Might have some non-entry records.
 		}
 
@@ -171,7 +196,7 @@ func (s *segment) getEntriesTo(to int64) ([]*pb.LogEntry, error) {
 		if err != nil {
 			return nil, err
 		}
-		if record.Type != EntryType {
+		if record.Type != entryRecordType {
 			continue // Might have some non-entry records.
 		}
 
@@ -203,49 +228,118 @@ func (s *segment) truncateEntriesFrom(index int64) error {
 	s.entryOffsets = s.entryOffsets[:localIndex]
 	s.lastOffset = offset
 
-	// Re-append the latest state after truncation.
-	if s.w.lastState != nil {
-		if err := s.appendState(s.w.lastState); err != nil {
-			return err
-		}
-	} else if err := s.f.Sync(); err != nil {
+	if err := s.f.Sync(); err != nil {
 		return err
 	}
 	return nil
+}
+
+func (s *segment) truncateEntriesTo(index int64) (removeHead bool, err error) {
+	localIndex := int(index - s.firstIndex)
+	if localIndex < 0 || localIndex >= s.entryCount() {
+		return false, nil // Ignore.
+	}
+
+	// If all entries are to be truncated then delete this segment.
+	if localIndex >= len(s.entryOffsets)-1 {
+		return true, s.delete()
+	}
+
+	// Create a new segment file with the remaining entries.
+
+	newFirstIndex := index + 1
+	newFpath := path.Join(s.w.dir, segFileName(s.number, newFirstIndex))
+	tempNewFpath := newFpath + ".tmp"
+	tempF, err := os.Create(tempNewFpath)
+	if err != nil {
+		return false, err
+	}
+
+	var newLastOffset int64
+	var offsetDiff int64
+	err = func() error {
+		// Append new header record.
+		nHeader, err := appendRecord(tempF, s.w.recordOf(headerRecordType, &pb.WalSegmentHeader{
+			Magic:         walMagic,
+			Version:       walVersion,
+			Flags:         0,
+			SegmentNumber: int32(s.number),
+			FirstIndex:    newFirstIndex,
+		}))
+		if err != nil {
+			return err
+		}
+
+		// Copy remaining records.
+		copyOffset := s.entryOffsets[localIndex+1]
+		if _, err := s.f.Seek(copyOffset, io.SeekStart); err != nil {
+			return err
+		}
+
+		nCopied, err := io.Copy(tempF, s.f)
+		if err != nil {
+			return err
+		}
+
+		// We want oldOffset + offsetDiff = newOffset.
+		offsetDiff = int64(nHeader) - copyOffset
+		newLastOffset = int64(nHeader) + nCopied
+		return nil
+	}()
+	if err != nil {
+		return false, removeOnErr(tempNewFpath, closeOnErr(tempF, err))
+	}
+
+	// Do atomic replace.
+	if err := tempF.Close(); err != nil {
+		return false, err
+	}
+	if err := os.Rename(tempNewFpath, newFpath); err != nil {
+		return false, err
+	}
+
+	newF, err := os.OpenFile(newFpath, os.O_APPEND|os.O_RDWR, 0644)
+	if err != nil {
+		return false, err
+	}
+	if _, err := newF.Seek(newLastOffset, io.SeekStart); err != nil {
+		return false, closeOnErr(newF, err)
+	}
+
+	s.entryOffsets = s.entryOffsets[localIndex+1:]
+	for i := range s.entryOffsets {
+		s.entryOffsets[i] += offsetDiff
+	}
+
+	// Shift the offsets by the amount we deleted.
+
+	s.firstIndex = newFirstIndex
+	s.fpath, s.f = newFpath, newF
+	s.lastOffset = newLastOffset
+	return false, nil
 }
 
 func (s *segment) delete() error {
 	if err := s.f.Close(); err != nil {
 		return err
 	}
-	if err := os.Remove(s.fname); err != nil {
+	if err := os.Remove(s.fpath); err != nil {
 		return err
 	}
 	return nil
 }
 
-func (s *segment) appendState(state *pb.PersistedState) error {
-	record, err := s.w.recordOf(StateType, state)
+func (s *segment) appendRecord(recordType uint32, msg proto.Message) error {
+	n, err := appendRecord(s.f, s.w.recordOf(recordType, msg))
 	if err != nil {
 		return err
 	}
-	recordBytes, err := proto.Marshal(record)
-	if err != nil {
-		return err
-	}
-
-	byteCount := 4 + len(recordBytes)
-	chunk := make([]byte, byteCount)
-	binary.BigEndian.PutUint32(chunk, uint32(len(recordBytes)))
-	copy(chunk[4:], recordBytes)
-	if _, err := s.f.Write(chunk); err != nil {
-		return err
-	}
-	if err := s.f.Sync(); err != nil {
-		return err
-	}
-	s.lastOffset += int64(byteCount)
+	s.lastOffset += int64(n)
 	return nil
+}
+
+func (s *segment) appendState(state *pb.PersistedState) error {
+	return s.appendRecord(stateRecordType, state)
 }
 
 func (s *segment) append(state *pb.PersistedState, entries []*pb.LogEntry) (int64, error) {
@@ -262,33 +356,21 @@ func (s *segment) append(state *pb.PersistedState, entries []*pb.LogEntry) (int6
 
 	records := make([]*pb.Record, 0, 1+len(entries))
 	for _, entry := range entries {
-		record, err := s.w.recordOf(EntryType, entry)
-		if err != nil {
-			return -1, err
-		}
-		records = append(records, record)
+		records = append(records, s.w.recordOf(entryRecordType, entry))
 	}
 
 	if state != nil {
-		record, err := s.w.recordOf(StateType, state)
-		if err != nil {
-			return -1, err
-		}
-		records = append(records, record)
+		records = append(records, s.w.recordOf(stateRecordType, state))
 	}
 
 	lastOffset := s.lastOffset
 	var offsets []int64
 	var buf bytes.Buffer
 	for _, record := range records {
-		recordBytes, err := proto.Marshal(record)
-		if err != nil {
-			return -1, err
-		}
-
+		recordBytes := protoMarshal(record)
 		binary.Write(&buf, binary.BigEndian, int32(len(recordBytes)))
 		buf.Write(recordBytes)
-		if record.Type == EntryType {
+		if record.Type == entryRecordType {
 			offsets = append(offsets, lastOffset)
 		}
 		lastOffset += int64(4 + len(recordBytes))
@@ -340,11 +422,12 @@ func openWal(dir string, softSegmentSize int64) (*wal, error) {
 			number:       segNum,
 			firstIndex:   firstIndex,
 			nextIndex:    firstIndex,
-			fname:        path.Join(w.dir, file.Name()),
+			fpath:        path.Join(dir, file.Name()),
 			entryOffsets: []int64{},
 		}
 
-		seg.f, err = os.OpenFile(seg.fname, os.O_APPEND|os.O_RDWR, 0644)
+		// TODO don't forget to close uneeded open files when errors happen.
+		seg.f, err = os.OpenFile(seg.fpath, os.O_APPEND|os.O_RDWR, 0644)
 		if err != nil {
 			return nil, err
 		}
@@ -366,7 +449,7 @@ func openWal(dir string, softSegmentSize int64) (*wal, error) {
 		if err != nil {
 			return nil, err
 		}
-		if record.Type != HeaderType {
+		if record.Type != headerRecordType {
 			return nil, fmt.Errorf("unexpected record type: %d", record.Type)
 		}
 
@@ -375,10 +458,10 @@ func openWal(dir string, softSegmentSize int64) (*wal, error) {
 			return nil, err
 		}
 		if header.Magic != walMagic {
-			return nil, fmt.Errorf("invalid WAL magic number in %s", seg.fname)
+			return nil, fmt.Errorf("invalid WAL magic number in %s", seg.fpath)
 		}
 		if header.Version != walVersion {
-			return nil, fmt.Errorf("unsupported WAL version in %s", seg.fname)
+			return nil, fmt.Errorf("unsupported WAL version in %s", seg.fpath)
 		}
 
 		correctedSegmentNumber := seg.number
@@ -386,13 +469,13 @@ func openWal(dir string, softSegmentSize int64) (*wal, error) {
 		if int(header.SegmentNumber) != seg.number {
 			log.Printf(
 				"Warning: segment number from file name (%s) disagrees with header's (%d), believing the latter",
-				seg.fname, header.SegmentNumber)
+				seg.fpath, header.SegmentNumber)
 			correctedSegmentNumber = int(header.SegmentNumber)
 		}
 		if header.FirstIndex != seg.firstIndex {
 			log.Printf(
 				"Warning: first index from file name (%s) disagrees with header's (%d), believing the latter",
-				seg.fname, header.FirstIndex)
+				seg.fpath, header.FirstIndex)
 			correctedFirstIndex = header.FirstIndex
 		}
 
@@ -404,22 +487,20 @@ func openWal(dir string, softSegmentSize int64) (*wal, error) {
 				return nil, err
 			}
 
-			seg.number = correctedSegmentNumber
-			seg.firstIndex = correctedFirstIndex
-
-			prevFname := seg.fname
-			seg.fname = path.Join(w.dir, fmt.Sprintf("log_%d_%d.dat", seg.number, seg.firstIndex))
-			if err := os.Rename(prevFname, seg.fname); err != nil {
+			correctedFpath := path.Join(w.dir, segFileName(correctedSegmentNumber, correctedFirstIndex))
+			if err := os.Rename(seg.fpath, correctedFpath); err != nil {
 				return nil, err
 			}
 
-			seg.f, err = os.OpenFile(seg.fname, os.O_APPEND|os.O_RDWR, 0644)
+			f, err := os.OpenFile(correctedFpath, os.O_APPEND|os.O_RDWR, 0644)
 			if err != nil {
 				return nil, err
 			}
-			if _, err := seg.f.Seek(seg.lastOffset, io.SeekStart); err != nil {
+			if _, err := f.Seek(seg.lastOffset, io.SeekStart); err != nil {
 				return nil, err
 			}
+			seg.number, seg.firstIndex = correctedSegmentNumber, correctedFirstIndex
+			seg.fpath, seg.f = correctedFpath, f
 
 			reader = newBufferedReader(newReaderAt(seg.f, seg.lastOffset))
 		}
@@ -444,17 +525,23 @@ func openWal(dir string, softSegmentSize int64) (*wal, error) {
 			}
 
 			switch record.Type {
-			case EntryType:
+			case entryRecordType:
 				seg.entryOffsets = append(seg.entryOffsets, seg.lastOffset)
 				seg.nextIndex++
-			case StateType:
+			case stateRecordType:
 				var state pb.PersistedState
 				if err := proto.Unmarshal(record.Data, &state); err != nil {
 					return nil, err
 				}
 				w.lastState = &state
-			case HeaderType:
-				return nil, fmt.Errorf("unexpected header record found in segment %s", seg.fname)
+			case snapshotMetadataRecordType:
+				var snapshot pb.SnapshotMetadata
+				if err := proto.Unmarshal(record.Data, &snapshot); err != nil {
+					return nil, err
+				}
+				w.lastSnapshot = &snapshot
+			case headerRecordType:
+				return nil, fmt.Errorf("unexpected header record found in segment %s", seg.fpath)
 			default:
 				return nil, fmt.Errorf("unexpected record type: %d", record.Type)
 			}
@@ -478,7 +565,7 @@ func openWal(dir string, softSegmentSize int64) (*wal, error) {
 			}
 			if prev.nextIndex != seg.firstIndex {
 				return nil, fmt.Errorf("gap detected between segments %s (ends at %d) and %s (starts at %d)",
-					prev.fname, prev.nextIndex, seg.fname, seg.firstIndex)
+					prev.fpath, prev.nextIndex, seg.fpath, seg.firstIndex)
 			}
 		}
 	}
@@ -530,11 +617,11 @@ func (w *wal) decodeRecord(recordBytes []byte) (*pb.Record, error) {
 	return &record, nil
 }
 
-func (w *wal) GetState() *pb.PersistedState {
+func (w *wal) RetrieveState() *pb.PersistedState {
 	return w.lastState
 }
 
-func (w *wal) SetState(state *pb.PersistedState) error {
+func (w *wal) SaveState(state *pb.PersistedState) error {
 	if w.closed {
 		return errClosed
 	}
@@ -632,44 +719,31 @@ func (w *wal) appendSegment() error {
 		number:       segNumber,
 		firstIndex:   firstIndex,
 		nextIndex:    firstIndex,
-		fname:        path.Join(w.dir, fmt.Sprintf("log_%d_%d.dat", segNumber, firstIndex)),
+		fpath:        path.Join(w.dir, segFileName(segNumber, firstIndex)),
 		entryOffsets: []int64{},
 	}
 
 	var buf bytes.Buffer
-	headerRecord, err := w.recordOf(HeaderType, &pb.WalSegmentHeader{
-		Magic:         walMagic,
-		Version:       walVersion,
-		Flags:         0,
-		SegmentNumber: int32(seg.number),
-		FirstIndex:    firstIndex,
-	})
-	if err != nil {
-		return err
-	}
-	recordBytes, err := proto.Marshal(headerRecord)
-	if err != nil {
-		return err
-	}
+	recordBytes := protoMarshal(
+		w.recordOf(headerRecordType, &pb.WalSegmentHeader{
+			Magic:         walMagic,
+			Version:       walVersion,
+			Flags:         0,
+			SegmentNumber: int32(seg.number),
+			FirstIndex:    firstIndex,
+		}))
 	binary.Write(&buf, binary.BigEndian, int32(len(recordBytes)))
 	buf.Write(recordBytes)
 
 	// Append lastState to the new segment if available.
 	if lastState != nil {
-		stateRecord, err := w.recordOf(StateType, lastState)
-		if err != nil {
-			return err
-		}
-		recordBytes, err := proto.Marshal(stateRecord)
-		if err != nil {
-			return err
-		}
+		recordBytes := protoMarshal(w.recordOf(stateRecordType, lastState))
 		binary.Write(&buf, binary.BigEndian, int32(len(recordBytes)))
 		buf.Write(recordBytes)
 	}
 
-	tempFname := seg.fname + ".tmp"
-	tempF, err := os.Create(tempFname)
+	tempFpath := seg.fpath + ".tmp"
+	tempF, err := os.Create(tempFpath)
 	if err != nil {
 		return err
 	}
@@ -687,17 +761,15 @@ func (w *wal) appendSegment() error {
 		return nil
 	}()
 	if err != nil {
-		tempF.Close()
-		os.Remove(tempFname)
-		return err
+		return removeOnErr(tempFpath, closeOnErr(tempF, err))
 	}
 
-	if err := os.Rename(tempFname, seg.fname); err != nil {
+	if err := os.Rename(tempFpath, seg.fpath); err != nil {
 		return err
 	}
 
 	// TODO correct fileMode?
-	f, err := os.OpenFile(seg.fname, os.O_APPEND|os.O_RDWR, 0644)
+	f, err := os.OpenFile(seg.fpath, os.O_APPEND|os.O_RDWR, 0644)
 	if err != nil {
 		return err
 	}
@@ -719,20 +791,72 @@ func (w *wal) TruncateEntriesFrom(index int64) error {
 		return err
 	}
 
-	for i := len(w.segments) - 1; i > segIndex; i-- {
-		if err := w.segments[i].delete(); err != nil {
-			return err
-		}
-		w.segments[i] = nil
-	}
+	removedSegments := w.segments[segIndex+1:]
 	w.segments = w.segments[0 : segIndex+1]
 	w.tail = w.segments[segIndex]
+
+	for _, seg := range removedSegments {
+		if err := seg.delete(); err != nil {
+			return err
+		}
+	}
 	if err := w.tail.truncateEntriesFrom(index); err != nil {
 		return err
 	}
 	if err := w.appendSegmentIfNeeded(); err != nil {
 		return err
 	}
+
+	// Make sure we have lastState appended since it might have been truncated.
+	if w.lastState != nil {
+		err := w.tail.appendState(w.lastState)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (w *wal) TruncateEntriesTo(index int64) error {
+	if w.closed {
+		return errClosed
+	}
+
+	segIndex, err := w.findSegment(index)
+	if err != nil {
+		return err
+	}
+
+	removedSegments := w.segments[:segIndex]
+	w.segments = w.segments[segIndex:]
+
+	for _, seg := range removedSegments {
+		if err := seg.delete(); err != nil {
+			return err
+		}
+	}
+
+	removeHead, err := w.segments[0].truncateEntriesTo(index)
+	if err != nil {
+		return err
+	}
+	if removeHead {
+		w.segments = w.segments[1:]
+	}
+
+	if err := w.appendSegmentIfNeeded(); err != nil {
+		return err
+	}
+
+	// Make sure we have lastState appended since it might have been truncated.
+	if w.lastState != nil {
+		err := w.tail.appendState(w.lastState)
+		if err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
@@ -850,26 +974,6 @@ func (w *wal) TailEntry() (*pb.LogEntry, error) {
 	return nil, nil
 }
 
-func (w *wal) FirstLogIndexAndTerm() (int64, int64) {
-	if w.EntryCount() == 0 {
-		return -1, -1
-	}
-
-	// Node that this specific segment might not carry any entries but firstIndex carries over to first segment
-	// with entries.
-	return w.segments[0].firstIndex, w.firstLogTerm
-}
-
-func (w *wal) LastLogIndexAndTerm() (int64, int64) {
-	if w.EntryCount() == 0 {
-		return -1, -1
-	}
-
-	// Node that this specific segment might not carry any entries but nextIndex is carried over from last segment
-	// with entries.
-	return w.tail.nextIndex - 1, w.lastLogTerm
-}
-
 func (w *wal) GetEntriesFrom(index int64) ([]*pb.LogEntry, error) {
 	if w.closed {
 		return nil, errClosed
@@ -896,6 +1000,79 @@ func (w *wal) GetEntriesFrom(index int64) ([]*pb.LogEntry, error) {
 	return entries, nil
 }
 
+func (w *wal) SaveSnapshot(snapshot Snapshot) error {
+	if w.closed {
+		return errClosed
+	}
+
+	metadata := snapshot.Metadata()
+	fpath := path.Join(w.dir, snapFileName(metadata))
+	tempFpath := fpath + ".tmp"
+	tempF, err := os.Create(tempFpath)
+	if err != nil {
+		return err
+	}
+	defer tempF.Close()
+
+	if _, err := tempF.Write(snapshot.Data()); err != nil {
+		return err
+	}
+	if err := tempF.Sync(); err != nil {
+		return err
+	}
+	if err := tempF.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tempFpath, fpath); err != nil {
+		return err
+	}
+	if err := w.tail.appendRecord(snapshotMetadataRecordType, metadata); err != nil {
+		return err
+	}
+	if err := w.appendSegmentIfNeeded(); err != nil {
+		return err
+	}
+	w.lastSnapshot = metadata
+	return nil
+}
+
+func (w *wal) RetrieveSnapshot() (Snapshot, error) {
+	if w.closed {
+		return nil, errClosed
+	}
+
+	metadata := w.lastSnapshot
+	if metadata == nil {
+		return nil, nil
+	}
+
+	data, err := os.ReadFile(snapFileName(metadata))
+	if err != nil {
+		return nil, err
+	}
+	return NewSnapshot(metadata, data), nil
+}
+
+func (w *wal) FirstLogIndexAndTerm() (int64, int64) {
+	if w.EntryCount() == 0 {
+		return -1, -1
+	}
+
+	// Node that this specific segment might not carry any entries but firstIndex carries over to first segment
+	// with entries.
+	return w.segments[0].firstIndex, w.firstLogTerm
+}
+
+func (w *wal) LastLogIndexAndTerm() (int64, int64) {
+	if w.EntryCount() == 0 {
+		return -1, -1
+	}
+
+	// Node that this specific segment might not carry any entries but nextIndex is carried over from last segment
+	// with entries.
+	return w.tail.nextIndex - 1, w.lastLogTerm
+}
+
 func (w *wal) Close() error {
 	if w.closed {
 		return nil
@@ -917,7 +1094,7 @@ func (w *wal) findSegment(entryIndex int64) (int, error) {
 		mid := (lo + hi) / 2
 		if entryIndex >= w.segments[mid].nextIndex {
 			lo = mid + 1
-		} else if entryIndex < w.segments[mid].firstIndex || w.segments[mid].entryCount() == 0 {
+		} else if entryIndex < w.segments[mid].firstIndex {
 			hi = mid
 		} else {
 			return mid, nil
@@ -926,12 +1103,9 @@ func (w *wal) findSegment(entryIndex int64) (int, error) {
 	return -1, indexOutOfRange(entryIndex)
 }
 
-func (w *wal) recordOf(recordType uint32, msg proto.Message) (*pb.Record, error) {
-	if data, err := proto.Marshal(msg); err != nil {
-		return nil, err
-	} else {
-		return &pb.Record{Type: recordType, Crc32: w.crc32Of(data), Data: data}, err
-	}
+func (w *wal) recordOf(recordType uint32, msg proto.Message) *pb.Record {
+	data := protoMarshal(msg)
+	return &pb.Record{Type: recordType, Crc32: w.crc32Of(data), Data: data}
 }
 
 func (w *wal) crc32Of(data []byte) uint32 {

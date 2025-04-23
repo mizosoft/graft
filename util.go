@@ -1,11 +1,14 @@
 package graft
 
 import (
+	"errors"
 	"io"
+	"log"
 	"os"
 	"sync"
 
 	"github.com/mizosoft/graft/pb"
+	"google.golang.org/protobuf/proto"
 )
 
 type uncopyable struct {
@@ -85,4 +88,43 @@ func toLogEntries(term int64, nextIndex int64, commands [][]byte) []*pb.LogEntry
 		nextIndex++
 	}
 	return entries
+}
+
+func protoMarshal(msg proto.Message) []byte {
+	data, err := proto.Marshal(msg)
+	if err != nil {
+		log.Panicf("failed to marshal record: %v", err)
+	}
+	return data
+}
+
+func removeOnErr(fname string, currErr error) error {
+	err := os.Remove(fname)
+	if err != nil {
+		return errors.Join(err, currErr)
+	}
+	return currErr
+}
+
+func closeOnErr(closer io.Closer, curErr error) error {
+	err := closer.Close()
+	if err != nil {
+		return errors.Join(err, curErr)
+	}
+	return curErr
+}
+
+func forceClose(closer io.Closer) {
+	err := closer.Close()
+	if err != nil {
+		log.Printf("failed to close file: %v\n", err)
+	}
+}
+
+func cloneMsgs[T proto.Message](msgs []T) []T {
+	cloned := make([]T, len(msgs))
+	for i, msg := range msgs {
+		cloned[i] = proto.Clone(msg).(T)
+	}
+	return cloned
 }

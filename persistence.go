@@ -27,15 +27,17 @@ func indexOutOfRangeWithCount(index int64, count int64) error {
 }
 
 type Persistence interface {
-	GetState() *pb.PersistedState
+	RetrieveState() *pb.PersistedState
 
-	SetState(state *pb.PersistedState) error
+	SaveState(state *pb.PersistedState) error
 
 	Append(state *pb.PersistedState, entries []*pb.LogEntry) (int64, error)
 
 	AppendCommands(state *pb.PersistedState, commands [][]byte) ([]*pb.LogEntry, error)
 
 	TruncateEntriesFrom(index int64) error
+
+	TruncateEntriesTo(index int64) error
 
 	EntryCount() int64
 
@@ -51,7 +53,30 @@ type Persistence interface {
 
 	LastLogIndexAndTerm() (int64, int64)
 
+	SaveSnapshot(snapshot Snapshot) error
+
+	RetrieveSnapshot() (Snapshot, error)
+
 	Close() error
+}
+
+type Snapshot interface {
+	Metadata() *pb.SnapshotMetadata
+
+	Data() []byte
+}
+
+type snapshot struct {
+	metadata *pb.SnapshotMetadata
+	data     []byte
+}
+
+func (s *snapshot) Metadata() *pb.SnapshotMetadata {
+	return s.metadata
+}
+
+func (s *snapshot) Data() []byte {
+	return s.data
 }
 
 func MemoryPersistence() Persistence {
@@ -62,16 +87,21 @@ func OpenWal(dir string, softSegmentSize int64) (Persistence, error) {
 	return openWal(dir, softSegmentSize)
 }
 
-type memoryPersistence struct {
-	log   []*pb.LogEntry
-	state *pb.PersistedState
+func NewSnapshot(metadata *pb.SnapshotMetadata, data []byte) Snapshot {
+	return &snapshot{metadata: metadata, data: data}
 }
 
-func (p *memoryPersistence) GetState() *pb.PersistedState {
+type memoryPersistence struct {
+	log      []*pb.LogEntry
+	state    *pb.PersistedState
+	snapshot Snapshot
+}
+
+func (p *memoryPersistence) RetrieveState() *pb.PersistedState {
 	return p.state
 }
 
-func (p *memoryPersistence) SetState(state *pb.PersistedState) error {
+func (p *memoryPersistence) SaveState(state *pb.PersistedState) error {
 	p.state = state
 	return nil
 }
@@ -95,6 +125,11 @@ func (p *memoryPersistence) AppendCommands(state *pb.PersistedState, commands []
 
 func (p *memoryPersistence) TruncateEntriesFrom(index int64) error {
 	p.log = p.log[:index]
+	return nil
+}
+
+func (p *memoryPersistence) TruncateEntriesTo(index int64) error {
+	p.log = p.log[index+1:]
 	return nil
 }
 
@@ -138,14 +173,14 @@ func (p *memoryPersistence) GetEntries(from, to int64) ([]*pb.LogEntry, error) {
 	return p.log[from:to], nil
 }
 
-func (p *memoryPersistence) HeadEntry() (*pb.LogEntry, error) {
+func (p *memoryPersistence) headEntry() (*pb.LogEntry, error) {
 	if len(p.log) == 0 {
 		return nil, nil
 	}
 	return p.log[0], nil
 }
 
-func (p *memoryPersistence) TailEntry() (*pb.LogEntry, error) {
+func (p *memoryPersistence) tailEntry() (*pb.LogEntry, error) {
 	lastIndex := len(p.log) - 1
 	if lastIndex < 0 {
 		return nil, nil
@@ -154,7 +189,7 @@ func (p *memoryPersistence) TailEntry() (*pb.LogEntry, error) {
 }
 
 func (p *memoryPersistence) FirstLogIndexAndTerm() (int64, int64) {
-	entry, _ := p.HeadEntry()
+	entry, _ := p.headEntry()
 	if entry == nil {
 		return -1, -1
 	}
@@ -162,11 +197,20 @@ func (p *memoryPersistence) FirstLogIndexAndTerm() (int64, int64) {
 }
 
 func (p *memoryPersistence) LastLogIndexAndTerm() (int64, int64) {
-	entry, _ := p.TailEntry()
+	entry, _ := p.tailEntry()
 	if entry == nil {
 		return -1, -1
 	}
 	return entry.Index, entry.Term
+}
+
+func (p *memoryPersistence) SaveSnapshot(snap Snapshot) error {
+	p.snapshot = snap
+	return nil
+}
+
+func (p *memoryPersistence) RetrieveSnapshot() (Snapshot, error) {
+	return p.snapshot, nil
 }
 
 func (p *memoryPersistence) Close() error {

@@ -2,9 +2,11 @@ package graft
 
 import (
 	"fmt"
+	"math/rand"
 	"os"
 	"path"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/mizosoft/graft/pb"
@@ -36,7 +38,7 @@ func TestWalNewWalOpen(t *testing.T) {
 	_, err = wal.GetEntriesFrom(100)
 	assert.ErrorType(t, err, indexOutOfRangeError{})
 	assert.Equal(t, len(es), 0)
-	testutil.AssertNil(t, wal.GetState())
+	testutil.AssertNil(t, wal.RetrieveState())
 }
 
 func TestWalEmptyWalReopen(t *testing.T) {
@@ -67,7 +69,7 @@ func TestWalEmptyWalReopen(t *testing.T) {
 	assert.ErrorType(t, err, indexOutOfRangeError{})
 	assert.Equal(t, len(es), 0)
 
-	testutil.AssertNil(t, wal.GetState())
+	testutil.AssertNil(t, wal.RetrieveState())
 }
 
 func TestWalCloseWal(t *testing.T) {
@@ -102,7 +104,7 @@ func TestWalAppendSingleEntry(t *testing.T) {
 	assert.NilError(t, err)
 	assert.Equal(t, nextIndex, int64(1))
 	assert.Equal(t, w.EntryCount(), int64(1))
-	assert.Assert(t, proto.Equal(state, w.GetState()))
+	assert.Assert(t, proto.Equal(state, w.RetrieveState()))
 
 	// Retrieve entry and verify.
 	retrievedEntry, err := w.GetEntry(0)
@@ -191,9 +193,9 @@ func TestWalSetState(t *testing.T) {
 		CommitIndex: 0,
 	}
 
-	err = w.SetState(state1)
+	err = w.SaveState(state1)
 	assert.NilError(t, err)
-	assert.Assert(t, proto.Equal(state1, w.GetState()))
+	assert.Assert(t, proto.Equal(state1, w.RetrieveState()))
 
 	// Updated state
 	state2 := &pb.PersistedState{
@@ -202,9 +204,9 @@ func TestWalSetState(t *testing.T) {
 		CommitIndex: 5,
 	}
 
-	err = w.SetState(state2)
+	err = w.SaveState(state2)
 	assert.NilError(t, err)
-	assert.Assert(t, proto.Equal(state2, w.GetState()))
+	assert.Assert(t, proto.Equal(state2, w.RetrieveState()))
 }
 
 func TestWalTruncateEntries(t *testing.T) {
@@ -243,7 +245,7 @@ func TestWalTruncateEntries(t *testing.T) {
 	}
 
 	// State is preserved after truncation.
-	assert.Assert(t, proto.Equal(state, w.GetState()))
+	assert.Assert(t, proto.Equal(state, w.RetrieveState()))
 }
 
 func TestWalMultipleSegments(t *testing.T) {
@@ -321,7 +323,7 @@ func TestWalReopen(t *testing.T) {
 	defer w2.Close()
 
 	// Verify state was recovered.
-	assert.Assert(t, proto.Equal(w2.GetState(), state))
+	assert.Assert(t, proto.Equal(w2.RetrieveState(), state))
 
 	// Verify entries were recovered.
 	assert.Equal(t, w2.EntryCount(), int64(3))
@@ -352,7 +354,7 @@ func TestWalErrorCases(t *testing.T) {
 	_, err = w.Append(nil, nil)
 	assert.ErrorIs(t, err, errClosed)
 
-	err = w.SetState(nil)
+	err = w.SaveState(nil)
 	assert.ErrorIs(t, err, errClosed)
 
 	err = w.TruncateEntriesFrom(0)
@@ -411,7 +413,7 @@ func TestWalOverwriteState(t *testing.T) {
 		VotedFor:    "s1",
 		CommitIndex: 0,
 	}
-	err = w.SetState(state1)
+	err = w.SaveState(state1)
 	assert.NilError(t, err)
 
 	// Update state.
@@ -420,11 +422,11 @@ func TestWalOverwriteState(t *testing.T) {
 		VotedFor:    "s2",
 		CommitIndex: 5,
 	}
-	err = w.SetState(state2)
+	err = w.SaveState(state2)
 	assert.NilError(t, err)
 
 	// Verify latest state is returned.
-	assert.Assert(t, proto.Equal(w.GetState(), state2))
+	assert.Assert(t, proto.Equal(w.RetrieveState(), state2))
 
 	// Reopen.
 	err = w.Close()
@@ -435,7 +437,7 @@ func TestWalOverwriteState(t *testing.T) {
 	defer w2.Close()
 
 	// Verify latest state is recovered.
-	assert.Assert(t, proto.Equal(w2.GetState(), state2))
+	assert.Assert(t, proto.Equal(w2.RetrieveState(), state2))
 }
 
 func TestWalAppendSegmentAfterStateUpdate(t *testing.T) {
@@ -449,9 +451,9 @@ func TestWalAppendSegmentAfterStateUpdate(t *testing.T) {
 		VotedFor:    "some cool server",
 		CommitIndex: 1,
 	}
-	err = w1.SetState(state)
+	err = w1.SaveState(state)
 	assert.NilError(t, err)
-	assert.Assert(t, proto.Equal(w1.GetState(), state))
+	assert.Assert(t, proto.Equal(w1.RetrieveState(), state))
 	assert.Equal(t, len(w1.segments), 2)
 
 	// Last segment retains state.
@@ -463,7 +465,7 @@ func TestWalAppendSegmentAfterStateUpdate(t *testing.T) {
 	w2, err := openWal(dir, 10)
 	assert.NilError(t, err)
 	defer w2.Close()
-	assert.Assert(t, proto.Equal(w2.GetState(), state))
+	assert.Assert(t, proto.Equal(w2.RetrieveState(), state))
 	assert.Equal(t, len(w2.segments), 2)
 	assert.Assert(t, proto.Equal(w2.lastState, state))
 }
@@ -497,7 +499,7 @@ func TestWalTruncateAfterStateUpdate(t *testing.T) {
 	assert.NilError(t, err)
 	defer w2.Close()
 
-	assert.Assert(t, proto.Equal(w2.GetState(), state))
+	assert.Assert(t, proto.Equal(w2.RetrieveState(), state))
 }
 
 func TestWalAppendAfterTruncating(t *testing.T) {
@@ -625,7 +627,7 @@ func TestWalStorageFailures(t *testing.T) {
 		VotedFor:    "s1",
 		CommitIndex: 0,
 	}
-	err = w.SetState(state)
+	err = w.SaveState(state)
 	assert.NilError(t, err)
 
 	entries := []*pb.LogEntry{
@@ -642,7 +644,7 @@ func TestWalStorageFailures(t *testing.T) {
 	_, err = w.Append(state, entries)
 	assert.Assert(t, err != nil)
 
-	err = w.SetState(&pb.PersistedState{
+	err = w.SaveState(&pb.PersistedState{
 		CurrentTerm: 2,
 		VotedFor:    "s2",
 		CommitIndex: 0,
@@ -718,10 +720,10 @@ func TestWalTailEntryWithEmptySegments(t *testing.T) {
 	assert.NilError(t, err)
 	assert.Equal(t, lastIndex, int64(2))
 
-	err = w.SetState(&pb.PersistedState{CurrentTerm: 1, VotedFor: "s1", CommitIndex: 0})
+	err = w.SaveState(&pb.PersistedState{CurrentTerm: 1, VotedFor: "s1", CommitIndex: 0})
 	assert.NilError(t, err)
 
-	err = w.SetState(&pb.PersistedState{CurrentTerm: 2, VotedFor: "s2", CommitIndex: 1})
+	err = w.SaveState(&pb.PersistedState{CurrentTerm: 2, VotedFor: "s2", CommitIndex: 1})
 	assert.NilError(t, err)
 
 	assert.Assert(t, len(w.segments) > 2, len(w.segments))
@@ -745,12 +747,12 @@ func TestWalMismatchingSegNumber(t *testing.T) {
 	assert.Equal(t, lastIndex, int64(1))
 	assert.Assert(t, len(w1.segments) == 1, len(w1.segments))
 
-	_, fname := path.Split(w1.tail.fname)
+	_, fname := path.Split(w1.tail.fpath)
 	assert.Equal(t, fname, "log_0_0.dat")
 
 	w1.Close()
 
-	if err := os.Rename(w1.tail.fname, path.Join(dir, "log_1_0.dat")); err != nil {
+	if err := os.Rename(w1.tail.fpath, path.Join(dir, "log_1_0.dat")); err != nil {
 		assert.NilError(t, err)
 	}
 
@@ -758,7 +760,7 @@ func TestWalMismatchingSegNumber(t *testing.T) {
 	assert.NilError(t, err)
 	defer w1.Close()
 
-	_, fname = path.Split(w2.tail.fname)
+	_, fname = path.Split(w2.tail.fpath)
 	assert.Equal(t, fname, "log_0_0.dat")
 	_, fname = path.Split(w2.tail.f.Name())
 	assert.Equal(t, fname, "log_0_0.dat")
@@ -778,12 +780,12 @@ func TestWalMismatchingFirstIndex(t *testing.T) {
 	assert.Equal(t, lastIndex, int64(1))
 	assert.Assert(t, len(w1.segments) == 1, len(w1.segments))
 
-	_, fname := path.Split(w1.tail.fname)
+	_, fname := path.Split(w1.tail.fpath)
 	assert.Equal(t, fname, "log_0_0.dat")
 
 	w1.Close()
 
-	if err := os.Rename(w1.tail.fname, path.Join(dir, "log_0_1.dat")); err != nil {
+	if err := os.Rename(w1.tail.fpath, path.Join(dir, "log_0_1.dat")); err != nil {
 		assert.NilError(t, err)
 	}
 
@@ -791,7 +793,7 @@ func TestWalMismatchingFirstIndex(t *testing.T) {
 	assert.NilError(t, err)
 	defer w1.Close()
 
-	_, fname = path.Split(w2.tail.fname)
+	_, fname = path.Split(w2.tail.fpath)
 	assert.Equal(t, fname, "log_0_0.dat")
 	_, fname = path.Split(w2.tail.f.Name())
 	assert.Equal(t, fname, "log_0_0.dat")
@@ -867,7 +869,7 @@ func TestWalGetEntriesFromTo(t *testing.T) {
 	segCount := len(w.segments)
 	_, lastTerm := w.LastLogIndexAndTerm()
 	for segCount == len(w.segments) {
-		err := w.SetState(&pb.PersistedState{CurrentTerm: lastTerm, VotedFor: "s1"})
+		err := w.SaveState(&pb.PersistedState{CurrentTerm: lastTerm, VotedFor: "s1"})
 		assert.NilError(t, err)
 		lastTerm++
 	}
@@ -904,6 +906,92 @@ func TestWalGetEntriesFromTo(t *testing.T) {
 			retrieved, err := w.GetEntries(int64(i), int64(j))
 			assert.NilError(t, err)
 			checkEntries(retrieved, entries[i:j+1])
+		}
+	}
+}
+
+func TestWalSaveAndRetrieveSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	w, err := openWal(dir, 128)
+	assert.NilError(t, err)
+	defer w.Close()
+
+	snapshot, err := w.RetrieveSnapshot()
+	assert.NilError(t, err)
+	assert.Assert(t, snapshot == nil)
+
+	snapshot = NewSnapshot(&pb.SnapshotMetadata{LastAppliedIndex: 1, LastAppliedTerm: 1}, []byte("Pikachu"))
+	err = w.SaveSnapshot(snapshot)
+	assert.NilError(t, err)
+
+	retrievedSnapshot, err := w.RetrieveSnapshot()
+	assert.NilError(t, err)
+	assert.Assert(t, proto.Equal(retrievedSnapshot.Metadata(), snapshot.Metadata()))
+	assert.Equal(t, string(retrievedSnapshot.Data()), string(snapshot.Data()))
+}
+
+func TestWalRetrieveSnapshotOnReopen(t *testing.T) {
+	dir := t.TempDir()
+	w1, err := openWal(dir, 128)
+	assert.NilError(t, err)
+	defer w1.Close()
+
+	snapshot := NewSnapshot(&pb.SnapshotMetadata{LastAppliedIndex: 1, LastAppliedTerm: 1}, []byte("Pikachu"))
+	err = w1.SaveSnapshot(snapshot)
+	assert.NilError(t, err)
+
+	w1.Close()
+
+	w2, err := openWal(dir, 128)
+	assert.NilError(t, err)
+	defer w2.Close()
+	retrievedSnapshot, err := w2.RetrieveSnapshot()
+	assert.NilError(t, err)
+	assert.Assert(t, proto.Equal(retrievedSnapshot.Metadata(), snapshot.Metadata()))
+	assert.Equal(t, string(retrievedSnapshot.Data()), string(snapshot.Data()))
+}
+
+func TestWalTruncateEntriesTo(t *testing.T) {
+	dir := t.TempDir()
+	w, err := openWal(dir, 128)
+	assert.NilError(t, err)
+	defer w.Close()
+
+	rnd := rand.New(rand.NewSource(0))
+	entryCount := int64(100)
+	entries := make([]*pb.LogEntry, entryCount)
+	for i := range entries {
+		commandSize := rnd.Intn(256)
+		entries[i] = &pb.LogEntry{
+			Index:   int64(i),
+			Term:    int64(i),
+			Command: []byte(strings.Repeat("a", commandSize)),
+		}
+	}
+
+	for _, entry := range entries {
+		_, err = w.Append(nil, []*pb.LogEntry{entry})
+		assert.NilError(t, err)
+	}
+
+	assert.Assert(t, len(w.segments) > 1)
+
+	for i := int64(0); i < entryCount; i++ {
+		err := w.TruncateEntriesTo(i)
+		assert.NilError(t, err)
+
+		firstIndex, _ := w.FirstLogIndexAndTerm()
+		if i < entryCount-1 {
+			assert.Equal(t, firstIndex, i+1)
+
+			retrievedEntries, err := w.GetEntriesFrom(firstIndex)
+			assert.NilError(t, err)
+
+			for j, entry := range entries[i+1:] {
+				assert.Assert(t, proto.Equal(retrievedEntries[j], entry))
+			}
+		} else {
+			assert.Equal(t, firstIndex, int64(-1))
 		}
 	}
 }
