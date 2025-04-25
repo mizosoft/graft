@@ -439,13 +439,30 @@ func (g *Graft) appendEntriesRequestIfLeader(peerId string) *pb.AppendEntriesReq
 func (g *Graft) unguardedTransitionToLeader() {
 	g.log("Transitioning to Leader, state=%v", g)
 	g.state = Leader
+
+	lastIndex, _ := g.Persistence.LastLogIndexAndTerm()
 	for id := range g.cluster.peers {
-		lastIndex, _ := g.Persistence.LastLogIndexAndTerm()
 		g.nextIndex[id] = lastIndex + 1
 		g.matchIndex[id] = 0
 	}
+
 	g.leaderId = g.id
 	g.electionTimer.stop()
+
+	// Append NOOP entry if we have uncommitted entries from previous terms.
+	if g.commitIndex < lastIndex {
+		_, err := g.Persistence.Append(g.unguardedCapturePersistedState(), []*pb.LogEntry{
+			{
+				Term: g.currentTerm,
+				Type: pb.LogEntry_NOOP,
+			},
+		})
+		if err != nil {
+			// Do not crash, let us crash later if more entries are appended.
+			g.log("Error appending NOOP entry: %v", err)
+		}
+	}
+
 	g.heartbeatTimer.poke() // Establish authority.
 }
 
@@ -494,16 +511,26 @@ func (g *Graft) unguardedFlushCommittedEntries() {
 	}
 
 	if g.commitIndex != newCommitIndex {
-		entries, err := g.Persistence.GetEntries(g.commitIndex, newCommitIndex)
-		if err != nil {
-			g.fatal(err)
-		}
-		g.commitIndex = newCommitIndex
-		g.commitChan <- &commit{
-			g:       g,
-			entries: cloneMsgs(entries),
-		}
+		g.unguardedCommit(newCommitIndex)
 		g.heartbeatTimer.poke() // Broadcast new commitIndex.
+	}
+}
+
+func (g *Graft) unguardedCommit(newCommitIndex int64) {
+	fromIndex := g.commitIndex
+	if fromIndex < 0 {
+		fromIndex, _ = g.Persistence.FirstLogIndexAndTerm()
+	}
+
+	entries, err := g.Persistence.GetEntries(fromIndex, newCommitIndex)
+	if err != nil {
+		g.fatal(err)
+	}
+
+	g.commitIndex = newCommitIndex
+	g.commitChan <- &commit{
+		g:       g,
+		entries: cloneMsgs(entries),
 	}
 }
 
@@ -615,19 +642,11 @@ func (g *Graft) appendEntries(ctx context.Context, request *pb.AppendEntriesRequ
 	if err != nil {
 		g.fatal(err)
 	}
+
 	if request.LeaderCommitIndex > g.commitIndex {
 		newCommitIndex := min(request.LeaderCommitIndex, nextIndex-1)
 		if g.commitIndex != newCommitIndex {
-			entries, err := g.Persistence.GetEntries(g.commitIndex, newCommitIndex)
-			if err != nil {
-				g.log("Failed to get entries for committing: %v", err)
-			} else {
-				g.commitIndex = newCommitIndex
-				g.commitChan <- &commit{
-					g:       g,
-					entries: cloneMsgs(entries),
-				}
-			}
+			g.unguardedCommit(newCommitIndex)
 		}
 	}
 	return &pb.AppendEntriesResponse{

@@ -21,6 +21,55 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+type LogEntry_Type int32
+
+const (
+	LogEntry_COMMAND LogEntry_Type = 0
+	LogEntry_CONFIG  LogEntry_Type = 1
+	LogEntry_NOOP    LogEntry_Type = 2
+)
+
+// Enum value maps for LogEntry_Type.
+var (
+	LogEntry_Type_name = map[int32]string{
+		0: "COMMAND",
+		1: "CONFIG",
+		2: "NOOP",
+	}
+	LogEntry_Type_value = map[string]int32{
+		"COMMAND": 0,
+		"CONFIG":  1,
+		"NOOP":    2,
+	}
+)
+
+func (x LogEntry_Type) Enum() *LogEntry_Type {
+	p := new(LogEntry_Type)
+	*p = x
+	return p
+}
+
+func (x LogEntry_Type) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (LogEntry_Type) Descriptor() protoreflect.EnumDescriptor {
+	return file_raft_proto_enumTypes[0].Descriptor()
+}
+
+func (LogEntry_Type) Type() protoreflect.EnumType {
+	return &file_raft_proto_enumTypes[0]
+}
+
+func (x LogEntry_Type) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use LogEntry_Type.Descriptor instead.
+func (LogEntry_Type) EnumDescriptor() ([]byte, []int) {
+	return file_raft_proto_rawDescGZIP(), []int{4, 0}
+}
+
 type RequestVoteRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Term          int64                  `protobuf:"varint,1,opt,name=term,proto3" json:"term,omitempty"`
@@ -281,7 +330,8 @@ type LogEntry struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Term          int64                  `protobuf:"varint,1,opt,name=term,proto3" json:"term,omitempty"`
 	Index         int64                  `protobuf:"varint,2,opt,name=index,proto3" json:"index,omitempty"`
-	Command       []byte                 `protobuf:"bytes,3,opt,name=command,proto3" json:"command,omitempty"`
+	Type          LogEntry_Type          `protobuf:"varint,3,opt,name=type,proto3,enum=raft.LogEntry_Type" json:"type,omitempty"`
+	Command       []byte                 `protobuf:"bytes,4,opt,name=command,proto3" json:"command,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -330,6 +380,13 @@ func (x *LogEntry) GetIndex() int64 {
 	return 0
 }
 
+func (x *LogEntry) GetType() LogEntry_Type {
+	if x != nil {
+		return x.Type
+	}
+	return LogEntry_COMMAND
+}
+
 func (x *LogEntry) GetCommand() []byte {
 	if x != nil {
 		return x.Command
@@ -360,11 +417,17 @@ const file_raft_proto_rawDesc = "" +
 	"\x11leaderCommitIndex\x18\x06 \x01(\x03R\x11leaderCommitIndex\"E\n" +
 	"\x15AppendEntriesResponse\x12\x12\n" +
 	"\x04term\x18\x01 \x01(\x03R\x04term\x12\x18\n" +
-	"\asuccess\x18\x02 \x01(\bR\asuccess\"N\n" +
+	"\asuccess\x18\x02 \x01(\bR\asuccess\"\xa2\x01\n" +
 	"\bLogEntry\x12\x12\n" +
 	"\x04term\x18\x01 \x01(\x03R\x04term\x12\x14\n" +
-	"\x05index\x18\x02 \x01(\x03R\x05index\x12\x18\n" +
-	"\acommand\x18\x03 \x01(\fR\acommand2\x94\x01\n" +
+	"\x05index\x18\x02 \x01(\x03R\x05index\x12'\n" +
+	"\x04type\x18\x03 \x01(\x0e2\x13.raft.LogEntry.TypeR\x04type\x12\x18\n" +
+	"\acommand\x18\x04 \x01(\fR\acommand\")\n" +
+	"\x04Type\x12\v\n" +
+	"\aCOMMAND\x10\x00\x12\n" +
+	"\n" +
+	"\x06CONFIG\x10\x01\x12\b\n" +
+	"\x04NOOP\x10\x022\x94\x01\n" +
 	"\x04Raft\x12B\n" +
 	"\vRequestVote\x12\x18.raft.RequestVoteRequest\x1a\x19.raft.RequestVoteResponse\x12H\n" +
 	"\rAppendEntries\x12\x1a.raft.AppendEntriesRequest\x1a\x1b.raft.AppendEntriesResponseB!Z\x1fgithub.com/mizosoft/graft/pb;pbb\x06proto3"
@@ -381,25 +444,28 @@ func file_raft_proto_rawDescGZIP() []byte {
 	return file_raft_proto_rawDescData
 }
 
+var file_raft_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
 var file_raft_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
 var file_raft_proto_goTypes = []any{
-	(*RequestVoteRequest)(nil),    // 0: raft.RequestVoteRequest
-	(*RequestVoteResponse)(nil),   // 1: raft.RequestVoteResponse
-	(*AppendEntriesRequest)(nil),  // 2: raft.AppendEntriesRequest
-	(*AppendEntriesResponse)(nil), // 3: raft.AppendEntriesResponse
-	(*LogEntry)(nil),              // 4: raft.LogEntry
+	(LogEntry_Type)(0),            // 0: raft.LogEntry.Type
+	(*RequestVoteRequest)(nil),    // 1: raft.RequestVoteRequest
+	(*RequestVoteResponse)(nil),   // 2: raft.RequestVoteResponse
+	(*AppendEntriesRequest)(nil),  // 3: raft.AppendEntriesRequest
+	(*AppendEntriesResponse)(nil), // 4: raft.AppendEntriesResponse
+	(*LogEntry)(nil),              // 5: raft.LogEntry
 }
 var file_raft_proto_depIdxs = []int32{
-	4, // 0: raft.AppendEntriesRequest.entries:type_name -> raft.LogEntry
-	0, // 1: raft.Raft.RequestVote:input_type -> raft.RequestVoteRequest
-	2, // 2: raft.Raft.AppendEntries:input_type -> raft.AppendEntriesRequest
-	1, // 3: raft.Raft.RequestVote:output_type -> raft.RequestVoteResponse
-	3, // 4: raft.Raft.AppendEntries:output_type -> raft.AppendEntriesResponse
-	3, // [3:5] is the sub-list for method output_type
-	1, // [1:3] is the sub-list for method input_type
-	1, // [1:1] is the sub-list for extension type_name
-	1, // [1:1] is the sub-list for extension extendee
-	0, // [0:1] is the sub-list for field type_name
+	5, // 0: raft.AppendEntriesRequest.entries:type_name -> raft.LogEntry
+	0, // 1: raft.LogEntry.type:type_name -> raft.LogEntry.Type
+	1, // 2: raft.Raft.RequestVote:input_type -> raft.RequestVoteRequest
+	3, // 3: raft.Raft.AppendEntries:input_type -> raft.AppendEntriesRequest
+	2, // 4: raft.Raft.RequestVote:output_type -> raft.RequestVoteResponse
+	4, // 5: raft.Raft.AppendEntries:output_type -> raft.AppendEntriesResponse
+	4, // [4:6] is the sub-list for method output_type
+	2, // [2:4] is the sub-list for method input_type
+	2, // [2:2] is the sub-list for extension type_name
+	2, // [2:2] is the sub-list for extension extendee
+	0, // [0:2] is the sub-list for field type_name
 }
 
 func init() { file_raft_proto_init() }
@@ -412,13 +478,14 @@ func file_raft_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_raft_proto_rawDesc), len(file_raft_proto_rawDesc)),
-			NumEnums:      0,
+			NumEnums:      1,
 			NumMessages:   5,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
 		GoTypes:           file_raft_proto_goTypes,
 		DependencyIndexes: file_raft_proto_depIdxs,
+		EnumInfos:         file_raft_proto_enumTypes,
 		MessageInfos:      file_raft_proto_msgTypes,
 	}.Build()
 	File_raft_proto = out.File

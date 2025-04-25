@@ -37,7 +37,14 @@ message AppendEntriesResponse {
 }
 
 message LogEntry {
+    enum Type {
+        COMMAND = 0;
+        NOOP = 2;
+        CONFIG = 1;
+    }
+
     int64 term = 1;
     int64 index = 2;
-    bytes command = 3;
+    Type type = 3;
+    bytes command = 4;
 }

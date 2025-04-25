@@ -84,7 +84,7 @@ func (b *bufferedReader) Read(p []byte) (int, error) {
 func toLogEntries(term int64, nextIndex int64, commands [][]byte) []*pb.LogEntry {
 	entries := make([]*pb.LogEntry, len(commands))
 	for i, command := range commands {
-		entries[i] = &pb.LogEntry{Term: term, Index: nextIndex, Command: command}
+		entries[i] = &pb.LogEntry{Term: term, Index: nextIndex, Command: command, Type: pb.LogEntry_COMMAND}
 		nextIndex++
 	}
 	return entries

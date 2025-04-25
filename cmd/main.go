@@ -47,6 +47,10 @@ func main() {
 	}
 
 	wal, err := graft.OpenWal(walDir, 1*1024*1024) // 1MB
+	if err != nil {
+		panic(err)
+	}
+
 	config := graft.Config{
 		Id:                        *id,
 		Addresses:                 addresses,
@@ -56,7 +60,7 @@ func main() {
 		Persistence:               wal,
 		Commit: func(commit graft.Commit) {
 			fmt.Printf("Commit: %v\n", commit.Entries)
-			commit.Applied()
+			commit.Applied(nil)
 		},
 	}
 
