@@ -4,7 +4,7 @@
 // 	protoc        v5.29.3
 // source: graft.proto
 
-package pb
+package graftpb
 
 import (
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
@@ -292,7 +292,7 @@ const file_graft_proto_rawDesc = "" +
 	"firstIndex\"h\n" +
 	"\x10SnapshotMetadata\x12*\n" +
 	"\x10lastAppliedIndex\x18\x01 \x01(\x03R\x10lastAppliedIndex\x12(\n" +
-	"\x0flastAppliedTerm\x18\x02 \x01(\x03R\x0flastAppliedTermB!Z\x1fgithub.com/mizosoft/graft/pb;pbb\x06proto3"
+	"\x0flastAppliedTerm\x18\x02 \x01(\x03R\x0flastAppliedTermB+Z)github.com/mizosoft/graft/graftpb;graftpbb\x06proto3"
 
 var (
 	file_graft_proto_rawDescOnce sync.Once

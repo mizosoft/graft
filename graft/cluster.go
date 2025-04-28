@@ -4,7 +4,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mizosoft/graft/pb"
+	"github.com/mizosoft/graft/raftpb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/backoff"
 	"google.golang.org/grpc/credentials/insecure"
@@ -13,11 +13,11 @@ import (
 type peer struct {
 	id         string
 	address    string
-	lazyClient pb.RaftClient // Lazily initialized, protected by mut.
+	lazyClient raftpb.RaftClient // Lazily initialized, protected by mut.
 	mut        sync.Mutex
 }
 
-func (p *peer) client() (pb.RaftClient, error) {
+func (p *peer) client() (raftpb.RaftClient, error) {
 	p.mut.Lock()
 	defer p.mut.Unlock()
 
@@ -40,7 +40,7 @@ func (p *peer) client() (pb.RaftClient, error) {
 		if err != nil {
 			return nil, err
 		}
-		client = pb.NewRaftClient(conn)
+		client = raftpb.NewRaftClient(conn)
 		p.lazyClient = client
 	}
 	return client, nil

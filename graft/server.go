@@ -3,14 +3,14 @@ package graft
 import (
 	"context"
 
-	"github.com/mizosoft/graft/pb"
+	"github.com/mizosoft/graft/raftpb"
 )
 
 type server struct {
-	pb.UnimplementedRaftServer
+	raftpb.UnimplementedRaftServer
 }
 
-func (s *server) RequestVote(ctx context.Context, request *pb.RequestVoteRequest) (*pb.RequestVoteResponse, error) {
+func (s *server) RequestVote(ctx context.Context, request *raftpb.RequestVoteRequest) (*raftpb.RequestVoteResponse, error) {
 	g, ok := ctx.Value(graftKey{}).(*Graft)
 	if !ok {
 		panic("unable to find Graft instance in context")
@@ -18,7 +18,7 @@ func (s *server) RequestVote(ctx context.Context, request *pb.RequestVoteRequest
 	return g.requestVote(ctx, request)
 }
 
-func (s *server) AppendEntries(ctx context.Context, request *pb.AppendEntriesRequest) (*pb.AppendEntriesResponse, error) {
+func (s *server) AppendEntries(ctx context.Context, request *raftpb.AppendEntriesRequest) (*raftpb.AppendEntriesResponse, error) {
 	g, ok := ctx.Value(graftKey{}).(*Graft)
 	if !ok {
 		panic("unable to find Graft instance in context")

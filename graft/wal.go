@@ -12,7 +12,8 @@ import (
 	"path"
 	"sort"
 
-	"github.com/mizosoft/graft/pb"
+	"github.com/mizosoft/graft/graftpb"
+	"github.com/mizosoft/graft/raftpb"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -39,8 +40,8 @@ type wal struct {
 	tail                      *segment
 	crcTable                  *crc32.Table
 	closed                    bool
-	lastState                 *pb.PersistedState
-	lastSnapshot              *pb.SnapshotMetadata // TODO we might want to make sure this is appended on truncation.
+	lastState                 *graftpb.PersistedState
+	lastSnapshot              *graftpb.SnapshotMetadata // TODO we might want to make sure this is appended on truncation.
 	firstLogTerm, lastLogTerm int64
 }
 
@@ -58,11 +59,11 @@ func segFileName(number int, firstIndex int64) string {
 	return fmt.Sprintf("log_%d_%d.dat", number, firstIndex)
 }
 
-func snapFileName(metadata *pb.SnapshotMetadata) string {
+func snapFileName(metadata *graftpb.SnapshotMetadata) string {
 	return fmt.Sprintf("snap_%d_%d.dat", metadata.LastAppliedIndex, metadata.LastAppliedTerm)
 }
 
-func appendRecord(f *os.File, record *pb.Record) (int, error) {
+func appendRecord(f *os.File, record *graftpb.Record) (int, error) {
 	recordBytes := protoMarshal(record)
 	byteCount := 4 + len(recordBytes)
 	chunk := make([]byte, byteCount)
@@ -81,7 +82,7 @@ func (s *segment) entryCount() int {
 	return len(s.entryOffsets)
 }
 
-func (s *segment) getEntry(index int64) (*pb.LogEntry, error) {
+func (s *segment) getEntry(index int64) (*raftpb.LogEntry, error) {
 	localIndex := int(index - s.firstIndex)
 	if localIndex < 0 || localIndex >= s.entryCount() {
 		return nil, indexOutOfRange(index)
@@ -89,21 +90,21 @@ func (s *segment) getEntry(index int64) (*pb.LogEntry, error) {
 	return s.getEntryAtOffset(localIndex)
 }
 
-func (s *segment) headEntry() (*pb.LogEntry, error) {
+func (s *segment) headEntry() (*raftpb.LogEntry, error) {
 	if s.entryCount() == 0 {
 		return nil, nil
 	}
 	return s.getEntryAtOffset(0)
 }
 
-func (s *segment) tailEntry() (*pb.LogEntry, error) {
+func (s *segment) tailEntry() (*raftpb.LogEntry, error) {
 	if s.entryCount() == 0 {
 		return nil, nil
 	}
 	return s.getEntryAtOffset(len(s.entryOffsets) - 1)
 }
 
-func (s *segment) getEntryAtOffset(offsetIndex int) (*pb.LogEntry, error) {
+func (s *segment) getEntryAtOffset(offsetIndex int) (*raftpb.LogEntry, error) {
 	offset := s.entryOffsets[offsetIndex]
 	var limit int64
 	if offsetIndex < len(s.entryOffsets)-1 {
@@ -126,21 +127,21 @@ func (s *segment) getEntryAtOffset(offsetIndex int) (*pb.LogEntry, error) {
 		panic(fmt.Errorf("unexpected record type when expecting an entry: %d", record.Type))
 	}
 
-	var entry pb.LogEntry
+	var entry raftpb.LogEntry
 	if err := proto.Unmarshal(record.Data, &entry); err != nil {
 		return nil, err
 	}
 	return &entry, nil
 }
 
-func (s *segment) getEntriesFrom(from int64) ([]*pb.LogEntry, error) {
+func (s *segment) getEntriesFrom(from int64) ([]*raftpb.LogEntry, error) {
 	localFrom := int(from - s.firstIndex)
 	if localFrom < 0 || localFrom >= s.entryCount() {
-		return []*pb.LogEntry{}, nil
+		return []*raftpb.LogEntry{}, nil
 	}
 
 	reader := newBufferedReader(newReaderAt(s.f, s.entryOffsets[localFrom]))
-	for entries := []*pb.LogEntry{}; ; {
+	for entries := []*raftpb.LogEntry{}; ; {
 		var recordLen int32
 		if err := binary.Read(reader, binary.BigEndian, &recordLen); err != nil {
 			if errors.Is(err, io.EOF) {
@@ -162,7 +163,7 @@ func (s *segment) getEntriesFrom(from int64) ([]*pb.LogEntry, error) {
 			continue // Might have some non-entry records.
 		}
 
-		var entry pb.LogEntry
+		var entry raftpb.LogEntry
 		if err := proto.Unmarshal(record.Data, &entry); err != nil {
 			return nil, err
 		}
@@ -170,14 +171,14 @@ func (s *segment) getEntriesFrom(from int64) ([]*pb.LogEntry, error) {
 	}
 }
 
-func (s *segment) getEntriesTo(to int64) ([]*pb.LogEntry, error) {
+func (s *segment) getEntriesTo(to int64) ([]*raftpb.LogEntry, error) {
 	localTo := int(to - s.firstIndex)
 	if localTo < 0 || localTo >= s.entryCount() {
-		return []*pb.LogEntry{}, nil
+		return []*raftpb.LogEntry{}, nil
 	}
 
 	reader := newBufferedReader(newReaderAt(s.f, s.entryOffsets[0]))
-	var entries []*pb.LogEntry
+	var entries []*raftpb.LogEntry
 	for index := s.firstIndex; index <= to; {
 		var recordLen int32
 		if err := binary.Read(reader, binary.BigEndian, &recordLen); err != nil {
@@ -200,7 +201,7 @@ func (s *segment) getEntriesTo(to int64) ([]*pb.LogEntry, error) {
 			continue // Might have some non-entry records.
 		}
 
-		var entry pb.LogEntry
+		var entry raftpb.LogEntry
 		if err := proto.Unmarshal(record.Data, &entry); err != nil {
 			return nil, err
 		}
@@ -259,7 +260,7 @@ func (s *segment) truncateEntriesTo(index int64) (removeHead bool, err error) {
 	var offsetDiff int64
 	err = func() error {
 		// Append new header record.
-		nHeader, err := appendRecord(tempF, s.w.recordOf(headerRecordType, &pb.WalSegmentHeader{
+		nHeader, err := appendRecord(tempF, s.w.recordOf(headerRecordType, &graftpb.WalSegmentHeader{
 			Magic:         walMagic,
 			Version:       walVersion,
 			Flags:         0,
@@ -338,11 +339,11 @@ func (s *segment) appendRecord(recordType uint32, msg proto.Message) error {
 	return nil
 }
 
-func (s *segment) appendState(state *pb.PersistedState) error {
+func (s *segment) appendState(state *graftpb.PersistedState) error {
 	return s.appendRecord(stateRecordType, state)
 }
 
-func (s *segment) append(state *pb.PersistedState, entries []*pb.LogEntry) (int64, error) {
+func (s *segment) append(state *graftpb.PersistedState, entries []*raftpb.LogEntry) (int64, error) {
 	if state == nil && len(entries) == 0 {
 		return s.nextIndex, nil
 	}
@@ -354,7 +355,7 @@ func (s *segment) append(state *pb.PersistedState, entries []*pb.LogEntry) (int6
 			"appending entries with mismatching index continuity, expected %d, got %d", s.nextIndex, entries[0].Term)
 	}
 
-	records := make([]*pb.Record, 0, 1+len(entries))
+	records := make([]*graftpb.Record, 0, 1+len(entries))
 	for _, entry := range entries {
 		records = append(records, s.w.recordOf(entryRecordType, entry))
 	}
@@ -453,7 +454,7 @@ func openWal(dir string, softSegmentSize int64) (*wal, error) {
 			return nil, fmt.Errorf("unexpected record type: %d", record.Type)
 		}
 
-		var header pb.WalSegmentHeader
+		var header graftpb.WalSegmentHeader
 		if err := proto.Unmarshal(record.Data, &header); err != nil {
 			return nil, err
 		}
@@ -529,13 +530,13 @@ func openWal(dir string, softSegmentSize int64) (*wal, error) {
 				seg.entryOffsets = append(seg.entryOffsets, seg.lastOffset)
 				seg.nextIndex++
 			case stateRecordType:
-				var state pb.PersistedState
+				var state graftpb.PersistedState
 				if err := proto.Unmarshal(record.Data, &state); err != nil {
 					return nil, err
 				}
 				w.lastState = &state
 			case snapshotMetadataRecordType:
-				var snapshot pb.SnapshotMetadata
+				var snapshot graftpb.SnapshotMetadata
 				if err := proto.Unmarshal(record.Data, &snapshot); err != nil {
 					return nil, err
 				}
@@ -598,7 +599,7 @@ func openWal(dir string, softSegmentSize int64) (*wal, error) {
 	return w, nil
 }
 
-func (w *wal) verify(record *pb.Record) error {
+func (w *wal) verify(record *graftpb.Record) error {
 	dataCrc32 := w.crc32Of(record.Data)
 	if dataCrc32 != record.Crc32 {
 		return fmt.Errorf("mismatching CRC32s computed: %x, read: %x", dataCrc32, record.Crc32)
@@ -606,8 +607,8 @@ func (w *wal) verify(record *pb.Record) error {
 	return nil
 }
 
-func (w *wal) decodeRecord(recordBytes []byte) (*pb.Record, error) {
-	var record pb.Record
+func (w *wal) decodeRecord(recordBytes []byte) (*graftpb.Record, error) {
+	var record graftpb.Record
 	if err := proto.Unmarshal(recordBytes, &record); err != nil {
 		return nil, err
 	}
@@ -617,11 +618,11 @@ func (w *wal) decodeRecord(recordBytes []byte) (*pb.Record, error) {
 	return &record, nil
 }
 
-func (w *wal) RetrieveState() *pb.PersistedState {
+func (w *wal) RetrieveState() *graftpb.PersistedState {
 	return w.lastState
 }
 
-func (w *wal) SaveState(state *pb.PersistedState) error {
+func (w *wal) SaveState(state *graftpb.PersistedState) error {
 	if w.closed {
 		return errClosed
 	}
@@ -640,7 +641,7 @@ func (w *wal) SaveState(state *pb.PersistedState) error {
 	return nil
 }
 
-func (w *wal) Append(state *pb.PersistedState, entries []*pb.LogEntry) (int64, error) {
+func (w *wal) Append(state *graftpb.PersistedState, entries []*raftpb.LogEntry) (int64, error) {
 	if w.closed {
 		return -1, errClosed
 	}
@@ -672,31 +673,6 @@ func (w *wal) Append(state *pb.PersistedState, entries []*pb.LogEntry) (int64, e
 	return nextIndex, nil
 }
 
-func (w *wal) AppendCommands(state *pb.PersistedState, commands [][]byte) ([]*pb.LogEntry, error) {
-	if w.closed {
-		return nil, errClosed
-	}
-
-	entries := toLogEntries(state.CurrentTerm, w.tail.nextIndex, commands)
-	nextIndex, err := w.tail.append(state, entries)
-	if len(entries) > 0 && nextIndex != entries[len(entries)-1].Index+1 {
-		log.Fatalf("Next indices not equal, expected %d got %d", entries[len(entries)-1].Index+1, nextIndex)
-	}
-	if err != nil {
-		return nil, err
-	}
-
-	w.lastState = state
-	if len(entries) > 0 {
-		w.lastLogTerm = entries[len(entries)-1].Term
-	}
-
-	if err := w.appendSegmentIfNeeded(); err != nil {
-		return nil, err
-	}
-	return entries, nil
-}
-
 func (w *wal) appendSegmentIfNeeded() error {
 	if w.tail == nil || w.tail.lastOffset >= w.softSegmentSize {
 		return w.appendSegment()
@@ -707,7 +683,7 @@ func (w *wal) appendSegmentIfNeeded() error {
 func (w *wal) appendSegment() error {
 	firstIndex := int64(0)
 	segNumber := 0
-	var lastState *pb.PersistedState
+	var lastState *graftpb.PersistedState
 	if len(w.segments) > 0 {
 		firstIndex = w.tail.nextIndex
 		segNumber = w.tail.number + 1
@@ -725,7 +701,7 @@ func (w *wal) appendSegment() error {
 
 	var buf bytes.Buffer
 	recordBytes := protoMarshal(
-		w.recordOf(headerRecordType, &pb.WalSegmentHeader{
+		w.recordOf(headerRecordType, &graftpb.WalSegmentHeader{
 			Magic:         walMagic,
 			Version:       walVersion,
 			Flags:         0,
@@ -868,7 +844,7 @@ func (w *wal) EntryCount() int64 {
 	return count
 }
 
-func (w *wal) GetEntry(index int64) (*pb.LogEntry, error) {
+func (w *wal) GetEntry(index int64) (*raftpb.LogEntry, error) {
 	if w.closed {
 		return nil, errClosed
 	}
@@ -888,7 +864,7 @@ func (w *wal) GetEntryTerm(index int64) (int64, error) {
 	return entry.Term, nil
 }
 
-func (w *wal) GetEntries(from, to int64) ([]*pb.LogEntry, error) {
+func (w *wal) GetEntries(from, to int64) ([]*raftpb.LogEntry, error) {
 	if from > to {
 		return nil, fmt.Errorf("from (%d) must be smaller than or equal to (%d)", from, to)
 	}
@@ -898,7 +874,7 @@ func (w *wal) GetEntries(from, to int64) ([]*pb.LogEntry, error) {
 		if err != nil {
 			return nil, err
 		}
-		return []*pb.LogEntry{entry}, nil
+		return []*raftpb.LogEntry{entry}, nil
 	}
 
 	firstSegIndex, err := w.findSegment(from)
@@ -936,7 +912,7 @@ func (w *wal) GetEntries(from, to int64) ([]*pb.LogEntry, error) {
 	}
 }
 
-func (w *wal) HeadEntry() (*pb.LogEntry, error) {
+func (w *wal) HeadEntry() (*raftpb.LogEntry, error) {
 	if w.closed {
 		return nil, errClosed
 	}
@@ -955,7 +931,7 @@ func (w *wal) HeadEntry() (*pb.LogEntry, error) {
 	return nil, nil
 }
 
-func (w *wal) TailEntry() (*pb.LogEntry, error) {
+func (w *wal) TailEntry() (*raftpb.LogEntry, error) {
 	if w.closed {
 		return nil, errClosed
 	}
@@ -974,7 +950,7 @@ func (w *wal) TailEntry() (*pb.LogEntry, error) {
 	return nil, nil
 }
 
-func (w *wal) GetEntriesFrom(index int64) ([]*pb.LogEntry, error) {
+func (w *wal) GetEntriesFrom(index int64) ([]*raftpb.LogEntry, error) {
 	if w.closed {
 		return nil, errClosed
 	}
@@ -1103,9 +1079,9 @@ func (w *wal) findSegment(entryIndex int64) (int, error) {
 	return -1, indexOutOfRange(entryIndex)
 }
 
-func (w *wal) recordOf(recordType uint32, msg proto.Message) *pb.Record {
+func (w *wal) recordOf(recordType uint32, msg proto.Message) *graftpb.Record {
 	data := protoMarshal(msg)
-	return &pb.Record{Type: recordType, Crc32: w.crc32Of(data), Data: data}
+	return &graftpb.Record{Type: recordType, Crc32: w.crc32Of(data), Data: data}
 }
 
 func (w *wal) crc32Of(data []byte) uint32 {

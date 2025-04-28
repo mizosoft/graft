@@ -3,17 +3,15 @@ package main
 import (
 	"bufio"
 	"flag"
-	"fmt"
-	"math/rand"
+	"github.com/mizosoft/graft"
 	"os"
 	"strings"
-
-	"github.com/mizosoft/graft"
 )
 
 func main() {
 	nilId := ""
 	id := flag.String("id", nilId, "Id of this server")
+	address := flag.String("address", "", "Address of the keyval server")
 
 	flag.Parse()
 
@@ -51,46 +49,42 @@ func main() {
 		panic(err)
 	}
 
-	config := graft.Config{
+	g, err := graft.New(graft.Config{
 		Id:                        *id,
 		Addresses:                 addresses,
-		ElectionTimeoutLowMillis:  1500,
-		ElectionTimeoutHighMillis: 3000,
-		HeartbeatMillis:           1000,
+		ElectionTimeoutLowMillis:  150,
+		ElectionTimeoutHighMillis: 300,
+		HeartbeatMillis:           50,
 		Persistence:               wal,
-	}
-
-	g, e := graft.New(config)
-	if e != nil {
-		panic(e)
-	}
-
-	g.Commit = func(commit graft.Commit) {
-		fmt.Printf("Commit: %v\n", commit.Entries)
-		commit.Applied(nil)
+	})
+	if err != nil {
+		panic(err)
 	}
 
 	go func() {
-		gErr := g.Serve()
-		fmt.Println(gErr)
+		err := g.Serve()
+		if err != nil {
+			panic(err)
+		}
 	}()
 
-	for {
-		var input string
-		fmt.Print("(y) to send a command, (n) to exit: ")
-		fmt.Scanln(&input) // Reads input until the first space or newline
-
-		if input == "n" {
-			return
-		}
-
-		count := rand.Intn(10)
-		commands := make([][]byte, count)
-		for i := range count {
-			commands[i] = []byte("abc")
-		}
-
-		fmt.Printf("Appending %v entries\n", commands)
-		g.Append(commands)
+	kvs := newKvStore(g)
+	err = kvs.serve(*address)
+	if err != nil {
+		panic(err)
 	}
+
+	//for port := 8080; ; {
+	//	err = kvs.serve("127.0.0.1:" + strconv.Itoa(port))
+	//	if err != nil {
+	//		if strings.Contains(err.Error(), "address already in use") {
+	//			log.Println("Address already in use, retrying")
+	//			port++
+	//		} else {
+	//			panic(err)
+	//		}
+	//	} else {
+	//		break
+	//	}
+	//}
 }

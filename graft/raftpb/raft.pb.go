@@ -4,11 +4,12 @@
 // 	protoc        v5.29.3
 // source: raft.proto
 
-package pb
+package raftpb
 
 import (
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
+	_ "google.golang.org/protobuf/types/known/anypb"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
@@ -25,21 +26,21 @@ type LogEntry_Type int32
 
 const (
 	LogEntry_COMMAND LogEntry_Type = 0
-	LogEntry_CONFIG  LogEntry_Type = 1
 	LogEntry_NOOP    LogEntry_Type = 2
+	LogEntry_CONFIG  LogEntry_Type = 1
 )
 
 // Enum value maps for LogEntry_Type.
 var (
 	LogEntry_Type_name = map[int32]string{
 		0: "COMMAND",
-		1: "CONFIG",
 		2: "NOOP",
+		1: "CONFIG",
 	}
 	LogEntry_Type_value = map[string]int32{
 		"COMMAND": 0,
-		"CONFIG":  1,
 		"NOOP":    2,
+		"CONFIG":  1,
 	}
 )
 
@@ -330,8 +331,8 @@ type LogEntry struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Term          int64                  `protobuf:"varint,1,opt,name=term,proto3" json:"term,omitempty"`
 	Index         int64                  `protobuf:"varint,2,opt,name=index,proto3" json:"index,omitempty"`
-	Type          LogEntry_Type          `protobuf:"varint,3,opt,name=type,proto3,enum=raft.LogEntry_Type" json:"type,omitempty"`
-	Command       []byte                 `protobuf:"bytes,4,opt,name=command,proto3" json:"command,omitempty"`
+	Command       []byte                 `protobuf:"bytes,3,opt,name=command,proto3" json:"command,omitempty"`
+	Type          LogEntry_Type          `protobuf:"varint,4,opt,name=type,proto3,enum=raft.LogEntry_Type" json:"type,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -380,13 +381,6 @@ func (x *LogEntry) GetIndex() int64 {
 	return 0
 }
 
-func (x *LogEntry) GetType() LogEntry_Type {
-	if x != nil {
-		return x.Type
-	}
-	return LogEntry_COMMAND
-}
-
 func (x *LogEntry) GetCommand() []byte {
 	if x != nil {
 		return x.Command
@@ -394,12 +388,19 @@ func (x *LogEntry) GetCommand() []byte {
 	return nil
 }
 
+func (x *LogEntry) GetType() LogEntry_Type {
+	if x != nil {
+		return x.Type
+	}
+	return LogEntry_COMMAND
+}
+
 var File_raft_proto protoreflect.FileDescriptor
 
 const file_raft_proto_rawDesc = "" +
 	"\n" +
 	"\n" +
-	"raft.proto\x12\x04raft\"\x90\x01\n" +
+	"raft.proto\x12\x04raft\x1a\x19google/protobuf/any.proto\"\x90\x01\n" +
 	"\x12RequestVoteRequest\x12\x12\n" +
 	"\x04term\x18\x01 \x01(\x03R\x04term\x12 \n" +
 	"\vcandidateId\x18\x02 \x01(\tR\vcandidateId\x12\"\n" +
@@ -420,17 +421,17 @@ const file_raft_proto_rawDesc = "" +
 	"\asuccess\x18\x02 \x01(\bR\asuccess\"\xa2\x01\n" +
 	"\bLogEntry\x12\x12\n" +
 	"\x04term\x18\x01 \x01(\x03R\x04term\x12\x14\n" +
-	"\x05index\x18\x02 \x01(\x03R\x05index\x12'\n" +
-	"\x04type\x18\x03 \x01(\x0e2\x13.raft.LogEntry.TypeR\x04type\x12\x18\n" +
-	"\acommand\x18\x04 \x01(\fR\acommand\")\n" +
+	"\x05index\x18\x02 \x01(\x03R\x05index\x12\x18\n" +
+	"\acommand\x18\x03 \x01(\fR\acommand\x12'\n" +
+	"\x04type\x18\x04 \x01(\x0e2\x13.raft.LogEntry.TypeR\x04type\")\n" +
 	"\x04Type\x12\v\n" +
-	"\aCOMMAND\x10\x00\x12\n" +
+	"\aCOMMAND\x10\x00\x12\b\n" +
+	"\x04NOOP\x10\x02\x12\n" +
 	"\n" +
-	"\x06CONFIG\x10\x01\x12\b\n" +
-	"\x04NOOP\x10\x022\x94\x01\n" +
+	"\x06CONFIG\x10\x012\x94\x01\n" +
 	"\x04Raft\x12B\n" +
 	"\vRequestVote\x12\x18.raft.RequestVoteRequest\x1a\x19.raft.RequestVoteResponse\x12H\n" +
-	"\rAppendEntries\x12\x1a.raft.AppendEntriesRequest\x1a\x1b.raft.AppendEntriesResponseB!Z\x1fgithub.com/mizosoft/graft/pb;pbb\x06proto3"
+	"\rAppendEntries\x12\x1a.raft.AppendEntriesRequest\x1a\x1b.raft.AppendEntriesResponseB)Z'github.com/mizosoft/graft/raftpb;raftpbb\x06proto3"
 
 var (
 	file_raft_proto_rawDescOnce sync.Once

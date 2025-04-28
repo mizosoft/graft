@@ -1,4 +1,4 @@
-protoc --go_out=./pb --go-grpc_out=./pb \
+protoc --go_out=./graftpb --go-grpc_out=./graftpb \
   --go_opt=paths=source_relative \
   --go-grpc_opt=paths=source_relative \
-  graft.proto
+  raft.proto

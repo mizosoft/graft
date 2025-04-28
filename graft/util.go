@@ -7,7 +7,7 @@ import (
 	"os"
 	"sync"
 
-	"github.com/mizosoft/graft/pb"
+	"github.com/mizosoft/graft/raftpb"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -81,10 +81,10 @@ func (b *bufferedReader) Read(p []byte) (int, error) {
 	}
 }
 
-func toLogEntries(term int64, nextIndex int64, commands [][]byte) []*pb.LogEntry {
-	entries := make([]*pb.LogEntry, len(commands))
+func toLogEntries(term int64, nextIndex int64, commands [][]byte) []*raftpb.LogEntry {
+	entries := make([]*raftpb.LogEntry, len(commands))
 	for i, command := range commands {
-		entries[i] = &pb.LogEntry{Term: term, Index: nextIndex, Command: command, Type: pb.LogEntry_COMMAND}
+		entries[i] = &raftpb.LogEntry{Term: term, Index: nextIndex, Command: command, Type: raftpb.LogEntry_COMMAND}
 		nextIndex++
 	}
 	return entries

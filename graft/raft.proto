@@ -2,7 +2,9 @@ syntax = "proto3";
 
 package raft;
 
-option go_package = "github.com/mizosoft/graft/pb;pb";
+option go_package = "github.com/mizosoft/graft/raftpb;raftpb";
+
+import "google/protobuf/any.proto";
 
 service Raft {
     rpc RequestVote(RequestVoteRequest) returns (RequestVoteResponse);
@@ -45,6 +47,6 @@ message LogEntry {
 
     int64 term = 1;
     int64 index = 2;
-    Type type = 3;
-    bytes command = 4;
+    bytes command = 3;
+    Type type = 4;
 }

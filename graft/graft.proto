@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package graft;
 
-option go_package = "github.com/mizosoft/graft/pb;pb";
+option go_package = "github.com/mizosoft/graft/graftpb;graftpb";
 
 message PersistedState {
   int64 currentTerm = 1;
