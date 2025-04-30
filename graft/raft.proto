@@ -4,12 +4,10 @@ package raft;
 
 option go_package = "github.com/mizosoft/graft/raftpb;raftpb";
 
-import "google/protobuf/any.proto";
-
 service Raft {
     rpc RequestVote(RequestVoteRequest) returns (RequestVoteResponse);
     rpc AppendEntries(AppendEntriesRequest) returns (AppendEntriesResponse);
-    // rpc InstallSnapshot(stream SnapshotChunk) returns (SnapshotResponse);
+    //rpc InstallSnapshot(stream SnapshotChunk) returns (SnapshotResponse);
 }
 
 message RequestVoteRequest {
@@ -36,6 +34,20 @@ message AppendEntriesRequest {
 message AppendEntriesResponse {
     int64 term = 1;
     bool success = 2;
+}
+
+message SnapshotRequest {
+    int64 term = 1;
+    string leaderId = 2;
+    int64 lastIncludedIndex = 3;
+    int64 lastIncludedTerm = 4;
+    int64 offset = 5;
+    bytes data = 6;
+    bool done = 7;
+}
+
+message SnapshotResponse {
+    int64 term = 1;
 }
 
 message LogEntry {

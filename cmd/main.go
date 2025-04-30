@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"flag"
 	"fmt"
+	"github.com/mizosoft/graft/raftpb"
 	"math/rand"
 	"os"
 	"strings"
@@ -65,9 +66,9 @@ func main() {
 		panic(e)
 	}
 
-	g.Commit = func(commit graft.Commit) {
-		fmt.Printf("Commit: %v\n", commit.Entries)
-		commit.Applied(nil)
+	g.Apply = func(entries []*raftpb.LogEntry) []byte {
+		fmt.Printf("Apply: %v\n", entries)
+		return nil
 	}
 
 	go func() {

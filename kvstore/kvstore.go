@@ -82,13 +82,14 @@ func (e *resultPublisher) receive(id int64) (any, bool) {
 }
 
 type kvstore struct {
-	data       map[string]string
-	publisher  *resultPublisher
-	commitChan chan graft.Commit
-	g          *graft.Graft
-	started    bool
-	mut        sync.RWMutex
-	mux        *http.ServeMux
+	data         map[string]string
+	publisher    *resultPublisher
+	snapshotChan chan graft.Snapshot // Restore from snapshot channel.
+	applyChan    chan []*raftpb.LogEntry
+	g            *graft.Graft
+	initialized  bool
+	mut          sync.RWMutex
+	mux          *http.ServeMux
 }
 
 type GetRequest struct {
@@ -271,10 +272,10 @@ func decodeJson[T any](r *http.Request) (T, error) {
 	return req, err
 }
 
-func (s *kvstore) commitWorker() {
-	for commit := range s.commitChan {
-		for i, cmd := range deserializeCommands(commit.Entries()) {
-			index := commit.Entries()[i].Index
+func (s *kvstore) applyWorker() {
+	for entries := range s.applyChan {
+		for i, cmd := range deserializeCommands(entries) {
+			index := entries[i].Index
 			go func() {
 				response := s.processCommand(cmd)
 				if cmd.ServerId == s.g.Id {
@@ -408,42 +409,8 @@ func (s *kvstore) registerHandlers() {
 }
 
 func (s *kvstore) serve(address string) error {
-	if !s.started {
-		s.started = true
-		s.registerHandlers()
-		s.restoreData()
-		s.g.Commit = func(commit graft.Commit) {
-			s.commitChan <- commit
-		}
-		go s.commitWorker()
-	}
+	s.initialize()
 	return http.ListenAndServe(address, s.mux)
-}
-
-func (s *kvstore) restoreData() {
-	s.restoreFromSnapshot()
-	s.restoreFromLog()
-}
-
-func (s *kvstore) restoreFromSnapshot() {
-	snap, err := s.g.RetrieveSnapshot()
-	if err != nil {
-		panic(err)
-	}
-	if snap != nil {
-		s.data = deserializeData(snap.Data())
-	}
-}
-
-func (s *kvstore) restoreFromLog() {
-	entries, err := s.g.RetrieveCommands()
-	if err != nil {
-		panic(err)
-	}
-
-	for _, cmd := range deserializeCommands(entries) {
-		s.processCommand(cmd)
-	}
 }
 
 func serializeData(data map[string]string) []byte {
@@ -468,12 +435,34 @@ func deserializeData(data []byte) map[string]string {
 
 func newKvStore(g *graft.Graft) *kvstore {
 	return &kvstore{
-		g:          g,
-		mux:        http.NewServeMux(),
-		commitChan: make(chan graft.Commit),
-		data:       make(map[string]string),
+		g:         g,
+		mux:       http.NewServeMux(),
+		applyChan: make(chan []*raftpb.LogEntry),
+		data:      make(map[string]string),
 		publisher: &resultPublisher{
 			clients: make(map[int64]chan any),
 		},
 	}
+}
+
+func (s *kvstore) initialize() {
+	s.mut.Lock()
+	defer s.mut.Unlock()
+
+	if s.initialized {
+		return
+	}
+	s.initialized = true
+
+	s.registerHandlers()
+	s.g.Restore = func(snapshot graft.Snapshot) {
+		s.mut.Lock()
+		defer s.mut.Unlock()
+		s.data = deserializeData(snapshot.Data())
+	}
+	s.g.Apply = func(entries []*raftpb.LogEntry) []byte {
+		s.applyChan <- entries
+		return nil // TODO change later to snapshot with size threshold.
+	}
+	go s.applyWorker()
 }

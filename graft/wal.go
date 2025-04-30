@@ -571,20 +571,14 @@ func openWal(dir string, softSegmentSize int64) (*wal, error) {
 		}
 	}
 
-	tail, err := w.TailEntry()
-	if err != nil {
-		return nil, err
-	}
+	tail := w.TailEntry()
 	if tail != nil {
 		w.lastLogTerm = tail.Term
 	} else {
 		w.lastLogTerm = -1
 	}
 
-	head, err := w.HeadEntry()
-	if err != nil {
-		return nil, err
-	}
+	head := w.HeadEntry()
 	if head != nil {
 		w.firstLogTerm = head.Term
 	} else {
@@ -622,28 +616,27 @@ func (w *wal) RetrieveState() *graftpb.PersistedState {
 	return w.lastState
 }
 
-func (w *wal) SaveState(state *graftpb.PersistedState) error {
+func (w *wal) SaveState(state *graftpb.PersistedState) {
 	if w.closed {
-		return errClosed
+		panic(errClosed)
 	}
 
 	if proto.Equal(state, w.lastState) {
-		return nil
+		return
 	}
 
 	if err := w.tail.appendState(state); err != nil {
-		return err
+		panic(err)
 	}
 	if err := w.appendSegmentIfNeeded(); err != nil {
-		return err
+		panic(err)
 	}
 	w.lastState = state
-	return nil
 }
 
-func (w *wal) Append(state *graftpb.PersistedState, entries []*raftpb.LogEntry) (int64, error) {
+func (w *wal) Append(state *graftpb.PersistedState, entries []*raftpb.LogEntry) int64 {
 	if w.closed {
-		return -1, errClosed
+		panic(errClosed)
 	}
 
 	if proto.Equal(state, w.lastState) {
@@ -657,7 +650,7 @@ func (w *wal) Append(state *graftpb.PersistedState, entries []*raftpb.LogEntry) 
 	}
 	nextIndex, err := w.tail.append(state, entries)
 	if err != nil {
-		return -1, err
+		panic(err)
 	}
 
 	if state != nil {
@@ -668,9 +661,9 @@ func (w *wal) Append(state *graftpb.PersistedState, entries []*raftpb.LogEntry) 
 	}
 
 	if err := w.appendSegmentIfNeeded(); err != nil {
-		return -1, err
+		panic(err)
 	}
-	return nextIndex, nil
+	return nextIndex
 }
 
 func (w *wal) appendSegmentIfNeeded() error {
@@ -757,14 +750,14 @@ func (w *wal) appendSegment() error {
 	return nil
 }
 
-func (w *wal) TruncateEntriesFrom(index int64) error {
+func (w *wal) TruncateEntriesFrom(index int64) {
 	if w.closed {
-		return errClosed
+		panic(errClosed)
 	}
 
 	segIndex, err := w.findSegment(index)
 	if err != nil {
-		return err
+		panic(err)
 	}
 
 	removedSegments := w.segments[segIndex+1:]
@@ -773,35 +766,33 @@ func (w *wal) TruncateEntriesFrom(index int64) error {
 
 	for _, seg := range removedSegments {
 		if err := seg.delete(); err != nil {
-			return err
+			panic(err)
 		}
 	}
 	if err := w.tail.truncateEntriesFrom(index); err != nil {
-		return err
+		panic(err)
 	}
 	if err := w.appendSegmentIfNeeded(); err != nil {
-		return err
+		panic(err)
 	}
 
 	// Make sure we have lastState appended since it might have been truncated.
 	if w.lastState != nil {
 		err := w.tail.appendState(w.lastState)
 		if err != nil {
-			return err
+			panic(err)
 		}
 	}
-
-	return nil
 }
 
-func (w *wal) TruncateEntriesTo(index int64) error {
+func (w *wal) TruncateEntriesTo(index int64) {
 	if w.closed {
-		return errClosed
+		panic(errClosed)
 	}
 
 	segIndex, err := w.findSegment(index)
 	if err != nil {
-		return err
+		panic(err)
 	}
 
 	removedSegments := w.segments[:segIndex]
@@ -809,31 +800,29 @@ func (w *wal) TruncateEntriesTo(index int64) error {
 
 	for _, seg := range removedSegments {
 		if err := seg.delete(); err != nil {
-			return err
+			panic(err)
 		}
 	}
 
 	removeHead, err := w.segments[0].truncateEntriesTo(index)
 	if err != nil {
-		return err
+		panic(err)
 	}
 	if removeHead {
 		w.segments = w.segments[1:]
 	}
 
 	if err := w.appendSegmentIfNeeded(); err != nil {
-		return err
+		panic(err)
 	}
 
 	// Make sure we have lastState appended since it might have been truncated.
 	if w.lastState != nil {
 		err := w.tail.appendState(w.lastState)
 		if err != nil {
-			return err
+			panic(err)
 		}
 	}
-
-	return nil
 }
 
 func (w *wal) EntryCount() int64 {
@@ -844,77 +833,74 @@ func (w *wal) EntryCount() int64 {
 	return count
 }
 
-func (w *wal) GetEntry(index int64) (*raftpb.LogEntry, error) {
+func (w *wal) GetEntry(index int64) *raftpb.LogEntry {
 	if w.closed {
-		return nil, errClosed
+		panic(errClosed)
 	}
 
 	segIndex, err := w.findSegment(index)
 	if err != nil {
-		return nil, err
+		panic(err)
 	}
-	return w.segments[segIndex].getEntry(index)
-}
 
-func (w *wal) GetEntryTerm(index int64) (int64, error) {
-	entry, err := w.GetEntry(index)
+	entry, err := w.segments[segIndex].getEntry(index)
 	if err != nil {
-		return -1, err
+		panic(err)
 	}
-	return entry.Term, nil
+	return entry
 }
 
-func (w *wal) GetEntries(from, to int64) ([]*raftpb.LogEntry, error) {
+func (w *wal) GetEntryTerm(index int64) int64 {
+	return w.GetEntry(index).Term
+}
+
+func (w *wal) GetEntries(from, to int64) []*raftpb.LogEntry {
 	if from > to {
-		return nil, fmt.Errorf("from (%d) must be smaller than or equal to (%d)", from, to)
+		panic(fmt.Errorf("from (%d) must be smaller than or equal to (%d)", from, to))
 	}
 
 	if from == to {
-		entry, err := w.GetEntry(from)
-		if err != nil {
-			return nil, err
-		}
-		return []*raftpb.LogEntry{entry}, nil
+		return []*raftpb.LogEntry{w.GetEntry(from)}
 	}
 
 	firstSegIndex, err := w.findSegment(from)
 	if err != nil {
-		return nil, err
+		panic(err)
 	}
 
 	lastSegIndex, err := w.findSegment(to)
 	if err != nil {
-		return nil, err
+		panic(err)
 	}
 
 	entries, err := w.segments[firstSegIndex].getEntriesFrom(from)
 	if err != nil {
-		return nil, err
+		panic(err)
 	}
 
 	if firstSegIndex == lastSegIndex {
-		return entries[0 : to-from+1], nil
+		return entries[0 : to-from+1]
 	} else {
 		for i := firstSegIndex + 1; i < lastSegIndex; i++ {
 			seg := w.segments[i]
 			middleEntries, err := seg.getEntriesFrom(seg.firstIndex)
 			if err != nil {
-				return nil, err
+				panic(err)
 			}
 			entries = append(entries, middleEntries...)
 		}
 
 		tailEntries, err := w.segments[lastSegIndex].getEntriesTo(to)
 		if err != nil {
-			return nil, err
+			panic(err)
 		}
-		return append(entries, tailEntries...), nil
+		return append(entries, tailEntries...)
 	}
 }
 
-func (w *wal) HeadEntry() (*raftpb.LogEntry, error) {
+func (w *wal) HeadEntry() *raftpb.LogEntry {
 	if w.closed {
-		return nil, errClosed
+		panic(errClosed)
 	}
 
 	// Search for the first segment from the start that has an entry.
@@ -922,18 +908,18 @@ func (w *wal) HeadEntry() (*raftpb.LogEntry, error) {
 		seg := w.segments[i]
 		entry, err := seg.headEntry()
 		if err != nil {
-			return nil, err
+			panic(err)
 		}
 		if entry != nil {
-			return entry, nil
+			return entry
 		}
 	}
-	return nil, nil
+	return nil
 }
 
-func (w *wal) TailEntry() (*raftpb.LogEntry, error) {
+func (w *wal) TailEntry() *raftpb.LogEntry {
 	if w.closed {
-		return nil, errClosed
+		panic(errClosed)
 	}
 
 	// Search for the first segment from the end that has an entry.
@@ -941,44 +927,44 @@ func (w *wal) TailEntry() (*raftpb.LogEntry, error) {
 		seg := w.segments[i]
 		entry, err := seg.tailEntry()
 		if err != nil {
-			return nil, err
+			panic(err)
 		}
 		if entry != nil {
-			return entry, nil
+			return entry
 		}
 	}
-	return nil, nil
+	return nil
 }
 
-func (w *wal) GetEntriesFrom(index int64) ([]*raftpb.LogEntry, error) {
+func (w *wal) GetEntriesFrom(index int64) []*raftpb.LogEntry {
 	if w.closed {
-		return nil, errClosed
+		panic(errClosed)
 	}
 
 	segIndex, err := w.findSegment(index)
 	if err != nil {
-		return nil, err
+		panic(err)
 	}
 
 	entries, err := w.segments[segIndex].getEntriesFrom(index)
 	if err != nil {
-		return nil, err
+		panic(err)
 	}
 
 	for i := segIndex + 1; i < len(w.segments); i++ {
 		seg := w.segments[i]
 		segEntries, err := seg.getEntriesFrom(seg.firstIndex)
 		if err != nil {
-			return nil, err
+			panic(err)
 		}
 		entries = append(entries, segEntries...)
 	}
-	return entries, nil
+	return entries
 }
 
-func (w *wal) SaveSnapshot(snapshot Snapshot) error {
+func (w *wal) SaveSnapshot(snapshot Snapshot) {
 	if w.closed {
-		return errClosed
+		panic(errClosed)
 	}
 
 	metadata := snapshot.Metadata()
@@ -986,47 +972,50 @@ func (w *wal) SaveSnapshot(snapshot Snapshot) error {
 	tempFpath := fpath + ".tmp"
 	tempF, err := os.Create(tempFpath)
 	if err != nil {
-		return err
+		panic(err)
 	}
 	defer tempF.Close()
 
 	if _, err := tempF.Write(snapshot.Data()); err != nil {
-		return err
+		panic(err)
 	}
 	if err := tempF.Sync(); err != nil {
-		return err
+		panic(err)
 	}
 	if err := tempF.Close(); err != nil {
-		return err
+		panic(err)
 	}
 	if err := os.Rename(tempFpath, fpath); err != nil {
-		return err
+		panic(err)
 	}
 	if err := w.tail.appendRecord(snapshotMetadataRecordType, metadata); err != nil {
-		return err
+		panic(err)
 	}
 	if err := w.appendSegmentIfNeeded(); err != nil {
-		return err
+		panic(err)
 	}
 	w.lastSnapshot = metadata
-	return nil
 }
 
-func (w *wal) RetrieveSnapshot() (Snapshot, error) {
+func (w *wal) RetrieveSnapshot() Snapshot {
 	if w.closed {
-		return nil, errClosed
+		panic(errClosed)
 	}
 
 	metadata := w.lastSnapshot
 	if metadata == nil {
-		return nil, nil
+		return nil
 	}
 
-	data, err := os.ReadFile(snapFileName(metadata))
+	data, err := os.ReadFile(path.Join(w.dir, snapFileName(metadata)))
 	if err != nil {
-		return nil, err
+		panic(err)
 	}
-	return NewSnapshot(metadata, data), nil
+	return NewSnapshot(metadata, data)
+}
+
+func (w *wal) SnapshotMetadata() *graftpb.SnapshotMetadata {
+	return w.lastSnapshot
 }
 
 func (w *wal) FirstLogIndexAndTerm() (int64, int64) {
@@ -1049,9 +1038,9 @@ func (w *wal) LastLogIndexAndTerm() (int64, int64) {
 	return w.tail.nextIndex - 1, w.lastLogTerm
 }
 
-func (w *wal) Close() error {
+func (w *wal) Close() {
 	if w.closed {
-		return nil
+		return
 	}
 
 	var errs []error
@@ -1061,7 +1050,10 @@ func (w *wal) Close() error {
 		}
 	}
 	w.closed = true
-	return errors.Join(errs...)
+
+	if len(errs) > 0 {
+		log.Printf("wal: close errors: %v\n", errs)
+	}
 }
 
 func (w *wal) findSegment(entryIndex int64) (int, error) {

@@ -9,7 +9,6 @@ package raftpb
 import (
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
-	_ "google.golang.org/protobuf/types/known/anypb"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
@@ -400,7 +399,7 @@ var File_raft_proto protoreflect.FileDescriptor
 const file_raft_proto_rawDesc = "" +
 	"\n" +
 	"\n" +
-	"raft.proto\x12\x04raft\x1a\x19google/protobuf/any.proto\"\x90\x01\n" +
+	"raft.proto\x12\x04raft\"\x90\x01\n" +
 	"\x12RequestVoteRequest\x12\x12\n" +
 	"\x04term\x18\x01 \x01(\x03R\x04term\x12 \n" +
 	"\vcandidateId\x18\x02 \x01(\tR\vcandidateId\x12\"\n" +

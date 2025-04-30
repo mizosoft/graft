@@ -4,4 +4,5 @@ use (
     ./graft
     ./kvstore
     ./cmd
+    ./testutil
 )

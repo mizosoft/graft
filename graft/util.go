@@ -124,7 +124,11 @@ func forceClose(closer io.Closer) {
 func cloneMsgs[T proto.Message](msgs []T) []T {
 	cloned := make([]T, len(msgs))
 	for i, msg := range msgs {
-		cloned[i] = proto.Clone(msg).(T)
+		cloned[i] = cloneMsg(msg)
 	}
 	return cloned
+}
+
+func cloneMsg[T proto.Message](msg T) T {
+	return proto.Clone(msg).(T)
 }

@@ -15,7 +15,7 @@ func (s *server) RequestVote(ctx context.Context, request *raftpb.RequestVoteReq
 	if !ok {
 		panic("unable to find Graft instance in context")
 	}
-	return g.requestVote(ctx, request)
+	return g.requestVote(request)
 }
 
 func (s *server) AppendEntries(ctx context.Context, request *raftpb.AppendEntriesRequest) (*raftpb.AppendEntriesResponse, error) {
@@ -23,5 +23,5 @@ func (s *server) AppendEntries(ctx context.Context, request *raftpb.AppendEntrie
 	if !ok {
 		panic("unable to find Graft instance in context")
 	}
-	return g.appendEntries(ctx, request)
+	return g.appendEntries(request)
 }

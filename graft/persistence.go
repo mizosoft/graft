@@ -30,33 +30,33 @@ func indexOutOfRangeWithCount(index int64, count int64) error {
 type Persistence interface {
 	RetrieveState() *graftpb.PersistedState
 
-	SaveState(state *graftpb.PersistedState) error
+	SaveState(state *graftpb.PersistedState)
 
-	Append(state *graftpb.PersistedState, entries []*raftpb.LogEntry) (int64, error)
+	Append(state *graftpb.PersistedState, entries []*raftpb.LogEntry) int64
 
-	TruncateEntriesFrom(index int64) error
+	TruncateEntriesFrom(index int64)
 
-	TruncateEntriesTo(index int64) error
+	TruncateEntriesTo(index int64)
 
 	EntryCount() int64
 
-	GetEntry(index int64) (*raftpb.LogEntry, error)
+	GetEntry(index int64) *raftpb.LogEntry
 
-	GetEntryTerm(index int64) (int64, error)
+	GetEntryTerm(index int64) int64
 
-	GetEntriesFrom(index int64) ([]*raftpb.LogEntry, error)
+	GetEntriesFrom(index int64) []*raftpb.LogEntry
 
-	GetEntries(from, to int64) ([]*raftpb.LogEntry, error)
+	GetEntries(from, to int64) []*raftpb.LogEntry
 
 	FirstLogIndexAndTerm() (int64, int64)
 
 	LastLogIndexAndTerm() (int64, int64)
 
-	SaveSnapshot(snapshot Snapshot) error
+	SaveSnapshot(snapshot Snapshot)
 
-	RetrieveSnapshot() (Snapshot, error)
+	RetrieveSnapshot() Snapshot
 
-	Close() error
+	Close()
 }
 
 type Snapshot interface {
@@ -100,12 +100,11 @@ func (p *memoryPersistence) RetrieveState() *graftpb.PersistedState {
 	return p.state
 }
 
-func (p *memoryPersistence) SaveState(state *graftpb.PersistedState) error {
+func (p *memoryPersistence) SaveState(state *graftpb.PersistedState) {
 	p.state = state
-	return nil
 }
 
-func (p *memoryPersistence) Append(state *graftpb.PersistedState, entries []*raftpb.LogEntry) (int64, error) {
+func (p *memoryPersistence) Append(state *graftpb.PersistedState, entries []*raftpb.LogEntry) int64 {
 	p.state = state
 	nextIndex := len(p.log)
 	for _, entry := range entries {
@@ -113,76 +112,70 @@ func (p *memoryPersistence) Append(state *graftpb.PersistedState, entries []*raf
 		nextIndex++
 	}
 	p.log = append(p.log, entries...)
-	return int64(nextIndex), nil
+	return int64(nextIndex)
 }
 
-func (p *memoryPersistence) TruncateEntriesFrom(index int64) error {
+func (p *memoryPersistence) TruncateEntriesFrom(index int64) {
 	p.log = p.log[:index]
-	return nil
 }
 
-func (p *memoryPersistence) TruncateEntriesTo(index int64) error {
+func (p *memoryPersistence) TruncateEntriesTo(index int64) {
 	p.log = p.log[index+1:]
-	return nil
 }
 
 func (p *memoryPersistence) EntryCount() int64 {
 	return int64(len(p.log))
 }
 
-func (p *memoryPersistence) GetEntry(index int64) (*raftpb.LogEntry, error) {
+func (p *memoryPersistence) GetEntry(index int64) *raftpb.LogEntry {
 	if index >= p.EntryCount() {
-		return nil, indexOutOfRangeWithCount(index, p.EntryCount())
+		panic(indexOutOfRangeWithCount(index, p.EntryCount()))
 	}
-	return p.log[index], nil
+	return p.log[index]
 }
 
-func (p *memoryPersistence) GetEntryTerm(index int64) (int64, error) {
-	entry, err := p.GetEntry(index)
-	if err != nil {
-		return -1, err
-	}
-	return entry.Term, nil
+func (p *memoryPersistence) GetEntryTerm(index int64) int64 {
+	return p.GetEntry(index).Term
 }
 
-func (p *memoryPersistence) GetEntriesFrom(index int64) ([]*raftpb.LogEntry, error) {
+func (p *memoryPersistence) GetEntriesFrom(index int64) []*raftpb.LogEntry {
 	if index >= p.EntryCount() {
-		return []*raftpb.LogEntry{}, indexOutOfRangeWithCount(index, p.EntryCount())
+		panic(indexOutOfRangeWithCount(index, p.EntryCount()))
 	}
-	return p.log[index:], nil
+	return p.log[index:]
 }
 
-func (p *memoryPersistence) GetEntries(from, to int64) ([]*raftpb.LogEntry, error) {
+func (p *memoryPersistence) GetEntries(from, to int64) []*raftpb.LogEntry {
 	firstIndex, _ := p.FirstLogIndexAndTerm()
 	if from < firstIndex {
-		return []*raftpb.LogEntry{}, indexOutOfRange(firstIndex)
+		panic(indexOutOfRange(firstIndex))
 	}
 
 	lastIndex, _ := p.LastLogIndexAndTerm()
 	if to > lastIndex {
-		return []*raftpb.LogEntry{}, indexOutOfRange(firstIndex)
+		panic(indexOutOfRange(firstIndex))
 	}
 
-	return p.log[from:to], nil
+	return p.log[from:to]
 }
 
-func (p *memoryPersistence) headEntry() (*raftpb.LogEntry, error) {
+func (p *memoryPersistence) headEntry() *raftpb.LogEntry {
 	if len(p.log) == 0 {
-		return nil, nil
+		return nil
 	}
-	return p.log[0], nil
+	return p.log[0]
 }
 
-func (p *memoryPersistence) tailEntry() (*raftpb.LogEntry, error) {
+func (p *memoryPersistence) tailEntry() *raftpb.LogEntry {
 	lastIndex := len(p.log) - 1
 	if lastIndex < 0 {
-		return nil, nil
+		return nil
 	}
-	return p.log[lastIndex], nil
+	return p.log[lastIndex]
 }
 
 func (p *memoryPersistence) FirstLogIndexAndTerm() (int64, int64) {
-	entry, _ := p.headEntry()
+	entry := p.headEntry()
 	if entry == nil {
 		return -1, -1
 	}
@@ -190,22 +183,20 @@ func (p *memoryPersistence) FirstLogIndexAndTerm() (int64, int64) {
 }
 
 func (p *memoryPersistence) LastLogIndexAndTerm() (int64, int64) {
-	entry, _ := p.tailEntry()
+	entry := p.tailEntry()
 	if entry == nil {
 		return -1, -1
 	}
 	return entry.Index, entry.Term
 }
 
-func (p *memoryPersistence) SaveSnapshot(snap Snapshot) error {
+func (p *memoryPersistence) SaveSnapshot(snap Snapshot) {
 	p.snapshot = snap
-	return nil
 }
 
-func (p *memoryPersistence) RetrieveSnapshot() (Snapshot, error) {
-	return p.snapshot, nil
+func (p *memoryPersistence) RetrieveSnapshot() Snapshot {
+	return p.snapshot
 }
 
-func (p *memoryPersistence) Close() error {
-	return nil
+func (p *memoryPersistence) Close() {
 }

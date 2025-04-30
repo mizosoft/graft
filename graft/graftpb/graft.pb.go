@@ -269,6 +269,66 @@ func (x *SnapshotMetadata) GetLastAppliedTerm() int64 {
 	return 0
 }
 
+type ConfigDiff struct {
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	JoinerIds       []string               `protobuf:"bytes,1,rep,name=joinerIds,proto3" json:"joinerIds,omitempty"`
+	JoinerAddresses []string               `protobuf:"bytes,2,rep,name=joinerAddresses,proto3" json:"joinerAddresses,omitempty"`
+	LeaverIds       []string               `protobuf:"bytes,3,rep,name=leaverIds,proto3" json:"leaverIds,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *ConfigDiff) Reset() {
+	*x = ConfigDiff{}
+	mi := &file_graft_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ConfigDiff) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ConfigDiff) ProtoMessage() {}
+
+func (x *ConfigDiff) ProtoReflect() protoreflect.Message {
+	mi := &file_graft_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ConfigDiff.ProtoReflect.Descriptor instead.
+func (*ConfigDiff) Descriptor() ([]byte, []int) {
+	return file_graft_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *ConfigDiff) GetJoinerIds() []string {
+	if x != nil {
+		return x.JoinerIds
+	}
+	return nil
+}
+
+func (x *ConfigDiff) GetJoinerAddresses() []string {
+	if x != nil {
+		return x.JoinerAddresses
+	}
+	return nil
+}
+
+func (x *ConfigDiff) GetLeaverIds() []string {
+	if x != nil {
+		return x.LeaverIds
+	}
+	return nil
+}
+
 var File_graft_proto protoreflect.FileDescriptor
 
 const file_graft_proto_rawDesc = "" +
@@ -292,7 +352,12 @@ const file_graft_proto_rawDesc = "" +
 	"firstIndex\"h\n" +
 	"\x10SnapshotMetadata\x12*\n" +
 	"\x10lastAppliedIndex\x18\x01 \x01(\x03R\x10lastAppliedIndex\x12(\n" +
-	"\x0flastAppliedTerm\x18\x02 \x01(\x03R\x0flastAppliedTermB+Z)github.com/mizosoft/graft/graftpb;graftpbb\x06proto3"
+	"\x0flastAppliedTerm\x18\x02 \x01(\x03R\x0flastAppliedTerm\"r\n" +
+	"\n" +
+	"ConfigDiff\x12\x1c\n" +
+	"\tjoinerIds\x18\x01 \x03(\tR\tjoinerIds\x12(\n" +
+	"\x0fjoinerAddresses\x18\x02 \x03(\tR\x0fjoinerAddresses\x12\x1c\n" +
+	"\tleaverIds\x18\x03 \x03(\tR\tleaverIdsB+Z)github.com/mizosoft/graft/graftpb;graftpbb\x06proto3"
 
 var (
 	file_graft_proto_rawDescOnce sync.Once
@@ -306,12 +371,13 @@ func file_graft_proto_rawDescGZIP() []byte {
 	return file_graft_proto_rawDescData
 }
 
-var file_graft_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
+var file_graft_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
 var file_graft_proto_goTypes = []any{
 	(*PersistedState)(nil),   // 0: graft.PersistedState
 	(*Record)(nil),           // 1: graft.Record
 	(*WalSegmentHeader)(nil), // 2: graft.WalSegmentHeader
 	(*SnapshotMetadata)(nil), // 3: graft.SnapshotMetadata
+	(*ConfigDiff)(nil),       // 4: graft.ConfigDiff
 }
 var file_graft_proto_depIdxs = []int32{
 	0, // [0:0] is the sub-list for method output_type
@@ -332,7 +398,7 @@ func file_graft_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_graft_proto_rawDesc), len(file_graft_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   4,
+			NumMessages:   5,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
