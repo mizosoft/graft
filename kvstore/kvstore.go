@@ -5,6 +5,7 @@ import (
 	"encoding/gob"
 	"encoding/json"
 	"fmt"
+	"github.com/google/uuid"
 	"github.com/mizosoft/graft/raftpb"
 	"log"
 	"net/http"
@@ -25,6 +26,7 @@ const (
 )
 
 type Command struct {
+	Id            string
 	ServerId      string
 	Type          CommandType
 	Key           string
@@ -32,64 +34,42 @@ type Command struct {
 	ExpectedValue string
 }
 
-type resultPublisher struct {
-	clients map[int64]chan any
-	closed  bool
-	mut     sync.Mutex
+type publisher struct {
+	listeners map[string]chan any
+	mut       sync.Mutex
 }
 
-func (e *resultPublisher) getOrCreateChan(id int64) chan any {
-	e.mut.Lock()
-	defer e.mut.Unlock()
+func (l *publisher) listen(id string) chan any {
+	l.mut.Lock()
+	defer l.mut.Unlock()
 
-	if e.closed {
-		return nil
-	}
+	listenChan := make(chan any)
+	l.listeners[id] = listenChan
+	return listenChan
+}
 
-	c, ok := e.clients[id]
+func (l *publisher) publish(id string, value any) {
+	l.mut.Lock()
+	defer l.mut.Unlock()
+
+	listenChan, ok := l.listeners[id]
 	if !ok {
-		c = make(chan any)
-		e.clients[id] = c
+		return
 	}
-	return c
-}
-
-func (e *resultPublisher) unsubscribe(id int64) {
-	e.mut.Lock()
-	defer e.mut.Unlock()
-	delete(e.clients, id)
-}
-
-func (e *resultPublisher) publish(id int64, result any) {
-	c := e.getOrCreateChan(id)
-	if c == nil {
-		return // Closed
-	}
-
-	c <- result
-	close(c)
-	e.unsubscribe(id)
-}
-
-func (e *resultPublisher) receive(id int64) (any, bool) {
-	c := e.getOrCreateChan(id)
-	if c == nil {
-		return nil, false
-	}
-
-	result, ok := <-c
-	return result, ok
+	delete(l.listeners, id)
+	listenChan <- value
 }
 
 type kvstore struct {
 	data         map[string]string
-	publisher    *resultPublisher
+	publisher    *publisher
 	snapshotChan chan graft.Snapshot // Restore from snapshot channel.
-	applyChan    chan []*raftpb.LogEntry
 	g            *graft.Graft
 	initialized  bool
 	mut          sync.RWMutex
 	mux          *http.ServeMux
+
+	count int
 }
 
 type GetRequest struct {
@@ -119,8 +99,8 @@ type CasRequest struct {
 }
 
 type CasResponse struct {
-	Exists    bool   `json:"exists"`
-	CurrValue string `json:"currValue"`
+	Exists bool   `json:"exists"`
+	Value  string `json:"currValue"`
 }
 
 type DeleteRequest struct {
@@ -141,20 +121,15 @@ func (s *kvstore) respondJson(w http.ResponseWriter, payload interface{}) {
 }
 
 func executeCommand[T any](s *kvstore, command *Command, w http.ResponseWriter) {
-	index, err := s.g.Append([][]byte{serializeCommand(command)})
+	notify := s.publisher.listen(command.Id)
+	_, err := s.g.Append([][]byte{serializeCommand(command)})
 	if err != nil {
 		s.log("Error appending command: %v", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
 
-	result, ok := s.publisher.receive(index)
-	if !ok {
-		// Closed.
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
-		return
-	}
-
+	result := <-notify
 	if _, ok := result.(*T); !ok {
 		var temp *T
 		s.log("Couldn't cast (%v) response to %v", reflect.TypeOf(result).String(), reflect.TypeOf(temp).String())
@@ -166,8 +141,6 @@ func executeCommand[T any](s *kvstore, command *Command, w http.ResponseWriter) 
 }
 
 func (s *kvstore) handleGet(w http.ResponseWriter, r *http.Request) {
-	s.log("Handling get: %v", r)
-
 	req, err := decodeJson[GetRequest](r)
 	if err != nil {
 		http.Error(w, "Invalid request format: "+err.Error(), http.StatusBadRequest)
@@ -176,6 +149,7 @@ func (s *kvstore) handleGet(w http.ResponseWriter, r *http.Request) {
 
 	if req.Linearizable {
 		executeCommand[GetResponse](s, &Command{
+			Id:       uuid.New().String(),
 			ServerId: s.g.Id,
 			Type:     CommandTypeGet,
 			Key:      req.Key,
@@ -197,8 +171,6 @@ func (s *kvstore) handleGet(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *kvstore) handlePut(w http.ResponseWriter, r *http.Request) {
-	s.log("Handling put: %v", r)
-
 	req, err := decodeJson[PutRequest](r)
 	if err != nil {
 		http.Error(w, "Invalid request format: "+err.Error(), http.StatusBadRequest)
@@ -206,6 +178,7 @@ func (s *kvstore) handlePut(w http.ResponseWriter, r *http.Request) {
 	}
 
 	executeCommand[PutResponse](s, &Command{
+		Id:       uuid.New().String(),
 		ServerId: s.g.Id,
 		Type:     CommandTypePut,
 		Key:      req.Key,
@@ -214,8 +187,6 @@ func (s *kvstore) handlePut(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *kvstore) handlePutIfAbsent(w http.ResponseWriter, r *http.Request) {
-	s.log("Handling putIfAbsent: %v", r)
-
 	req, err := decodeJson[PutRequest](r)
 	if err != nil {
 		http.Error(w, "Invalid request format: "+err.Error(), http.StatusBadRequest)
@@ -223,6 +194,7 @@ func (s *kvstore) handlePutIfAbsent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	executeCommand[PutIfAbsentResponse](s, &Command{
+		Id:       uuid.New().String(),
 		ServerId: s.g.Id,
 		Type:     CommandTypePutIfAbsent,
 		Key:      req.Key,
@@ -231,8 +203,6 @@ func (s *kvstore) handlePutIfAbsent(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *kvstore) handleCas(w http.ResponseWriter, r *http.Request) {
-	s.log("Handling case: %v", r)
-
 	req, err := decodeJson[CasRequest](r)
 	if err != nil {
 		http.Error(w, "Invalid request format: "+err.Error(), http.StatusBadRequest)
@@ -240,6 +210,7 @@ func (s *kvstore) handleCas(w http.ResponseWriter, r *http.Request) {
 	}
 
 	executeCommand[CasResponse](s, &Command{
+		Id:            uuid.New().String(),
 		ServerId:      s.g.Id,
 		Type:          CommandTypeCas,
 		Key:           req.Key,
@@ -249,8 +220,6 @@ func (s *kvstore) handleCas(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *kvstore) handleDelete(w http.ResponseWriter, r *http.Request) {
-	s.log("Handling delete: %v", r)
-
 	req, err := decodeJson[DeleteRequest](r)
 	if err != nil {
 		http.Error(w, "Invalid request format: "+err.Error(), http.StatusBadRequest)
@@ -258,8 +227,9 @@ func (s *kvstore) handleDelete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	executeCommand[DeleteResponse](s, &Command{
+		Id:       uuid.New().String(),
 		ServerId: s.g.Id,
-		Type:     CommandTypeCas,
+		Type:     CommandTypeDel,
 		Key:      req.Key,
 	}, w)
 }
@@ -272,16 +242,11 @@ func decodeJson[T any](r *http.Request) (T, error) {
 	return req, err
 }
 
-func (s *kvstore) applyWorker() {
-	for entries := range s.applyChan {
-		for i, cmd := range deserializeCommands(entries) {
-			index := entries[i].Index
-			go func() {
-				response := s.processCommand(cmd)
-				if cmd.ServerId == s.g.Id {
-					s.publisher.publish(index, response)
-				}
-			}()
+func (s *kvstore) apply(entries []*raftpb.LogEntry) {
+	for _, cmd := range deserializeCommands(entries) {
+		response := s.processCommand(cmd)
+		if cmd.ServerId == s.g.Id {
+			s.publisher.publish(cmd.Id, response)
 		}
 	}
 }
@@ -305,6 +270,8 @@ func (s *kvstore) processCommand(cmd *Command) any {
 }
 
 func (s *kvstore) get(key string) *GetResponse {
+	s.log("Get(%s)", key)
+
 	s.mut.RLock()
 	defer s.mut.RUnlock()
 
@@ -316,6 +283,8 @@ func (s *kvstore) get(key string) *GetResponse {
 }
 
 func (s *kvstore) put(key string, value string) *PutResponse {
+	s.log("Put(%s, %s)", key, value)
+
 	s.mut.Lock()
 	defer s.mut.Unlock()
 
@@ -332,6 +301,8 @@ type PutIfAbsentResponse struct {
 }
 
 func (s *kvstore) putIfAbsent(key string, value string) *PutIfAbsentResponse {
+	s.log("PutIfAbsent(%s, %s)", key, value)
+
 	s.mut.Lock()
 	defer s.mut.Unlock()
 
@@ -350,6 +321,8 @@ type DeleteResponse struct {
 }
 
 func (s *kvstore) del(key string) *DeleteResponse {
+	s.log("Del(%s)", key)
+
 	s.mut.Lock()
 	defer s.mut.Unlock()
 
@@ -364,16 +337,19 @@ func (s *kvstore) del(key string) *DeleteResponse {
 }
 
 func (s *kvstore) cas(key string, expectedValue string, value string) *CasResponse {
+	s.log("Cas(%s, %s, %s)", key, expectedValue, value)
+
 	s.mut.Lock()
 	defer s.mut.Unlock()
 
 	currValue, ok := s.data[key]
 	if ok && currValue == expectedValue {
 		s.data[key] = value
+		currValue = value
 	}
 	return &CasResponse{
-		Exists:    false,
-		CurrValue: currValue,
+		Exists: ok,
+		Value:  currValue,
 	}
 }
 
@@ -390,13 +366,13 @@ func serializeCommand(command *Command) []byte {
 func deserializeCommands(entries []*raftpb.LogEntry) []*Command {
 	commands := make([]*Command, 0, len(entries))
 	for _, entry := range entries {
-		var command *Command
+		var command Command
 		decoder := gob.NewDecoder(bytes.NewReader(entry.Command))
-		err := decoder.Decode(command)
+		err := decoder.Decode(&command)
 		if err != nil {
 			panic(err)
 		}
-		commands = append(commands, command)
+		commands = append(commands, &command)
 	}
 	return commands
 }
@@ -408,8 +384,7 @@ func (s *kvstore) registerHandlers() {
 	s.mux.HandleFunc("POST /delete", s.handleDelete)
 }
 
-func (s *kvstore) serve(address string) error {
-	s.initialize()
+func (s *kvstore) listenAndServe(address string) error {
 	return http.ListenAndServe(address, s.mux)
 }
 
@@ -435,12 +410,11 @@ func deserializeData(data []byte) map[string]string {
 
 func newKvStore(g *graft.Graft) *kvstore {
 	return &kvstore{
-		g:         g,
-		mux:       http.NewServeMux(),
-		applyChan: make(chan []*raftpb.LogEntry),
-		data:      make(map[string]string),
-		publisher: &resultPublisher{
-			clients: make(map[int64]chan any),
+		g:    g,
+		mux:  http.NewServeMux(),
+		data: make(map[string]string),
+		publisher: &publisher{
+			listeners: make(map[string]chan any),
 		},
 	}
 }
@@ -461,8 +435,11 @@ func (s *kvstore) initialize() {
 		s.data = deserializeData(snapshot.Data())
 	}
 	s.g.Apply = func(entries []*raftpb.LogEntry) []byte {
-		s.applyChan <- entries
-		return nil // TODO change later to snapshot with size threshold.
+		s.apply(entries)
+		s.count += len(entries)
+		if s.count >= 4 {
+			return serializeData(s.data)
+		}
+		return nil
 	}
-	go s.applyWorker()
 }

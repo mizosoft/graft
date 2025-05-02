@@ -56,6 +56,8 @@ type Persistence interface {
 
 	RetrieveSnapshot() Snapshot
 
+	SnapshotMetadata() *graftpb.SnapshotMetadata
+
 	Close()
 }
 
@@ -196,6 +198,10 @@ func (p *memoryPersistence) SaveSnapshot(snap Snapshot) {
 
 func (p *memoryPersistence) RetrieveSnapshot() Snapshot {
 	return p.snapshot
+}
+
+func (p *memoryPersistence) SnapshotMetadata() *graftpb.SnapshotMetadata {
+	return p.snapshot.Metadata()
 }
 
 func (p *memoryPersistence) Close() {

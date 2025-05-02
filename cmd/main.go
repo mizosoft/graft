@@ -78,7 +78,7 @@ func main() {
 
 	for {
 		var input string
-		fmt.Print("(y) to send a command, (n) to exit: ")
+		fmt.Print("(y) to send a command, (n) to exit: \n")
 		fmt.Scanln(&input) // Reads input until the first space or newline
 
 		if input == "n" {

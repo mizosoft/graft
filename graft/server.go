@@ -25,3 +25,11 @@ func (s *server) AppendEntries(ctx context.Context, request *raftpb.AppendEntrie
 	}
 	return g.appendEntries(request)
 }
+
+func (s *server) InstallSnapshot(ctx context.Context, request *raftpb.SnapshotRequest) (*raftpb.SnapshotResponse, error) {
+	g, ok := ctx.Value(graftKey{}).(*Graft)
+	if !ok {
+		panic("unable to find Graft instance in context")
+	}
+	return g.installSnapshot(request)
+}

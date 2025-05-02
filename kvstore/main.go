@@ -52,14 +52,18 @@ func main() {
 	g, err := graft.New(graft.Config{
 		Id:                        *id,
 		Addresses:                 addresses,
-		ElectionTimeoutLowMillis:  150,
-		ElectionTimeoutHighMillis: 300,
-		HeartbeatMillis:           50,
+		ElectionTimeoutLowMillis:  1500,
+		ElectionTimeoutHighMillis: 3000,
+		HeartbeatMillis:           500,
 		Persistence:               wal,
 	})
 	if err != nil {
 		panic(err)
 	}
+
+	kvs := newKvStore(g)
+	kvs.initialize()
+	g.Initialize()
 
 	go func() {
 		err := g.Serve()
@@ -68,23 +72,8 @@ func main() {
 		}
 	}()
 
-	kvs := newKvStore(g)
-	err = kvs.serve(*address)
+	err = kvs.listenAndServe(*address)
 	if err != nil {
 		panic(err)
 	}
-
-	//for port := 8080; ; {
-	//	err = kvs.serve("127.0.0.1:" + strconv.Itoa(port))
-	//	if err != nil {
-	//		if strings.Contains(err.Error(), "address already in use") {
-	//			log.Println("Address already in use, retrying")
-	//			port++
-	//		} else {
-	//			panic(err)
-	//		}
-	//	} else {
-	//		break
-	//	}
-	//}
 }

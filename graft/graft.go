@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"google.golang.org/protobuf/proto"
 	"log"
 	"net"
 	"runtime/debug"
@@ -67,7 +68,7 @@ type Graft struct {
 	server         server
 	persistence    Persistence
 	mut            sync.Mutex
-	applyChan      chan []*raftpb.LogEntry
+	applyChan      chan any
 	electionChan   chan int64
 	heartbeatChan  chan struct{}
 	broadcastChans map[string]chan struct{}
@@ -106,10 +107,6 @@ func New(config Config) (*Graft, error) {
 	myAddress := addresses[config.Id]
 	delete(addresses, config.Id)
 
-	state := config.Persistence.RetrieveState()
-	if state == nil {
-		state = &graftpb.PersistedState{CurrentTerm: 0, VotedFor: "", CommitIndex: -1}
-	}
 	if config.Id == UnknownLeader {
 		return nil, fmt.Errorf("sever ID cannot be %s", UnknownLeader)
 	}
@@ -125,9 +122,9 @@ func New(config Config) (*Graft, error) {
 		Id: config.Id,
 		raftState: raftState{
 			state:       Follower,
-			currentTerm: state.CurrentTerm,
-			votedFor:    state.VotedFor,
-			commitIndex: state.CommitIndex,
+			currentTerm: 0,
+			votedFor:    UnknownLeader,
+			commitIndex: -1,
 			nextIndex:   make(map[string]int64),
 			matchIndex:  make(map[string]int64),
 			lastApplied: -1,
@@ -139,7 +136,7 @@ func New(config Config) (*Graft, error) {
 			time.Duration(config.ElectionTimeoutHighMillis)*time.Millisecond),
 		heartbeatTimer: newTimer(time.Duration(config.HeartbeatMillis) * time.Millisecond),
 		server:         server{},
-		applyChan:      make(chan []*raftpb.LogEntry, 1024), // Buffer the channel so that a slow client doesn't immediately block workflow.
+		applyChan:      make(chan any, 1024), // Buffer the channel so that a slow client doesn't immediately block workflow.
 		electionChan:   make(chan int64),
 		heartbeatChan:  make(chan struct{}),
 		broadcastChans: broadcastChans,
@@ -159,7 +156,7 @@ func (g *Graft) GetCurrentTerm() int64 {
 }
 
 func (g *Graft) Serve() error {
-	g.initialize()
+	g.Initialize()
 
 	listener, err := net.Listen("tcp", g.address)
 	if err != nil {
@@ -177,7 +174,7 @@ func (g *Graft) Serve() error {
 	return grpcServer.Serve(listener)
 }
 
-func (g *Graft) initialize() {
+func (g *Graft) Initialize() {
 	g.mut.Lock()
 	defer g.mut.Unlock()
 
@@ -200,6 +197,20 @@ func (g *Graft) initialize() {
 		g.heartbeatChan <- struct{}{}
 	})
 
+	state := g.persistence.RetrieveState()
+	if state == nil {
+		state = &graftpb.PersistedState{
+			CurrentTerm: 0,
+			VotedFor:    UnknownLeader,
+			CommitIndex: -1,
+		}
+		g.persistence.SaveState(state)
+	}
+
+	g.votedFor = state.VotedFor
+	g.commitIndex = state.CommitIndex
+	g.unguardedTransitionToFollower(state.CurrentTerm)
+
 	// Restore the state-machine.
 	snapshot := g.persistence.RetrieveSnapshot()
 	if snapshot != nil {
@@ -207,15 +218,13 @@ func (g *Graft) initialize() {
 	}
 
 	firstIndex, _ := g.persistence.FirstLogIndexAndTerm()
-	if firstIndex >= 0 {
-		commandEntries := toCommandEntries(g.persistence.GetEntriesFrom(firstIndex))
+	commitIndex := g.commitIndex // Only apply upto committed entries.
+	if firstIndex >= 0 && commitIndex >= firstIndex {
+		commandEntries := toCommandEntries(g.persistence.GetEntries(firstIndex, commitIndex))
 		if len(commandEntries) > 0 {
 			g.Apply(commandEntries)
 		}
 	}
-
-	// Begin as followr.
-	g.unguardedTransitionToFollower(g.currentTerm)
 }
 
 func (g *Graft) Close() {
@@ -223,16 +232,29 @@ func (g *Graft) Close() {
 }
 
 func (g *Graft) applyWorker() {
-	for entries := range g.applyChan {
-		if len(entries) > 0 {
-			snapshotData := g.Apply(entries)
-			g.lastApplied = entries[len(entries)-1].Index
+	for e := range g.applyChan {
+		switch e := e.(type) {
+		case []*raftpb.LogEntry:
+			snapshotData := g.Apply(e)
+			g.lastApplied = e[len(e)-1].Index
 			if snapshotData != nil {
-				g.persistence.SaveSnapshot(NewSnapshot(&graftpb.SnapshotMetadata{
-					LastAppliedIndex: g.lastApplied,
-					LastAppliedTerm:  entries[len(entries)-1].Term,
-				}, snapshotData))
+				// Run in background.
+				go func() {
+					g.mut.Lock()
+					defer g.mut.Unlock()
+
+					metadata := &graftpb.SnapshotMetadata{
+						LastAppliedIndex: g.lastApplied,
+						LastAppliedTerm:  e[len(e)-1].Term,
+					}
+					g.persistence.SaveSnapshot(NewSnapshot(metadata, snapshotData))
+					g.persistence.TruncateEntriesTo(metadata.LastAppliedIndex)
+				}()
 			}
+		case Snapshot:
+			g.Restore(e)
+		default:
+			log.Panicf("unknown type %T", e)
 		}
 	}
 }
@@ -281,6 +303,11 @@ func (g *Graft) runElection(timeoutTerm int64) {
 						return false
 					}
 					lastLogIndex, lastLogTerm = g.persistence.LastLogIndexAndTerm()
+					if lastLogIndex < 0 {
+						if metadata := g.persistence.SnapshotMetadata(); metadata != nil {
+							lastLogIndex, lastLogTerm = metadata.LastAppliedIndex, metadata.LastAppliedTerm
+						}
+					}
 					return true
 				}()
 
@@ -343,13 +370,89 @@ func (g *Graft) runHeartbeat() {
 func (g *Graft) broadcastWorker(peer *peer, broadcastChan chan struct{}) {
 	for range broadcastChan {
 	retry:
-		if req := g.appendEntriesRequestIfLeader(peer.id); req != nil {
-			if client, err := peer.client(); err != nil {
-				g.log("Error connecting to peer %s: %v", peer.id, err)
-			} else if res, err := client.AppendEntries(context.Background(), req); err != nil {
-				g.log("AppendEntries to %s failed: %v", peer.id, err)
+		req := func() proto.Message {
+			g.mut.Lock()
+			defer g.mut.Unlock()
+
+			if g.state != Leader {
+				return nil
+			}
+
+			nextIndex := g.nextIndex[peer.id]
+			firstIndex, _ := g.persistence.FirstLogIndexAndTerm()
+
+			if nextIndex >= firstIndex {
+				request := &raftpb.AppendEntriesRequest{
+					Term:              g.currentTerm,
+					LeaderId:          g.Id,
+					LeaderCommitIndex: g.commitIndex,
+				}
+
+				prevLogIndex := nextIndex - 1
+				if prevLogIndex >= firstIndex && firstIndex >= 0 {
+					request.PrevLogIndex, request.PrevLogTerm = prevLogIndex, g.persistence.GetEntryTerm(prevLogIndex)
+				} else if metadata := g.persistence.SnapshotMetadata(); metadata != nil && prevLogIndex >= 0 {
+					request.PrevLogIndex, request.PrevLogTerm = metadata.LastAppliedIndex, metadata.LastAppliedIndex
+				} else if prevLogIndex >= 0 {
+					log.Panicf("Valid prevLogIndex but there is not snapshot: %d", prevLogIndex)
+				} else {
+					request.PrevLogIndex, request.PrevLogTerm = -1, -1
+				}
+
+				lastIndex, _ := g.persistence.LastLogIndexAndTerm()
+				if nextIndex <= lastIndex && nextIndex >= 0 {
+					request.Entries = g.persistence.GetEntriesFrom(nextIndex)
+				}
+				return request
+			} else if snapshot := g.persistence.RetrieveSnapshot(); snapshot != nil {
+				return &raftpb.SnapshotRequest{
+					Term:              g.currentTerm,
+					LeaderId:          g.Id,
+					LastIncludedTerm:  snapshot.Metadata().LastAppliedTerm,
+					LastIncludedIndex: snapshot.Metadata().LastAppliedIndex,
+					Offset:            0,
+					Done:              true,
+					Data:              snapshot.Data(),
+				}
 			} else {
-				doRetry := func() bool {
+				log.Panicf("Next index of %s is too far back (%d) and there is not snapshot", peer.id, nextIndex)
+				return nil // Unreachable.
+			}
+		}()
+
+		if req == nil {
+			continue
+		}
+
+		if client, err := peer.client(); err != nil {
+			g.log("Error connecting to peer %s: %v", peer.id, err)
+		} else {
+			res := func() proto.Message {
+				switch req := req.(type) {
+				case *raftpb.AppendEntriesRequest:
+					if res, err := client.AppendEntries(context.Background(), req); err != nil {
+						g.log("AppendEntries to %s failed: %v", peer.id, err)
+						return nil
+					} else {
+						return res
+					}
+				case *raftpb.SnapshotRequest:
+					if res, err := client.InstallSnapshot(context.Background(), req); err != nil {
+						g.log("InstallSnapshot to %s failed: %v", peer.id, err)
+						return nil
+					} else {
+						return res
+					}
+				default:
+					log.Panicf("Unknown request type: %T", req)
+					return nil // Unreachable
+				}
+			}()
+
+			var doRetry bool
+			switch res := res.(type) {
+			case *raftpb.AppendEntriesResponse:
+				doRetry = func() bool {
 					g.mut.Lock()
 					defer g.mut.Unlock()
 
@@ -363,6 +466,7 @@ func (g *Graft) broadcastWorker(peer *peer, broadcastChan chan struct{}) {
 						g.unguardedTransitionToFollower(res.Term)
 						return false
 					} else if res.Success {
+						req := req.(*raftpb.AppendEntriesRequest)
 						if len(req.Entries) > 0 {
 							g.nextIndex[peer.id] = req.Entries[len(req.Entries)-1].Index + 1
 							g.matchIndex[peer.id] = g.nextIndex[peer.id] - 1
@@ -375,9 +479,30 @@ func (g *Graft) broadcastWorker(peer *peer, broadcastChan chan struct{}) {
 					}
 				}()
 
-				if doRetry {
-					goto retry
-				}
+			case *raftpb.SnapshotResponse:
+				doRetry = func() bool {
+					g.mut.Lock()
+					defer g.mut.Unlock()
+
+					g.log("AppendEntries(%v) to %s got {%v}, state=%v", req, peer.id, res, g)
+
+					if g.state != Leader {
+						return false
+					}
+
+					if res.Term > g.currentTerm {
+						g.unguardedTransitionToFollower(res.Term)
+						return false
+					} else {
+						req := req.(*raftpb.SnapshotRequest)
+						g.nextIndex[peer.id] = req.LastIncludedIndex + 1
+						return true // Continue emitting log.
+					}
+				}()
+			}
+
+			if doRetry {
+				goto retry
 			}
 		}
 	}
@@ -480,20 +605,19 @@ func (g *Graft) unguardedFlushCommittedEntries() {
 	}
 
 	if g.commitIndex != newCommitIndex {
-		g.unguardedCommit(newCommitIndex)
+		prevCommitIndex := g.commitIndex
+		g.commitIndex = newCommitIndex
+		g.unguardedApply(prevCommitIndex, newCommitIndex)
 		g.heartbeatTimer.poke() // Broadcast new commitIndex.
 	}
 }
 
-func (g *Graft) unguardedCommit(newCommitIndex int64) {
-	g.commitIndex = newCommitIndex
-
-	fromIndex := g.commitIndex
-	if fromIndex < 0 {
-		fromIndex, _ = g.persistence.FirstLogIndexAndTerm()
+func (g *Graft) unguardedApply(from int64, to int64) {
+	if from < 0 {
+		from, _ = g.persistence.FirstLogIndexAndTerm()
 	}
 
-	commandEntries := toCommandEntries(g.persistence.GetEntries(fromIndex, newCommitIndex))
+	commandEntries := toCommandEntries(g.persistence.GetEntries(from, to))
 	if len(commandEntries) > 0 {
 		g.applyChan <- cloneMsgs(commandEntries)
 	}
@@ -553,6 +677,11 @@ func (g *Graft) requestVote(request *raftpb.RequestVoteRequest) (*raftpb.Request
 
 func (g *Graft) unguardedIsCandidateLogUpToDate(request *raftpb.RequestVoteRequest) bool {
 	myLastLogIndex, myLastLogTerm := g.persistence.LastLogIndexAndTerm()
+	if myLastLogIndex < 0 {
+		if metadata := g.persistence.SnapshotMetadata(); metadata != nil {
+			myLastLogIndex, myLastLogTerm = metadata.LastAppliedIndex, metadata.LastAppliedTerm
+		}
+	}
 
 	// Note that this comparison works with the -1 sentinel values.
 	return myLastLogTerm < request.LastLogTerm ||
@@ -585,6 +714,7 @@ func (g *Graft) appendEntries(request *raftpb.AppendEntriesRequest) (*raftpb.App
 
 	lastIndex, _ := g.persistence.LastLogIndexAndTerm()
 	if request.PrevLogIndex > lastIndex {
+		g.persistence.SaveState(g.unguardedCapturePersistedState())
 		return &raftpb.AppendEntriesResponse{
 			Term:    request.Term,
 			Success: false,
@@ -595,6 +725,7 @@ func (g *Graft) appendEntries(request *raftpb.AppendEntriesRequest) (*raftpb.App
 	if request.PrevLogIndex >= firstIndex && firstIndex >= 0 {
 		myPrevLogTerm := g.persistence.GetEntryTerm(request.PrevLogIndex)
 		if request.PrevLogTerm != myPrevLogTerm {
+			g.persistence.SaveState(g.unguardedCapturePersistedState())
 			return &raftpb.AppendEntriesResponse{
 				Term:    request.Term,
 				Success: false,
@@ -606,16 +737,73 @@ func (g *Graft) appendEntries(request *raftpb.AppendEntriesRequest) (*raftpb.App
 		g.persistence.TruncateEntriesFrom(request.PrevLogIndex + 1)
 	}
 
-	nextIndex := g.persistence.Append(g.unguardedCapturePersistedState(), request.Entries)
+	g.persistence.Append(g.unguardedCapturePersistedState(), request.Entries)
+
 	if request.LeaderCommitIndex > g.commitIndex {
-		newCommitIndex := min(request.LeaderCommitIndex, nextIndex-1)
+		lastIndex, _ := g.persistence.LastLogIndexAndTerm()
+		newCommitIndex := min(request.LeaderCommitIndex, lastIndex)
 		if g.commitIndex != newCommitIndex {
-			g.unguardedCommit(newCommitIndex)
+			prevCommitIndex := g.commitIndex
+			g.commitIndex = newCommitIndex
+			g.unguardedApply(prevCommitIndex, newCommitIndex)
 		}
 	}
+
 	return &raftpb.AppendEntriesResponse{
 		Term:    request.Term,
 		Success: true,
+	}, nil
+}
+
+func (g *Graft) installSnapshot(request *raftpb.SnapshotRequest) (*raftpb.SnapshotResponse, error) {
+	g.mut.Lock()
+	defer g.mut.Unlock()
+
+	g.log("Received InstallSnapshot(%v), state=%v", request, g)
+
+	if request.Term < g.currentTerm {
+		return &raftpb.SnapshotResponse{
+			Term: g.currentTerm,
+		}, nil
+	}
+
+	if request.Term > g.currentTerm {
+		g.unguardedTransitionToFollower(request.Term)
+	} else {
+		g.electionTimer.reset()
+	}
+
+	if g.leaderId != request.LeaderId {
+		g.log("Changed leadership (%s -> %s), state=%v", g.leaderId, request.LeaderId, g)
+		g.leaderId = request.LeaderId
+	}
+
+	g.persistence.SaveState(g.unguardedCapturePersistedState())
+
+	if !request.Done {
+		return nil, fmt.Errorf("expected snapshot to be done in one call")
+	}
+
+	if request.Offset > 0 {
+		return nil, fmt.Errorf("expected offset to be zero")
+	}
+
+	snapshot := NewSnapshot(&graftpb.SnapshotMetadata{
+		LastAppliedIndex: request.LastIncludedIndex,
+		LastAppliedTerm:  request.LastIncludedTerm,
+	}, request.Data)
+	g.persistence.SaveSnapshot(snapshot)
+
+	firstIndex, _ := g.persistence.FirstLogIndexAndTerm()
+	if request.LastIncludedIndex >= firstIndex {
+		g.persistence.TruncateEntriesTo(request.LastIncludedIndex)
+	} else if firstIndex >= 0 {
+		g.persistence.TruncateEntriesFrom(firstIndex) // Truncate entire log.
+	}
+
+	g.applyChan <- snapshot
+	return &raftpb.SnapshotResponse{
+		Term: g.currentTerm,
 	}, nil
 }
 
