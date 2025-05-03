@@ -607,7 +607,7 @@ func (g *Graft) unguardedFlushCommittedEntries() {
 	if g.commitIndex != newCommitIndex {
 		prevCommitIndex := g.commitIndex
 		g.commitIndex = newCommitIndex
-		g.unguardedApply(prevCommitIndex, newCommitIndex)
+		g.unguardedApply(prevCommitIndex+1, newCommitIndex)
 		g.heartbeatTimer.poke() // Broadcast new commitIndex.
 	}
 }
@@ -615,6 +615,10 @@ func (g *Graft) unguardedFlushCommittedEntries() {
 func (g *Graft) unguardedApply(from int64, to int64) {
 	if from < 0 {
 		from, _ = g.persistence.FirstLogIndexAndTerm()
+	}
+
+	if from > to {
+		return
 	}
 
 	commandEntries := toCommandEntries(g.persistence.GetEntries(from, to))
@@ -745,7 +749,7 @@ func (g *Graft) appendEntries(request *raftpb.AppendEntriesRequest) (*raftpb.App
 		if g.commitIndex != newCommitIndex {
 			prevCommitIndex := g.commitIndex
 			g.commitIndex = newCommitIndex
-			g.unguardedApply(prevCommitIndex, newCommitIndex)
+			g.unguardedApply(prevCommitIndex+1, newCommitIndex)
 		}
 	}
 

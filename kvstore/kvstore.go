@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"reflect"
 	"sync"
+	"sync/atomic"
 
 	"github.com/mizosoft/graft"
 )
@@ -69,7 +70,7 @@ type kvstore struct {
 	mut          sync.RWMutex
 	mux          *http.ServeMux
 
-	count int
+	redundantOperations int32
 }
 
 type GetRequest struct {
@@ -275,6 +276,7 @@ func (s *kvstore) get(key string) *GetResponse {
 	s.mut.RLock()
 	defer s.mut.RUnlock()
 
+	atomic.AddInt32(&s.redundantOperations, 1)
 	value, ok := s.data[key]
 	return &GetResponse{
 		Exists: ok,
@@ -290,6 +292,9 @@ func (s *kvstore) put(key string, value string) *PutResponse {
 
 	prevValue, ok := s.data[key]
 	s.data[key] = value
+	if ok {
+		atomic.AddInt32(&s.redundantOperations, 1)
+	}
 	return &PutResponse{
 		Exists:        ok,
 		PreviousValue: prevValue,
@@ -309,6 +314,8 @@ func (s *kvstore) putIfAbsent(key string, value string) *PutIfAbsentResponse {
 	_, ok := s.data[key]
 	if ok {
 		s.data[key] = value
+	} else {
+		atomic.AddInt32(&s.redundantOperations, 1)
 	}
 	return &PutIfAbsentResponse{
 		Exists: ok,
@@ -326,6 +333,7 @@ func (s *kvstore) del(key string) *DeleteResponse {
 	s.mut.Lock()
 	defer s.mut.Unlock()
 
+	atomic.AddInt32(&s.redundantOperations, 1)
 	value, ok := s.data[key]
 	if ok {
 		delete(s.data, key)
@@ -342,6 +350,7 @@ func (s *kvstore) cas(key string, expectedValue string, value string) *CasRespon
 	s.mut.Lock()
 	defer s.mut.Unlock()
 
+	atomic.AddInt32(&s.redundantOperations, 1)
 	currValue, ok := s.data[key]
 	if ok && currValue == expectedValue {
 		s.data[key] = value
@@ -436,8 +445,7 @@ func (s *kvstore) initialize() {
 	}
 	s.g.Apply = func(entries []*raftpb.LogEntry) []byte {
 		s.apply(entries)
-		s.count += len(entries)
-		if s.count >= 4 {
+		if atomic.LoadInt32(&s.redundantOperations) > 4096 {
 			return serializeData(s.data)
 		}
 		return nil
