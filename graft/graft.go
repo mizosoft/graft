@@ -273,10 +273,8 @@ func (g *Graft) Initialize() {
 	firstIndex, _ := g.persistence.FirstLogIndexAndTerm()
 	commitIndex := g.commitIndex // Only apply committed entries.
 	if firstIndex >= 0 && commitIndex >= firstIndex {
-		g.unguardedApply(firstIndex, commitIndex)
+		g.unguardedApply(firstIndex, commitIndex, true)
 	}
-
-	// FIXME apply last stored configuration.
 }
 
 func (g *Graft) Close() {
@@ -375,8 +373,7 @@ func (g *Graft) applyWorker() {
 			snapshotData := g.Apply(e)
 			g.lastApplied = e[len(e)-1].Index
 			if snapshotData != nil {
-				// Run in background.
-				go func() {
+				func() {
 					g.mut.Lock()
 					defer g.mut.Unlock()
 
@@ -390,6 +387,7 @@ func (g *Graft) applyWorker() {
 			}
 		case Snapshot:
 			g.Restore(e)
+			g.lastApplied = e.Metadata().LastAppliedIndex
 		case []*graftpb.ConfigUpdate:
 			for _, c := range e {
 				g.ConfigUpdateDone(c)
@@ -778,35 +776,32 @@ func (g *Graft) unguardedCommit(newCommitIndex int64) {
 
 	prevCommitIndex := g.commitIndex
 	g.commitIndex = newCommitIndex
-	g.unguardedApply(prevCommitIndex+1, newCommitIndex)
+	g.unguardedApply(prevCommitIndex+1, newCommitIndex, false)
 }
 
-func (g *Graft) unguardedApply(from int64, to int64) {
-	if from < 0 {
-		from, _ = g.persistence.FirstLogIndexAndTerm()
-	}
-
-	if from > to {
-		return
-	}
-
-	configUpdates := make([]*graftpb.ConfigUpdate, 0)
+func (g *Graft) unguardedApply(from, to int64, applyConfigUpdates bool) {
 	commandEntries := make([]*raftpb.LogEntry, 0)
 	for _, entry := range g.persistence.GetEntries(from, to) {
 		switch entry.Type {
 		case raftpb.LogEntry_COMMAND:
 			commandEntries = append(commandEntries, entry)
 		case raftpb.LogEntry_CONFIG:
+			if len(commandEntries) > 0 {
+				g.applyChan <- cloneMsgs(commandEntries)
+				commandEntries = commandEntries[:0]
+			}
+
 			var update graftpb.ConfigUpdate
 			protoUnmarshal(entry.Data, &update)
-			configUpdates = append(configUpdates, &update)
+			if applyConfigUpdates {
+				g.unguardedApplyUpdate(&update, entry.Index)
+			}
+			g.applyChan <- &update
 		}
 	}
+
 	if len(commandEntries) > 0 {
 		g.applyChan <- cloneMsgs(commandEntries)
-	}
-	if len(configUpdates) > 0 {
-		g.applyChan <- configUpdates
 	}
 }
 
@@ -987,6 +982,7 @@ func (g *Graft) appendEntries(request *raftpb.AppendEntriesRequest) (*raftpb.App
 }
 
 // FIXME handle snapshot configuration.
+// FIXME may want to use streaming
 func (g *Graft) installSnapshot(request *raftpb.SnapshotRequest) (*raftpb.SnapshotResponse, error) {
 	g.mut.Lock()
 	defer g.mut.Unlock()
