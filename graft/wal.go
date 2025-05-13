@@ -657,6 +657,9 @@ func (w *wal) Append(state *graftpb.PersistedState, entries []*raftpb.LogEntry) 
 		w.lastState = state
 	}
 	if len(entries) > 0 {
+		if w.firstLogTerm < 0 {
+			w.firstLogTerm = entries[0].Term
+		}
 		w.lastLogTerm = entries[len(entries)-1].Term
 	}
 

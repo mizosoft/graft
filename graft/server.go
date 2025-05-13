@@ -10,6 +10,8 @@ type server struct {
 	raftpb.UnimplementedRaftServer
 }
 
+type graftKey struct{}
+
 func (s *server) RequestVote(ctx context.Context, request *raftpb.RequestVoteRequest) (*raftpb.RequestVoteResponse, error) {
 	g, ok := ctx.Value(graftKey{}).(*Graft)
 	if !ok {

@@ -59,6 +59,6 @@ message LogEntry {
 
     int64 term = 1;
     int64 index = 2;
-    bytes command = 3;
+    bytes data = 3;
     Type type = 4;
 }

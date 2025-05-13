@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"encoding/gob"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/google/uuid"
+	"github.com/mizosoft/graft/graftpb"
 	"github.com/mizosoft/graft/raftpb"
 	"log"
 	"net/http"
@@ -18,9 +20,9 @@ import (
 type CommandType = int
 
 const (
-	CommandTypeEnqueue CommandType = iota
-	CommandTypeDeque
-	CommandTypeAck
+	commandTypeEnqueue CommandType = iota
+	commandTypeDeque
+	commandTypeAck
 )
 
 type Command struct {
@@ -30,32 +32,6 @@ type Command struct {
 	Topic    string
 	Message  Message
 	AutoAck  bool
-}
-
-type publisher struct {
-	listeners map[string]chan any
-	mut       sync.Mutex
-}
-
-func (l *publisher) listen(id string) chan any {
-	l.mut.Lock()
-	defer l.mut.Unlock()
-
-	listenChan := make(chan any)
-	l.listeners[id] = listenChan
-	return listenChan
-}
-
-func (l *publisher) publish(id string, value any) {
-	l.mut.Lock()
-	defer l.mut.Unlock()
-
-	listenChan, ok := l.listeners[id]
-	if !ok {
-		return
-	}
-	delete(l.listeners, id)
-	listenChan <- value
 }
 
 type Message struct {
@@ -108,6 +84,19 @@ type AckResponse struct {
 	Success bool `json:"success"`
 }
 
+type ConfigUpdateRequest struct {
+	Add    map[string]string `json:"add"`
+	Remove []string          `json:"remove"`
+}
+
+type ConfigUpdateResponse struct {
+	Config map[string]string `json:"config"`
+}
+
+type NotLeaderResponse struct {
+	LeaderId string `json:"leaderId"`
+}
+
 func decodeJson[T any](r *http.Request) (T, error) {
 	var req T
 	decoder := json.NewDecoder(r.Body)
@@ -121,8 +110,12 @@ func (m *msgq) log(format string, args ...interface{}) {
 }
 
 func (m *msgq) respondJson(w http.ResponseWriter, payload interface{}) {
+	m.respondJsonWithStatus(w, payload, http.StatusOK)
+}
+
+func (m *msgq) respondJsonWithStatus(w http.ResponseWriter, payload interface{}, status int) {
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
+	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(payload); err != nil {
 		m.log("Error encoding to JSON: %v", err)
 		http.Error(w, "Server error", http.StatusInternalServerError)
@@ -139,7 +132,7 @@ func (m *msgq) handleEnqueue(w http.ResponseWriter, r *http.Request) {
 	executeCommand[EnqueueResponse](m, &Command{
 		Id:       uuid.New().String(),
 		ServerId: m.g.Id,
-		Type:     CommandTypeEnqueue,
+		Type:     commandTypeEnqueue,
 		Topic:    req.Topic,
 		Message: Message{
 			Id:   fmt.Sprintf("%s/%s", req.Topic, uuid.New().String()),
@@ -158,7 +151,7 @@ func (m *msgq) handleDeque(w http.ResponseWriter, r *http.Request) {
 	executeCommand[DequeResponse](m, &Command{
 		Id:       uuid.New().String(),
 		ServerId: m.g.Id,
-		Type:     CommandTypeDeque,
+		Type:     commandTypeDeque,
 		Topic:    req.Topic,
 		AutoAck:  req.AutoAck,
 	}, w)
@@ -174,7 +167,7 @@ func (m *msgq) handleAck(w http.ResponseWriter, r *http.Request) {
 	executeCommand[AckResponse](m, &Command{
 		Id:       uuid.New().String(),
 		ServerId: m.g.Id,
-		Type:     CommandTypeAck,
+		Type:     commandTypeAck,
 		Topic:    req.Topic,
 		Message: Message{
 			Id: req.Id,
@@ -182,8 +175,48 @@ func (m *msgq) handleAck(w http.ResponseWriter, r *http.Request) {
 	}, w)
 }
 
+func (m *msgq) handleConfigUpdate(w http.ResponseWriter, r *http.Request) {
+	req, err := decodeJson[ConfigUpdateRequest](r)
+	if err != nil {
+		http.Error(w, "Invalid request format: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	id := uuid.New().String()
+	ch := m.publisher.subscribe(id)
+	if err := m.g.ConfigUpdate(id, req.Add, req.Remove); err != nil {
+		if errors.Is(err, graft.ErrNotLeader) {
+			m.respondJsonWithStatus(w, &NotLeaderResponse{
+				LeaderId: m.g.LeaderId(),
+			}, http.StatusMisdirectedRequest)
+		} else {
+			m.log("Error updating config: %v", err)
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+		}
+		return
+	}
+
+	for update := range ch {
+		u := update.(*graftpb.ConfigUpdate)
+		if u.Phase == graftpb.ConfigUpdate_APPLIED {
+			m.publisher.unsubscribe(id)
+			config := make(map[string]string)
+			for _, c := range u.New {
+				config[c.Id] = c.Address
+			}
+			m.respondJson(w, &ConfigUpdateResponse{
+				Config: config,
+			})
+			return
+		}
+	}
+
+	m.log("Config %s never applied", id)
+	http.Error(w, "Internal server error", http.StatusInternalServerError)
+}
+
 func executeCommand[T any](m *msgq, command *Command, w http.ResponseWriter) {
-	notify := m.publisher.listen(command.Id)
+	notify := m.publisher.subscribe(command.Id)
 	_, err := m.g.Append([][]byte{serializeCommand(command)})
 	if err != nil {
 		m.log("Error appending command: %v", err)
@@ -216,7 +249,7 @@ func deserializeCommands(entries []*raftpb.LogEntry) []*Command {
 	commands := make([]*Command, 0, len(entries))
 	for _, entry := range entries {
 		var command Command
-		decoder := gob.NewDecoder(bytes.NewReader(entry.Command))
+		decoder := gob.NewDecoder(bytes.NewReader(entry.Data))
 		err := decoder.Decode(&command)
 		if err != nil {
 			panic(err)
@@ -237,11 +270,11 @@ func (m *msgq) apply(entries []*raftpb.LogEntry) {
 
 func (m *msgq) processCommand(cmd *Command) any {
 	switch cmd.Type {
-	case CommandTypeEnqueue:
+	case commandTypeEnqueue:
 		return m.enqueue(cmd.Topic, cmd.Message)
-	case CommandTypeDeque:
+	case commandTypeDeque:
 		return m.deque(cmd.Topic, cmd.AutoAck)
-	case CommandTypeAck:
+	case commandTypeAck:
 		return m.ack(cmd.Topic, cmd.Message.Id)
 	default:
 		log.Panicf("unknown command type: %v", cmd.Type)
@@ -327,6 +360,7 @@ func (m *msgq) registerHandlers() {
 	m.mux.HandleFunc("POST /enqueue", m.handleEnqueue)
 	m.mux.HandleFunc("POST /deque", m.handleDeque)
 	m.mux.HandleFunc("POST /ack", m.handleAck)
+	m.mux.HandleFunc("POST /config", m.handleConfigUpdate)
 }
 
 func (m *msgq) listenAndServe(address string) error {

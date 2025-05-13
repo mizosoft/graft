@@ -84,7 +84,7 @@ func (b *bufferedReader) Read(p []byte) (int, error) {
 func toLogEntries(term int64, nextIndex int64, commands [][]byte) []*raftpb.LogEntry {
 	entries := make([]*raftpb.LogEntry, len(commands))
 	for i, command := range commands {
-		entries[i] = &raftpb.LogEntry{Term: term, Index: nextIndex, Command: command, Type: raftpb.LogEntry_COMMAND}
+		entries[i] = &raftpb.LogEntry{Term: term, Index: nextIndex, Data: command, Type: raftpb.LogEntry_COMMAND}
 		nextIndex++
 	}
 	return entries
@@ -96,6 +96,12 @@ func protoMarshal(msg proto.Message) []byte {
 		log.Panicf("failed to marshal record: %v", err)
 	}
 	return data
+}
+
+func protoUnmarshal(data []byte, msg proto.Message) {
+	if err := proto.Unmarshal(data, msg); err != nil {
+		log.Panicf("failed to unmarshal record: %v", err)
+	}
 }
 
 func removeOnErr(fname string, currErr error) error {
@@ -131,4 +137,13 @@ func cloneMsgs[T proto.Message](msgs []T) []T {
 
 func cloneMsg[T proto.Message](msg T) T {
 	return proto.Clone(msg).(T)
+}
+
+func contains[T comparable](slice []T, item T) bool {
+	for _, v := range slice {
+		if v == item {
+			return true
+		}
+	}
+	return false
 }

@@ -21,7 +21,7 @@ func (t *periodicTimer) start(trigger func()) {
 	}()
 }
 
-func (t *periodicTimer) stop() {
+func (t *periodicTimer) pause() {
 	t.mut.Lock()
 	defer t.mut.Unlock()
 
@@ -43,7 +43,7 @@ func (t *periodicTimer) reset() {
 }
 
 func (t *periodicTimer) poke() {
-	t.stop() // Invalidate schedule event (if any).
+	t.pause() // Invalidate schedule event (if any).
 	t.tick()
 }
 
@@ -51,7 +51,20 @@ func (t *periodicTimer) tick() {
 	t.mut.Lock()
 	defer t.mut.Unlock()
 
-	t.c <- struct{}{}
+	if t.c != nil {
+		t.c <- struct{}{}
+	}
+}
+
+func (t *periodicTimer) stop() {
+	t.mut.Lock()
+	defer t.mut.Unlock()
+
+	if t.timer != nil {
+		t.timer.Stop()
+		t.timer = nil
+	}
+	t.c = nil
 }
 
 func newTimer(duration time.Duration) *periodicTimer {

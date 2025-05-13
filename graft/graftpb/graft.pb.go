@@ -21,6 +21,55 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+type ConfigUpdate_Phase int32
+
+const (
+	ConfigUpdate_LEARNING ConfigUpdate_Phase = 0
+	ConfigUpdate_JOINT    ConfigUpdate_Phase = 1
+	ConfigUpdate_APPLIED  ConfigUpdate_Phase = 2
+)
+
+// Enum value maps for ConfigUpdate_Phase.
+var (
+	ConfigUpdate_Phase_name = map[int32]string{
+		0: "LEARNING",
+		1: "JOINT",
+		2: "APPLIED",
+	}
+	ConfigUpdate_Phase_value = map[string]int32{
+		"LEARNING": 0,
+		"JOINT":    1,
+		"APPLIED":  2,
+	}
+)
+
+func (x ConfigUpdate_Phase) Enum() *ConfigUpdate_Phase {
+	p := new(ConfigUpdate_Phase)
+	*p = x
+	return p
+}
+
+func (x ConfigUpdate_Phase) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (ConfigUpdate_Phase) Descriptor() protoreflect.EnumDescriptor {
+	return file_graft_proto_enumTypes[0].Descriptor()
+}
+
+func (ConfigUpdate_Phase) Type() protoreflect.EnumType {
+	return &file_graft_proto_enumTypes[0]
+}
+
+func (x ConfigUpdate_Phase) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use ConfigUpdate_Phase.Descriptor instead.
+func (ConfigUpdate_Phase) EnumDescriptor() ([]byte, []int) {
+	return file_graft_proto_rawDescGZIP(), []int{5, 0}
+}
+
 type PersistedState struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	CurrentTerm   int64                  `protobuf:"varint,1,opt,name=currentTerm,proto3" json:"currentTerm,omitempty"`
@@ -269,29 +318,28 @@ func (x *SnapshotMetadata) GetLastAppliedTerm() int64 {
 	return 0
 }
 
-type ConfigDiff struct {
-	state           protoimpl.MessageState `protogen:"open.v1"`
-	JoinerIds       []string               `protobuf:"bytes,1,rep,name=joinerIds,proto3" json:"joinerIds,omitempty"`
-	JoinerAddresses []string               `protobuf:"bytes,2,rep,name=joinerAddresses,proto3" json:"joinerAddresses,omitempty"`
-	LeaverIds       []string               `protobuf:"bytes,3,rep,name=leaverIds,proto3" json:"leaverIds,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+type NodeConfig struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	Address       string                 `protobuf:"bytes,2,opt,name=address,proto3" json:"address,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
-func (x *ConfigDiff) Reset() {
-	*x = ConfigDiff{}
+func (x *NodeConfig) Reset() {
+	*x = NodeConfig{}
 	mi := &file_graft_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *ConfigDiff) String() string {
+func (x *NodeConfig) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*ConfigDiff) ProtoMessage() {}
+func (*NodeConfig) ProtoMessage() {}
 
-func (x *ConfigDiff) ProtoReflect() protoreflect.Message {
+func (x *NodeConfig) ProtoReflect() protoreflect.Message {
 	mi := &file_graft_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -303,30 +351,91 @@ func (x *ConfigDiff) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use ConfigDiff.ProtoReflect.Descriptor instead.
-func (*ConfigDiff) Descriptor() ([]byte, []int) {
+// Deprecated: Use NodeConfig.ProtoReflect.Descriptor instead.
+func (*NodeConfig) Descriptor() ([]byte, []int) {
 	return file_graft_proto_rawDescGZIP(), []int{4}
 }
 
-func (x *ConfigDiff) GetJoinerIds() []string {
+func (x *NodeConfig) GetId() string {
 	if x != nil {
-		return x.JoinerIds
+		return x.Id
+	}
+	return ""
+}
+
+func (x *NodeConfig) GetAddress() string {
+	if x != nil {
+		return x.Address
+	}
+	return ""
+}
+
+type ConfigUpdate struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Old           []*NodeConfig          `protobuf:"bytes,1,rep,name=old,proto3" json:"old,omitempty"`
+	New           []*NodeConfig          `protobuf:"bytes,2,rep,name=new,proto3" json:"new,omitempty"`
+	Phase         ConfigUpdate_Phase     `protobuf:"varint,3,opt,name=phase,proto3,enum=graft.ConfigUpdate_Phase" json:"phase,omitempty"`
+	Id            string                 `protobuf:"bytes,4,opt,name=id,proto3" json:"id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ConfigUpdate) Reset() {
+	*x = ConfigUpdate{}
+	mi := &file_graft_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ConfigUpdate) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ConfigUpdate) ProtoMessage() {}
+
+func (x *ConfigUpdate) ProtoReflect() protoreflect.Message {
+	mi := &file_graft_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ConfigUpdate.ProtoReflect.Descriptor instead.
+func (*ConfigUpdate) Descriptor() ([]byte, []int) {
+	return file_graft_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *ConfigUpdate) GetOld() []*NodeConfig {
+	if x != nil {
+		return x.Old
 	}
 	return nil
 }
 
-func (x *ConfigDiff) GetJoinerAddresses() []string {
+func (x *ConfigUpdate) GetNew() []*NodeConfig {
 	if x != nil {
-		return x.JoinerAddresses
+		return x.New
 	}
 	return nil
 }
 
-func (x *ConfigDiff) GetLeaverIds() []string {
+func (x *ConfigUpdate) GetPhase() ConfigUpdate_Phase {
 	if x != nil {
-		return x.LeaverIds
+		return x.Phase
 	}
-	return nil
+	return ConfigUpdate_LEARNING
+}
+
+func (x *ConfigUpdate) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
 }
 
 var File_graft_proto protoreflect.FileDescriptor
@@ -352,12 +461,20 @@ const file_graft_proto_rawDesc = "" +
 	"firstIndex\"h\n" +
 	"\x10SnapshotMetadata\x12*\n" +
 	"\x10lastAppliedIndex\x18\x01 \x01(\x03R\x10lastAppliedIndex\x12(\n" +
-	"\x0flastAppliedTerm\x18\x02 \x01(\x03R\x0flastAppliedTerm\"r\n" +
+	"\x0flastAppliedTerm\x18\x02 \x01(\x03R\x0flastAppliedTerm\"6\n" +
 	"\n" +
-	"ConfigDiff\x12\x1c\n" +
-	"\tjoinerIds\x18\x01 \x03(\tR\tjoinerIds\x12(\n" +
-	"\x0fjoinerAddresses\x18\x02 \x03(\tR\x0fjoinerAddresses\x12\x1c\n" +
-	"\tleaverIds\x18\x03 \x03(\tR\tleaverIdsB+Z)github.com/mizosoft/graft/graftpb;graftpbb\x06proto3"
+	"NodeConfig\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x18\n" +
+	"\aaddress\x18\x02 \x01(\tR\aaddress\"\xc8\x01\n" +
+	"\fConfigUpdate\x12#\n" +
+	"\x03old\x18\x01 \x03(\v2\x11.graft.NodeConfigR\x03old\x12#\n" +
+	"\x03new\x18\x02 \x03(\v2\x11.graft.NodeConfigR\x03new\x12/\n" +
+	"\x05phase\x18\x03 \x01(\x0e2\x19.graft.ConfigUpdate.PhaseR\x05phase\x12\x0e\n" +
+	"\x02id\x18\x04 \x01(\tR\x02id\"-\n" +
+	"\x05Phase\x12\f\n" +
+	"\bLEARNING\x10\x00\x12\t\n" +
+	"\x05JOINT\x10\x01\x12\v\n" +
+	"\aAPPLIED\x10\x02B+Z)github.com/mizosoft/graft/graftpb;graftpbb\x06proto3"
 
 var (
 	file_graft_proto_rawDescOnce sync.Once
@@ -371,20 +488,26 @@ func file_graft_proto_rawDescGZIP() []byte {
 	return file_graft_proto_rawDescData
 }
 
-var file_graft_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
+var file_graft_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_graft_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
 var file_graft_proto_goTypes = []any{
-	(*PersistedState)(nil),   // 0: graft.PersistedState
-	(*Record)(nil),           // 1: graft.Record
-	(*WalSegmentHeader)(nil), // 2: graft.WalSegmentHeader
-	(*SnapshotMetadata)(nil), // 3: graft.SnapshotMetadata
-	(*ConfigDiff)(nil),       // 4: graft.ConfigDiff
+	(ConfigUpdate_Phase)(0),  // 0: graft.ConfigUpdate.Phase
+	(*PersistedState)(nil),   // 1: graft.PersistedState
+	(*Record)(nil),           // 2: graft.Record
+	(*WalSegmentHeader)(nil), // 3: graft.WalSegmentHeader
+	(*SnapshotMetadata)(nil), // 4: graft.SnapshotMetadata
+	(*NodeConfig)(nil),       // 5: graft.NodeConfig
+	(*ConfigUpdate)(nil),     // 6: graft.ConfigUpdate
 }
 var file_graft_proto_depIdxs = []int32{
-	0, // [0:0] is the sub-list for method output_type
-	0, // [0:0] is the sub-list for method input_type
-	0, // [0:0] is the sub-list for extension type_name
-	0, // [0:0] is the sub-list for extension extendee
-	0, // [0:0] is the sub-list for field type_name
+	5, // 0: graft.ConfigUpdate.old:type_name -> graft.NodeConfig
+	5, // 1: graft.ConfigUpdate.new:type_name -> graft.NodeConfig
+	0, // 2: graft.ConfigUpdate.phase:type_name -> graft.ConfigUpdate.Phase
+	3, // [3:3] is the sub-list for method output_type
+	3, // [3:3] is the sub-list for method input_type
+	3, // [3:3] is the sub-list for extension type_name
+	3, // [3:3] is the sub-list for extension extendee
+	0, // [0:3] is the sub-list for field type_name
 }
 
 func init() { file_graft_proto_init() }
@@ -397,13 +520,14 @@ func file_graft_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_graft_proto_rawDesc), len(file_graft_proto_rawDesc)),
-			NumEnums:      0,
-			NumMessages:   5,
+			NumEnums:      1,
+			NumMessages:   6,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
 		GoTypes:           file_graft_proto_goTypes,
 		DependencyIndexes: file_graft_proto_depIdxs,
+		EnumInfos:         file_graft_proto_enumTypes,
 		MessageInfos:      file_graft_proto_msgTypes,
 	}.Build()
 	File_graft_proto = out.File

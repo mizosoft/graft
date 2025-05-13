@@ -3,7 +3,6 @@ go 1.24.2
 use (
     ./graft
     ./kvstore
-    ./cmd
     ./testutil
 	./msgq
 )

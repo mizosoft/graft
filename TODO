@@ -1,0 +1,4 @@
+MAKE kvstore client
+Save last applied from kvstore
+Use streaming in InstallSnapshot call
+Make kvstore & msgq return appropriate message when not leader

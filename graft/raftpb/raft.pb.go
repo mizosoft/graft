@@ -466,7 +466,7 @@ type LogEntry struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Term          int64                  `protobuf:"varint,1,opt,name=term,proto3" json:"term,omitempty"`
 	Index         int64                  `protobuf:"varint,2,opt,name=index,proto3" json:"index,omitempty"`
-	Command       []byte                 `protobuf:"bytes,3,opt,name=command,proto3" json:"command,omitempty"`
+	Data          []byte                 `protobuf:"bytes,3,opt,name=data,proto3" json:"data,omitempty"`
 	Type          LogEntry_Type          `protobuf:"varint,4,opt,name=type,proto3,enum=raft.LogEntry_Type" json:"type,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -516,9 +516,9 @@ func (x *LogEntry) GetIndex() int64 {
 	return 0
 }
 
-func (x *LogEntry) GetCommand() []byte {
+func (x *LogEntry) GetData() []byte {
 	if x != nil {
-		return x.Command
+		return x.Data
 	}
 	return nil
 }
@@ -563,11 +563,11 @@ const file_raft_proto_rawDesc = "" +
 	"\x04data\x18\x06 \x01(\fR\x04data\x12\x12\n" +
 	"\x04done\x18\a \x01(\bR\x04done\"&\n" +
 	"\x10SnapshotResponse\x12\x12\n" +
-	"\x04term\x18\x01 \x01(\x03R\x04term\"\xa2\x01\n" +
+	"\x04term\x18\x01 \x01(\x03R\x04term\"\x9c\x01\n" +
 	"\bLogEntry\x12\x12\n" +
 	"\x04term\x18\x01 \x01(\x03R\x04term\x12\x14\n" +
-	"\x05index\x18\x02 \x01(\x03R\x05index\x12\x18\n" +
-	"\acommand\x18\x03 \x01(\fR\acommand\x12'\n" +
+	"\x05index\x18\x02 \x01(\x03R\x05index\x12\x12\n" +
+	"\x04data\x18\x03 \x01(\fR\x04data\x12'\n" +
 	"\x04type\x18\x04 \x01(\x0e2\x13.raft.LogEntry.TypeR\x04type\")\n" +
 	"\x04Type\x12\v\n" +
 	"\aCOMMAND\x10\x00\x12\b\n" +

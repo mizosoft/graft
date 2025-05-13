@@ -53,8 +53,8 @@ func TestWalAppendSingleEntry(t *testing.T) {
 	}
 
 	entry := &raftpb.LogEntry{
-		Term:    1,
-		Command: []byte("cmd"),
+		Term: 1,
+		Data: []byte("cmd"),
 	}
 
 	nextIndex := w.Append(state, []*raftpb.LogEntry{entry})
@@ -81,9 +81,9 @@ func TestWalAppendMultipleEntries(t *testing.T) {
 	}
 
 	entries := []*raftpb.LogEntry{
-		{Term: 1, Command: []byte("cmd1")},
-		{Term: 1, Command: []byte("cmd2")},
-		{Term: 1, Command: []byte("cmd3")},
+		{Term: 1, Data: []byte("cmd1")},
+		{Term: 1, Data: []byte("cmd2")},
+		{Term: 1, Data: []byte("cmd3")},
 	}
 
 	nextIndex := w.Append(state, entries)
@@ -112,11 +112,11 @@ func TestWalGetEntriesFromMiddle(t *testing.T) {
 	}
 
 	entries := []*raftpb.LogEntry{
-		{Term: 1, Command: []byte("entry 0")},
-		{Term: 1, Command: []byte("entry 1")},
-		{Term: 1, Command: []byte("entry 2")},
-		{Term: 1, Command: []byte("entry 3")},
-		{Term: 1, Command: []byte("entry 4")},
+		{Term: 1, Data: []byte("entry 0")},
+		{Term: 1, Data: []byte("entry 1")},
+		{Term: 1, Data: []byte("entry 2")},
+		{Term: 1, Data: []byte("entry 3")},
+		{Term: 1, Data: []byte("entry 4")},
 	}
 
 	w.Append(state, entries)
@@ -171,11 +171,11 @@ func TestWalTruncateEntries(t *testing.T) {
 	}
 
 	entries := []*raftpb.LogEntry{
-		{Term: 1, Command: []byte("cmd0")},
-		{Term: 1, Command: []byte("cmd1")},
-		{Term: 1, Command: []byte("cmd2")},
-		{Term: 1, Command: []byte("cmd3")},
-		{Term: 1, Command: []byte("cmd4")},
+		{Term: 1, Data: []byte("cmd0")},
+		{Term: 1, Data: []byte("cmd1")},
+		{Term: 1, Data: []byte("cmd2")},
+		{Term: 1, Data: []byte("cmd3")},
+		{Term: 1, Data: []byte("cmd4")},
 	}
 
 	w.Append(state, entries)
@@ -211,8 +211,8 @@ func TestWalMultipleSegments(t *testing.T) {
 	entries := make([]*raftpb.LogEntry, entryCount)
 	for i := range entryCount {
 		entries[i] = &raftpb.LogEntry{
-			Term:    1,
-			Command: []byte("entry data that is long enough to force segment creation"),
+			Term: 1,
+			Data: []byte("entry data that is long enough to force segment creation"),
 		}
 	}
 
@@ -249,9 +249,9 @@ func TestWalReopen(t *testing.T) {
 	}
 
 	entries := []*raftpb.LogEntry{
-		{Term: 1, Command: []byte("entry 0")},
-		{Term: 1, Command: []byte("entry 1")},
-		{Term: 1, Command: []byte("entry 2")},
+		{Term: 1, Data: []byte("entry 0")},
+		{Term: 1, Data: []byte("entry 1")},
+		{Term: 1, Data: []byte("entry 2")},
 	}
 
 	w1.Append(state, entries)
@@ -315,8 +315,8 @@ func TestWalCorruptedCRC(t *testing.T) {
 	}
 
 	entry := &raftpb.LogEntry{
-		Term:    1,
-		Command: []byte("test"),
+		Term: 1,
+		Data: []byte("test"),
 	}
 
 	w.Append(state, []*raftpb.LogEntry{entry})
@@ -420,8 +420,8 @@ func TestWalTruncateAfterStateUpdate(t *testing.T) {
 		CommitIndex: 0,
 	}
 	nextIndex := w1.Append(state, []*raftpb.LogEntry{
-		{Term: 1, Command: []byte("a")},
-		{Term: 2, Command: []byte("b")},
+		{Term: 1, Data: []byte("a")},
+		{Term: 2, Data: []byte("b")},
 	})
 	assert.NilError(t, err)
 	assert.Equal(t, nextIndex, int64(2))
@@ -445,16 +445,16 @@ func TestWalAppendAfterTruncating(t *testing.T) {
 	defer w.Close()
 
 	nextIndex := w.Append(nil, []*raftpb.LogEntry{
-		{Term: 1, Command: []byte("a")},
-		{Term: 2, Command: []byte("b")},
+		{Term: 1, Data: []byte("a")},
+		{Term: 2, Data: []byte("b")},
 	})
 	assert.Equal(t, nextIndex, int64(2))
 
 	w.TruncateEntriesFrom(1)
 
 	nextIndex = w.Append(nil, []*raftpb.LogEntry{
-		{Term: 3, Command: []byte("c")},
-		{Term: 4, Command: []byte("d")},
+		{Term: 3, Data: []byte("c")},
+		{Term: 4, Data: []byte("d")},
 	})
 	assert.Equal(t, nextIndex, int64(3))
 
@@ -462,9 +462,9 @@ func TestWalAppendAfterTruncating(t *testing.T) {
 	assert.Equal(t, len(retrievedEntries), 3, len(retrievedEntries))
 
 	expectedEntries := []*raftpb.LogEntry{
-		{Term: 1, Index: 0, Command: []byte("a")},
-		{Term: 3, Index: 1, Command: []byte("c")},
-		{Term: 4, Index: 2, Command: []byte("d")},
+		{Term: 1, Index: 0, Data: []byte("a")},
+		{Term: 3, Index: 1, Data: []byte("c")},
+		{Term: 4, Index: 2, Data: []byte("d")},
 	}
 	for i := 0; i < len(expectedEntries); i++ {
 		assert.Assert(t, proto.Equal(retrievedEntries[i], expectedEntries[i]))
@@ -488,8 +488,8 @@ func TestWalTruncateMultipleSegments(t *testing.T) {
 	entries := make([]*raftpb.LogEntry, entryCount)
 	for i := range entryCount {
 		entries[i] = &raftpb.LogEntry{
-			Term:    1,
-			Command: []byte("they see me rollin' they hatin'"),
+			Term: 1,
+			Data: []byte("they see me rollin' they hatin'"),
 		}
 	}
 
@@ -515,8 +515,8 @@ func TestWalTruncateMultipleSegments(t *testing.T) {
 
 	// Append after truncation.
 	newEntries := []*raftpb.LogEntry{
-		{Term: 2, Command: []byte("e5")},
-		{Term: 2, Command: []byte("e6")},
+		{Term: 2, Data: []byte("e5")},
+		{Term: 2, Data: []byte("e6")},
 	}
 	w.Append(state, newEntries)
 	assert.Equal(t, w.EntryCount(), int64(7))
@@ -556,7 +556,7 @@ func TestWalStorageFailures(t *testing.T) {
 	assert.NilError(t, err)
 
 	entries := []*raftpb.LogEntry{
-		{Term: 1, Command: []byte("cmd1")},
+		{Term: 1, Data: []byte("cmd1")},
 	}
 
 	w.Append(state, entries)
@@ -584,8 +584,8 @@ func TestWalHeadEntry(t *testing.T) {
 	testutil.AssertNil(t, entry)
 
 	entries := []*raftpb.LogEntry{
-		{Term: 1, Command: []byte("cmd1")},
-		{Term: 2, Command: []byte("cmd2")},
+		{Term: 1, Data: []byte("cmd1")},
+		{Term: 2, Data: []byte("cmd2")},
 	}
 
 	lastIndex := w.Append(nil, entries)
@@ -606,8 +606,8 @@ func TestWalTailEntry(t *testing.T) {
 	testutil.AssertNil(t, entry)
 
 	entries := []*raftpb.LogEntry{
-		{Term: 1, Command: []byte("cmd1")},
-		{Term: 2, Command: []byte("cmd2")},
+		{Term: 1, Data: []byte("cmd1")},
+		{Term: 2, Data: []byte("cmd2")},
 	}
 
 	lastIndex := w.Append(nil, entries)
@@ -628,8 +628,8 @@ func TestWalTailEntryWithEmptySegments(t *testing.T) {
 	testutil.AssertNil(t, entry)
 
 	entries := []*raftpb.LogEntry{
-		{Term: 1, Command: []byte("cmd1")},
-		{Term: 1, Command: []byte("cmd2")},
+		{Term: 1, Data: []byte("cmd1")},
+		{Term: 1, Data: []byte("cmd2")},
 	}
 	lastIndex := w.Append(nil, entries)
 	assert.Equal(t, lastIndex, int64(2))
@@ -652,7 +652,7 @@ func TestWalMismatchingSegNumber(t *testing.T) {
 	defer w1.Close()
 
 	lastIndex := w1.Append(nil, []*raftpb.LogEntry{
-		{Term: 1, Command: []byte("cmd1")},
+		{Term: 1, Data: []byte("cmd1")},
 	})
 	assert.Equal(t, lastIndex, int64(1))
 	assert.Assert(t, len(w1.segments) == 1, len(w1.segments))
@@ -684,7 +684,7 @@ func TestWalMismatchingFirstIndex(t *testing.T) {
 	defer w1.Close()
 
 	lastIndex := w1.Append(nil, []*raftpb.LogEntry{
-		{Term: 1, Command: []byte("cmd1")},
+		{Term: 1, Data: []byte("cmd1")},
 	})
 	assert.Equal(t, lastIndex, int64(1))
 	assert.Assert(t, len(w1.segments) == 1, len(w1.segments))
@@ -720,8 +720,8 @@ func TestWalGetEntriesFromTo(t *testing.T) {
 	for range entryCount / 2 {
 		term := int64(len(entries))
 		entries = append(entries, &raftpb.LogEntry{
-			Term:    term,
-			Command: []byte(fmt.Sprintf("entry data %d that is long enough to force segment creation", term)),
+			Term: term,
+			Data: []byte(fmt.Sprintf("entry data %d that is long enough to force segment creation", term)),
 		})
 	}
 
@@ -752,8 +752,8 @@ func TestWalGetEntriesFromTo(t *testing.T) {
 	for range entryCount / 2 {
 		term := int64(len(entries))
 		entries = append(entries, &raftpb.LogEntry{
-			Term:    term,
-			Command: []byte(fmt.Sprintf("entry data %d that is long enough to force segment creation", term)),
+			Term: term,
+			Data: []byte(fmt.Sprintf("entry data %d that is long enough to force segment creation", term)),
 		})
 	}
 
@@ -830,9 +830,9 @@ func TestWalTruncateEntriesTo(t *testing.T) {
 	for i := range entries {
 		commandSize := rnd.Intn(256)
 		entries[i] = &raftpb.LogEntry{
-			Index:   int64(i),
-			Term:    int64(i),
-			Command: []byte(strings.Repeat("a", commandSize)),
+			Index: int64(i),
+			Term:  int64(i),
+			Data:  []byte(strings.Repeat("a", commandSize)),
 		}
 	}
 

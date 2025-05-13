@@ -1,6 +1,7 @@
 package graft
 
 import (
+	"log"
 	"sync"
 	"time"
 
@@ -11,9 +12,16 @@ import (
 )
 
 type peer struct {
-	id         string
-	address    string
-	lazyClient raftpb.RaftClient // Lazily initialized, protected by mut.
+	id                string
+	address           string
+	learner           bool
+	nextIndex         int64
+	matchIndex        int64
+	lastHeartbeatTime time.Time // Last heartbeat sent to this peer.
+
+	// Lazily initialized, protected by mut.
+	lazyConn   *grpc.ClientConn
+	lazyClient raftpb.RaftClient
 	mut        sync.Mutex
 }
 
@@ -41,30 +49,20 @@ func (p *peer) client() (raftpb.RaftClient, error) {
 			return nil, err
 		}
 		client = raftpb.NewRaftClient(conn)
+		p.lazyConn = conn
 		p.lazyClient = client
 	}
 	return client, nil
 }
 
-type cluster struct {
-	peers map[string]*peer
-}
+func (p *peer) closeConn() {
+	p.mut.Lock()
+	defer p.mut.Unlock()
 
-func (c *cluster) majorityCount() int {
-	return 1 + (c.followerCount()+1)/2
-}
-
-func (c *cluster) followerCount() int {
-	return len(c.peers)
-}
-
-func newCluster(peerAddresses map[string]string) *cluster {
-	c := &cluster{peers: make(map[string]*peer)}
-	for id, addr := range peerAddresses {
-		c.peers[id] = &peer{
-			id:      id,
-			address: addr,
+	if p.lazyConn != nil {
+		err := p.lazyConn.Close()
+		if err != nil {
+			log.Printf("Error closing connection: %v\n", err)
 		}
 	}
-	return c
 }
