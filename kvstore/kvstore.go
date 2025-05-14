@@ -6,8 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/mizosoft/graft/graftpb"
-	"log"
+	"go.uber.org/zap"
 	"net/http"
 	"reflect"
 	"sync"
@@ -15,7 +14,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/mizosoft/graft"
-	"github.com/mizosoft/graft/raftpb"
+	"github.com/mizosoft/graft/pb"
 )
 
 type CommandType = int
@@ -42,9 +41,10 @@ type kvstore struct {
 	publisher           *publisher
 	g                   *graft.Graft
 	initialized         bool
-	configUpdateChan    chan *graftpb.ConfigUpdate
+	configUpdateChan    chan *pb.ConfigUpdate
 	mut                 sync.RWMutex
 	mux                 *http.ServeMux
+	logger              *zap.SugaredLogger
 	redundantOperations int32 // Number of operations increasing log unnecessarily.
 }
 
@@ -105,10 +105,6 @@ type NotLeaderResponse struct {
 	LeaderId string `json:"leaderId"`
 }
 
-func (s *kvstore) log(format string, args ...interface{}) {
-	log.Printf("kvstore(%s): %s\n", s.g.Id, fmt.Sprintf(format, args...))
-}
-
 func (s *kvstore) respondJson(w http.ResponseWriter, payload interface{}) {
 	s.respondJsonWithStatus(w, payload, http.StatusOK)
 }
@@ -117,7 +113,7 @@ func (s *kvstore) respondJsonWithStatus(w http.ResponseWriter, payload interface
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(payload); err != nil {
-		s.log("Error encoding to JSON: %v", err)
+		s.logger.Error("Error encoding to JSON", err)
 		http.Error(w, "Server error", http.StatusInternalServerError)
 	}
 }
@@ -131,7 +127,7 @@ func executeCommand[T any](s *kvstore, command *Command, w http.ResponseWriter) 
 				LeaderId: s.g.LeaderId(),
 			}, http.StatusMisdirectedRequest)
 		} else {
-			s.log("Error appending command: %v", err)
+			s.logger.Error("Error appending command", err)
 			http.Error(w, "Internal server error", http.StatusInternalServerError)
 		}
 		return
@@ -140,7 +136,7 @@ func executeCommand[T any](s *kvstore, command *Command, w http.ResponseWriter) 
 	result := <-notify
 	if _, ok := result.(*T); !ok {
 		var temp *T
-		s.log("Couldn't cast (%v) response to %v", reflect.TypeOf(result).String(), reflect.TypeOf(temp).String())
+		s.logger.Errorf("Couldn't cast (%v) response to %v", reflect.TypeOf(result).String(), reflect.TypeOf(temp).String())
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -257,15 +253,15 @@ func (s *kvstore) handleConfigUpdate(w http.ResponseWriter, r *http.Request) {
 				LeaderId: s.g.LeaderId(),
 			}, http.StatusMisdirectedRequest)
 		} else {
-			s.log("Error updating config: %v", err)
+			s.logger.Error("Error updating config", err)
 			http.Error(w, "Internal server error", http.StatusInternalServerError)
 		}
 		return
 	}
 
 	for update := range ch {
-		u := update.(*graftpb.ConfigUpdate)
-		if u.Phase == graftpb.ConfigUpdate_APPLIED {
+		u := update.(*pb.ConfigUpdate)
+		if u.Phase == pb.ConfigUpdate_APPLIED {
 			s.publisher.unsubscribe(id)
 			config := make(map[string]string)
 			for _, c := range u.New {
@@ -274,11 +270,11 @@ func (s *kvstore) handleConfigUpdate(w http.ResponseWriter, r *http.Request) {
 			s.respondJson(w, &ConfigUpdateResponse{
 				Config: config,
 			})
-			break
+			return
 		}
 	}
 
-	s.log("Config %s never applied", id)
+	s.logger.Errorf("Config %s never applied", id)
 	http.Error(w, "Internal server error", http.StatusInternalServerError)
 }
 
@@ -290,7 +286,7 @@ func decodeJson[T any](r *http.Request) (T, error) {
 	return req, err
 }
 
-func (s *kvstore) apply(entries []*raftpb.LogEntry) {
+func (s *kvstore) apply(entries []*pb.LogEntry) {
 	for _, cmd := range deserializeCommands(entries) {
 		fmt.Println("Applying command:", cmd)
 		response := s.processCommand(cmd)
@@ -313,13 +309,13 @@ func (s *kvstore) processCommand(cmd *Command) any {
 	case commandTypeCas:
 		return s.cas(cmd.Key, cmd.ExpectedValue, cmd.Value)
 	default:
-		log.Panicf("unknown command type: %v", cmd.Type)
+		s.logger.Panicf("Unknown command type: %v", cmd.Type)
 		return nil
 	}
 }
 
 func (s *kvstore) get(key string) *GetResponse {
-	s.log("Get(%s)", key)
+	s.logger.Info("Get", "key", key)
 
 	s.mut.RLock()
 	defer s.mut.RUnlock()
@@ -333,7 +329,7 @@ func (s *kvstore) get(key string) *GetResponse {
 }
 
 func (s *kvstore) put(key string, value string) *PutResponse {
-	s.log("Put(%s, %s)", key, value)
+	s.logger.Info("Put", "key", key, "value", value)
 
 	s.mut.Lock()
 	defer s.mut.Unlock()
@@ -350,7 +346,7 @@ func (s *kvstore) put(key string, value string) *PutResponse {
 }
 
 func (s *kvstore) putIfAbsent(key string, value string) *PutIfAbsentResponse {
-	s.log("PutIfAbsent(%s, %s)", key, value)
+	s.logger.Info("PutIfAbsent", "key", key, "value", value)
 
 	s.mut.Lock()
 	defer s.mut.Unlock()
@@ -367,7 +363,7 @@ func (s *kvstore) putIfAbsent(key string, value string) *PutIfAbsentResponse {
 }
 
 func (s *kvstore) del(key string) *DeleteResponse {
-	s.log("Del(%s)", key)
+	s.logger.Info("Del", "key", key)
 
 	s.mut.Lock()
 	defer s.mut.Unlock()
@@ -384,7 +380,7 @@ func (s *kvstore) del(key string) *DeleteResponse {
 }
 
 func (s *kvstore) cas(key string, expectedValue string, value string) *CasResponse {
-	s.log("Cas(%s, %s, %s)", key, expectedValue, value)
+	s.logger.Info("Cas", "key", key, "expectedValue", expectedValue, "value", value)
 
 	s.mut.Lock()
 	defer s.mut.Unlock()
@@ -411,7 +407,7 @@ func serializeCommand(command *Command) []byte {
 	return buf.Bytes()
 }
 
-func deserializeCommands(entries []*raftpb.LogEntry) []*Command {
+func deserializeCommands(entries []*pb.LogEntry) []*Command {
 	commands := make([]*Command, 0, len(entries))
 	for _, entry := range entries {
 		var command Command
@@ -457,7 +453,7 @@ func deserializeData(data []byte) map[string]string {
 	return mp
 }
 
-func newKvStore(g *graft.Graft) *kvstore {
+func newKvStore(g *graft.Graft, logger *zap.Logger) *kvstore {
 	return &kvstore{
 		g:    g,
 		mux:  http.NewServeMux(),
@@ -465,6 +461,7 @@ func newKvStore(g *graft.Graft) *kvstore {
 		publisher: &publisher{
 			listeners: make(map[string]chan any),
 		},
+		logger: logger.With(zap.String("name", "kvstore"), zap.String("id", g.Id)).Sugar(),
 	}
 }
 
@@ -483,14 +480,14 @@ func (s *kvstore) initialize() {
 		defer s.mut.Unlock()
 		s.data = deserializeData(snapshot.Data())
 	}
-	s.g.Apply = func(entries []*raftpb.LogEntry) []byte {
+	s.g.Apply = func(entries []*pb.LogEntry) []byte {
 		s.apply(entries)
 		if atomic.LoadInt32(&s.redundantOperations) >= 4096 {
 			return serializeData(s.data)
 		}
 		return nil
 	}
-	s.g.ConfigUpdateDone = func(update *graftpb.ConfigUpdate) {
+	s.g.ConfigUpdateCommitted = func(update *pb.ConfigUpdate) {
 		s.publisher.publish(update.Id, update)
 	}
 }

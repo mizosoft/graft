@@ -7,7 +7,6 @@ import (
 	"os"
 	"sync"
 
-	"github.com/mizosoft/graft/pb"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -81,15 +80,6 @@ func (b *bufferedReader) Read(p []byte) (int, error) {
 	}
 }
 
-func toLogEntries(term int64, nextIndex int64, commands [][]byte) []*pb.LogEntry {
-	entries := make([]*pb.LogEntry, len(commands))
-	for i, command := range commands {
-		entries[i] = &pb.LogEntry{Term: term, Index: nextIndex, Data: command, Type: pb.LogEntry_COMMAND}
-		nextIndex++
-	}
-	return entries
-}
-
 func protoMarshal(msg proto.Message) []byte {
 	data, err := proto.Marshal(msg)
 	if err != nil {
@@ -118,13 +108,6 @@ func closeOnErr(closer io.Closer, curErr error) error {
 		return errors.Join(err, curErr)
 	}
 	return curErr
-}
-
-func forceClose(closer io.Closer) {
-	err := closer.Close()
-	if err != nil {
-		log.Printf("failed to close file: %v\n", err)
-	}
 }
 
 func cloneMsgs[T proto.Message](msgs []T) []T {

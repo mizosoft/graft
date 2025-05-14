@@ -1,7 +1,7 @@
 package graft
 
 import (
-	"log"
+	"go.uber.org/zap"
 	"sync"
 	"time"
 
@@ -18,6 +18,7 @@ type peer struct {
 	nextIndex         int64
 	matchIndex        int64
 	lastHeartbeatTime time.Time // Last heartbeat sent to this peer.
+	logger            zap.SugaredLogger
 
 	// Lazily initialized, protected by mut.
 	lazyConn   *grpc.ClientConn
@@ -62,7 +63,7 @@ func (p *peer) closeConn() {
 	if p.lazyConn != nil {
 		err := p.lazyConn.Close()
 		if err != nil {
-			log.Printf("Error closing connection: %v\n", err)
+			p.logger.Error("Error closing connection", zap.Error(err))
 		}
 	}
 }

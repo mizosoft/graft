@@ -4,9 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"go.uber.org/zap"
 	"log"
 	"net"
-	"runtime/debug"
 	"sync"
 	"time"
 
@@ -73,7 +73,7 @@ func (c *broadcastChannel) notify() {
 	case c.c <- struct{}{}:
 	default:
 		// Ignore: c has a capacity of 1 so a new AppendEntries is surely running in the future and that is all
-		// what we need to know.
+		// what we need.
 	}
 }
 
@@ -120,26 +120,19 @@ type Graft struct {
 	leaving                         bool  // Set to true when a leader is not part of the new configuration.
 	lastHeartbeatTime               time.Time
 	minElectionTimeout              time.Duration
+	logger                          *zap.SugaredLogger
 
-	Id               string
-	Restore          func(snapshot Snapshot)
-	Apply            func(entries []*pb.LogEntry) (snapshot []byte)
-	ConfigUpdateDone func(update *pb.ConfigUpdate)
-	Closed           func()
+	Id                    string
+	Restore               func(snapshot Snapshot)
+	Apply                 func(entries []*pb.LogEntry) (snapshot []byte)
+	ConfigUpdateCommitted func(update *pb.ConfigUpdate)
+	Closed                func()
 }
 
 func (g *Graft) String() string {
 	return fmt.Sprintf(
 		"{state: %v, currentTerm: %d, votedFor: %s, commitIndex: %d, lastApplied: %d, leaderId: %s, len(log)=%d}",
 		g.state, g.currentTerm, g.votedFor, g.commitIndex, g.lastApplied, g.leaderId, g.persistence.EntryCount())
-}
-
-func (g *Graft) log(format string, vals ...any) {
-	log.Printf("%s: %v\n", g.Id, fmt.Sprintf(format, vals...))
-}
-
-func (g *Graft) fatal(err any) {
-	log.Fatalf("Graft%v encountered a fatal error: %v\n%s", g, err, debug.Stack())
 }
 
 type Config struct {
@@ -149,6 +142,7 @@ type Config struct {
 	ElectionTimeoutHighMillis int
 	HeartbeatMillis           int
 	Persistence               Persistence
+	Logger                    *zap.Logger
 }
 
 func New(config Config) (*Graft, error) {
@@ -164,6 +158,10 @@ func New(config Config) (*Graft, error) {
 			Id:      id,
 			Address: addr,
 		})
+	}
+
+	if config.Logger == nil {
+		config.Logger = zap.NewNop()
 	}
 
 	g := &Graft{
@@ -190,13 +188,15 @@ func New(config Config) (*Graft, error) {
 		persistence:       config.Persistence,
 		peers:             make(map[string]*peer),
 		lastHeartbeatTime: time.Now().Add(-time.Duration(config.ElectionTimeoutLowMillis) * time.Millisecond),
+		logger:            config.Logger.With(zap.String("name", "Graft"), zap.String("id", config.Id)).Sugar(),
 
-		ConfigUpdateDone: func(update *pb.ConfigUpdate) {},
+		ConfigUpdateCommitted: func(update *pb.ConfigUpdate) {},
 		Apply: func(entries []*pb.LogEntry) (snapshot []byte) {
 			return nil
 		},
 		Restore: func(snapshot Snapshot) {},
 	}
+	g.logger = g.logger.WithLazy(zap.Stringer("state", g))
 	g.unguardedApplyUpdate(update, -1)
 	return g, nil
 }
@@ -215,7 +215,7 @@ func (g *Graft) Serve() error {
 		return err
 	}
 
-	g.log("listening on %v", listener.Addr())
+	g.logger.Infof("Listening on %v", listener.Addr())
 
 	g.grpcServer = grpc.NewServer(
 		grpc.UnaryInterceptor(
@@ -393,10 +393,10 @@ func (g *Graft) applyWorker() {
 			g.lastApplied = e.Metadata().LastAppliedIndex
 		case []*pb.ConfigUpdate:
 			for _, c := range e {
-				g.ConfigUpdateDone(c)
+				g.ConfigUpdateCommitted(c)
 			}
 		default:
-			log.Panicf("unknown type %T", e)
+			g.logger.Panicf("Unknown type %T", e)
 		}
 	}
 }
@@ -416,14 +416,11 @@ func (g *Graft) runElection(timeoutTerm int64) {
 	}
 
 	switch g.state {
-	case stateLeader:
+	case stateLeader, stateDead:
 		// We might've already won an election for this term but couldn't stop the timer on time.
-		g.log("Election timed out too late, we are the leader now")
 		return
 	case stateCandidate, stateFollower:
 		// Continue election.
-	case stateDead:
-		return
 	}
 
 	g.unguardedTransitionToCandidate()
@@ -433,7 +430,7 @@ func (g *Graft) runElection(timeoutTerm int64) {
 	for _, p := range g.peers {
 		go func() {
 			if client, cerr := p.client(); cerr != nil {
-				g.log("Error connecting to peer %s: %v", p.id, cerr)
+				g.logger.Error("Error connecting to peer", "peer", p.id, zap.Error(cerr))
 			} else {
 				var lastLogIndex int64
 				var lastLogTerm int64
@@ -465,12 +462,12 @@ func (g *Graft) runElection(timeoutTerm int64) {
 				}
 
 				if res, rerr := client.RequestVote(context.Background(), request); rerr != nil {
-					g.log("RequestVote to %s failed: %v", p.id, rerr)
+					g.logger.Error("RequestVote failed", "peer", p.id, "request", request, zap.Error(cerr))
 				} else {
 					g.mut.Lock()
 					defer g.mut.Unlock()
 
-					g.log("RequestVote(%v) to %s at election (%d) got {%v}, state=%v", request, p.id, electionTerm, res, g)
+					g.logger.Error("Sent RequestVote", "request", request, "peer", p.id, "election", electionTerm, "response", res)
 
 					if res.Term > g.currentTerm {
 						g.unguardedTransitionToFollower(res.Term)
@@ -507,7 +504,7 @@ func (g *Graft) runHeartbeat() {
 	}
 }
 
-func (g *Graft) broadcastWorker(peer *peer, c *broadcastChannel) {
+func (g *Graft) broadcastWorker(p *peer, c *broadcastChannel) {
 	for range c.c {
 		req := func() proto.Message {
 			g.mut.Lock()
@@ -518,14 +515,14 @@ func (g *Graft) broadcastWorker(peer *peer, c *broadcastChannel) {
 			}
 
 			// Check nextIndex validity.
-			nextIndex := peer.nextIndex
+			nextIndex := p.nextIndex
 			firstIndex, _ := g.persistence.FirstLogIndexAndTerm()
 			lastIndex, _ := g.persistence.LastLogIndexAndTerm()
 			if nextIndex < firstIndex || nextIndex > lastIndex+1 { // Even if lastIndex == -1 we want nextIndex = 0.
 				if metadata := g.persistence.SnapshotMetadata(); metadata == nil || nextIndex < 0 || nextIndex > metadata.LastAppliedIndex+1 {
-					g.fatal(fmt.Errorf(
-						"invalid nextIndex: nextIndex=%d, firstIndex=%d, lastIndex=%d, snapshotMetadata=%v",
-						nextIndex, firstIndex, metadata.LastAppliedIndex, metadata))
+					g.logger.Panicf(
+						"Invalid nextIndex: nextIndex=%d, firstIndex=%d, lastIndex=%d, snapshotMetadata=%v",
+						nextIndex, firstIndex, metadata.LastAppliedIndex, metadata)
 				}
 			}
 
@@ -556,7 +553,7 @@ func (g *Graft) broadcastWorker(peer *peer, c *broadcastChannel) {
 			} else if metadata := g.persistence.SnapshotMetadata(); metadata != nil && prevLogIndex == metadata.LastAppliedIndex {
 				request.PrevLogIndex, request.PrevLogTerm = metadata.LastAppliedIndex, metadata.LastAppliedIndex
 			} else {
-				g.fatal(fmt.Errorf("invalid prevLogIndex: %d", prevLogIndex))
+				g.logger.Panicf("Invalid prevLogIndex: %d", prevLogIndex)
 			}
 
 			if nextIndex <= lastIndex && nextIndex >= 0 {
@@ -575,27 +572,27 @@ func (g *Graft) broadcastWorker(peer *peer, c *broadcastChannel) {
 			continue
 		}
 
-		if client, err := peer.client(); err != nil {
-			g.log("Error connecting to peer %s: %v", peer.id, err)
+		if client, err := p.client(); err != nil {
+			g.logger.Error("Error connecting to peer", "id", p.id, zap.Error(err))
 		} else {
 			res := func() proto.Message {
 				switch req := req.(type) {
 				case *pb.AppendEntriesRequest:
 					if res, err := client.AppendEntries(context.Background(), req); err != nil {
-						g.log("AppendEntries(%v) to %s failed: %v", req, peer.id, err)
+						g.logger.Error("AppendEntries failed", "peer", p.id, "request", req, zap.Error(err))
 						return nil
 					} else {
 						return res
 					}
 				case *pb.SnapshotRequest:
 					if res, err := client.InstallSnapshot(context.Background(), req); err != nil {
-						g.log("InstallSnapshot(%v) to %s failed: %v", req, peer.id, err)
+						g.logger.Error("InstallSnapshot failed", "peer", p.id, "request", req, zap.Error(err))
 						return nil
 					} else {
 						return res
 					}
 				default:
-					log.Panicf("Unknown request type: %T", req)
+					g.logger.Panicf("Unknown request type: %T", req)
 					return nil // Unreachable
 				}
 			}()
@@ -607,7 +604,7 @@ func (g *Graft) broadcastWorker(peer *peer, c *broadcastChannel) {
 					g.mut.Lock()
 					defer g.mut.Unlock()
 
-					g.log("AppendEntries(%v) to %s got {%v}, state=%v", req, peer.id, res, g)
+					g.logger.Info("Sent AppendEntries", "peer", p.id, "request", req, "response", res)
 
 					if g.state != stateLeader {
 						return false
@@ -617,30 +614,30 @@ func (g *Graft) broadcastWorker(peer *peer, c *broadcastChannel) {
 						g.unguardedTransitionToFollower(res.Term)
 						return false
 					} else if res.Success {
-						peer.lastHeartbeatTime = time.Now()
+						p.lastHeartbeatTime = time.Now()
 
 						req := req.(*pb.AppendEntriesRequest)
 						if len(req.Entries) > 0 {
-							peer.nextIndex = req.Entries[len(req.Entries)-1].Index + 1
-							peer.matchIndex = peer.nextIndex - 1
+							p.nextIndex = req.Entries[len(req.Entries)-1].Index + 1
+							p.matchIndex = p.nextIndex - 1
 						} else if req.PrevLogIndex >= 0 {
-							peer.nextIndex = req.PrevLogIndex + 1
-							peer.matchIndex = req.PrevLogIndex
+							p.nextIndex = req.PrevLogIndex + 1
+							p.matchIndex = req.PrevLogIndex
 						}
 
 						lastIndex, _ := g.persistence.LastLogIndexAndTerm()
 
-						if peer.learner && peer.matchIndex >= lastIndex {
-							peer.learner = false
+						if p.learner && p.matchIndex >= lastIndex {
+							p.learner = false
 						}
 
 						g.unguardedFlushCommittedEntries()
 						g.unguardedContinueConfigUpdate()
 
-						return peer.matchIndex < lastIndex
+						return p.matchIndex < lastIndex
 					} else {
-						peer.lastHeartbeatTime = time.Now()
-						peer.nextIndex--
+						p.lastHeartbeatTime = time.Now()
+						p.nextIndex--
 						return true
 					}
 				}()
@@ -650,7 +647,7 @@ func (g *Graft) broadcastWorker(peer *peer, c *broadcastChannel) {
 					g.mut.Lock()
 					defer g.mut.Unlock()
 
-					g.log("AppendEntries(%v) to %s got {%v}, state=%v", req, peer.id, res, g)
+					g.logger.Info("Sent InstallSnapshot", "peer", p.id, "request", req, "response", res)
 
 					if g.state != stateLeader {
 						return false
@@ -660,11 +657,11 @@ func (g *Graft) broadcastWorker(peer *peer, c *broadcastChannel) {
 						g.unguardedTransitionToFollower(res.Term)
 						return false
 					} else {
-						peer.lastHeartbeatTime = time.Now()
+						p.lastHeartbeatTime = time.Now()
 
 						req := req.(*pb.SnapshotRequest)
-						peer.nextIndex = req.Metadata.LastAppliedIndex + 1
-						peer.matchIndex = req.Metadata.LastAppliedIndex
+						p.nextIndex = req.Metadata.LastAppliedIndex + 1
+						p.matchIndex = req.Metadata.LastAppliedIndex
 						return true // Continue emitting log.
 					}
 				}()
@@ -696,7 +693,8 @@ func (g *Graft) unguardedFlushCommittedEntries() {
 }
 
 func (g *Graft) unguardedTransitionToLeader() {
-	g.log("Transitioning to Leader, state=%v", g)
+	g.logger.Info("Transitioning to Leader")
+
 	g.state = stateLeader
 	g.leaderId = g.Id
 
@@ -721,7 +719,8 @@ func (g *Graft) unguardedTransitionToLeader() {
 }
 
 func (g *Graft) unguardedTransitionToCandidate() {
-	g.log("Transitioning to Candidate, state=%v", g)
+	g.logger.Info("Transitioning to Candidate")
+
 	g.state = stateCandidate
 	g.currentTerm++
 	g.votedFor = g.Id // Vote for self.
@@ -731,7 +730,8 @@ func (g *Graft) unguardedTransitionToCandidate() {
 }
 
 func (g *Graft) unguardedTransitionToFollower(term int64) {
-	g.log("Transitioning to Follower at (%d), state=%v", term, g)
+	g.logger.Info("Transitioning to Follower")
+
 	g.state = stateFollower
 	g.currentTerm = term
 	g.votedFor = ""
@@ -842,7 +842,7 @@ func (g *Graft) unguardedIsUnknownPeer(peerId string) bool {
 	case pb.ConfigUpdate_APPLIED:
 		return !in(peerId, g.lastCommittedUpdate.New)
 	default:
-		log.Panicf("Unknown phase: %v", g.lastCommittedUpdate.Phase)
+		g.logger.Panicf("Unknown phase: %v", g.lastCommittedUpdate.Phase)
 		return false // Unreachable.
 	}
 }
@@ -864,7 +864,7 @@ func (g *Graft) requestVote(request *pb.RequestVoteRequest) (*pb.RequestVoteResp
 	g.mut.Lock()
 	defer g.mut.Unlock()
 
-	g.log("Received RequestVote(%v), state=%v", request, g)
+	g.logger.Info("Received RequestVote", "request", request)
 
 	if g.state == stateDead {
 		return nil, ErrDead
@@ -908,7 +908,7 @@ func (g *Graft) appendEntries(request *pb.AppendEntriesRequest) (*pb.AppendEntri
 	g.mut.Lock()
 	defer g.mut.Unlock()
 
-	g.log("Received AppendEntries(%v), state=%v", request, g)
+	g.logger.Info("Received AppendEntries", "request", request)
 
 	if g.state == stateDead {
 		return nil, ErrDead
@@ -930,7 +930,7 @@ func (g *Graft) appendEntries(request *pb.AppendEntriesRequest) (*pb.AppendEntri
 	}
 
 	if g.leaderId != request.LeaderId {
-		g.log("Changed leadership (%s -> %s), state=%v", g.leaderId, request.LeaderId, g)
+		g.logger.Info("Changed leadership", "leaderId", request.LeaderId)
 		g.leaderId = request.LeaderId
 	}
 
@@ -988,7 +988,7 @@ func (g *Graft) installSnapshot(request *pb.SnapshotRequest) (*pb.SnapshotRespon
 	g.mut.Lock()
 	defer g.mut.Unlock()
 
-	g.log("Received InstallSnapshot(%v), state=%v", request, g)
+	g.logger.Info("Received InstallSnapshot", "request", request)
 
 	if g.state == stateDead {
 		return nil, ErrDead
@@ -1009,7 +1009,7 @@ func (g *Graft) installSnapshot(request *pb.SnapshotRequest) (*pb.SnapshotRespon
 	}
 
 	if g.leaderId != request.LeaderId {
-		g.log("Changed leadership (%s -> %s), state=%v", g.leaderId, request.LeaderId, g)
+		g.logger.Info("Changed leadership", "leaderId", request.LeaderId)
 		g.leaderId = request.LeaderId
 	}
 
@@ -1076,7 +1076,7 @@ func (g *Graft) unguardedAppendUpdate(update *pb.ConfigUpdate) {
 }
 
 func (g *Graft) unguardedApplyUpdate(update *pb.ConfigUpdate, updateIndex int64) {
-	g.log("Applying update: %v", update)
+	g.logger.Info("Applying ConfigUpdate", "update", update)
 
 	g.lastUpdate = update
 	g.lastUpdateIndex = updateIndex

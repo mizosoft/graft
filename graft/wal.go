@@ -5,9 +5,9 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"go.uber.org/zap"
 	"hash/crc32"
 	"io"
-	"log"
 	"os"
 	"path"
 	"sort"
@@ -118,6 +118,7 @@ type wal struct {
 	lastSnapshot              *pb.SnapshotMetadata // TODO we might want to make sure this is appended on truncation.
 	firstLogTerm, lastLogTerm int64
 	cache                     *entryCache
+	logger                    *zap.SugaredLogger
 }
 
 type segment struct {
@@ -465,7 +466,7 @@ func (s *segment) append(state *pb.PersistedState, entries []*pb.LogEntry) (int6
 	return s.nextIndex, nil
 }
 
-func openWal(dir string, softSegmentSize int64) (*wal, error) {
+func openWal(dir string, softSegmentSize int64, logger *zap.Logger) (*wal, error) {
 	files, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, err
@@ -480,20 +481,21 @@ func openWal(dir string, softSegmentSize int64) (*wal, error) {
 			data:    make([]*pb.LogEntry, 0),
 			maxSize: 64 * 1024 * 1024, // TODO may want to make this configurable.
 		},
+		logger: logger.Sugar(),
 	}
 
 	// Find segments.
 	var segments []*segment
 	for _, file := range files {
 		if file.IsDir() {
-			log.Printf("Warning: unexpected directory found in WAL directory: %s", file.Name())
+			w.logger.Warnf("Warning: unexpected directory found in WAL directory: %s", file.Name())
 			continue
 		}
 
 		var segNum int
 		var firstIndex int64
 		if n, err := fmt.Sscanf(file.Name(), "log_%d_%d.dat", &segNum, &firstIndex); err != nil || n != 2 {
-			log.Printf("Warning: unexpected file in WAL directory: %s", file.Name())
+			w.logger.Warnf("Warning: unexpected file in WAL directory: %s", file.Name())
 			continue
 		}
 
@@ -547,13 +549,13 @@ func openWal(dir string, softSegmentSize int64) (*wal, error) {
 		correctedSegmentNumber := seg.number
 		correctedFirstIndex := seg.firstIndex
 		if int(header.SegmentNumber) != seg.number {
-			log.Printf(
+			w.logger.Warnf(
 				"Warning: segment number from file name (%s) disagrees with header's (%d), believing the latter",
 				seg.fpath, header.SegmentNumber)
 			correctedSegmentNumber = int(header.SegmentNumber)
 		}
 		if header.FirstIndex != seg.firstIndex {
-			log.Printf(
+			w.logger.Warnf(
 				"Warning: first index from file name (%s) disagrees with header's (%d), believing the latter",
 				seg.fpath, header.FirstIndex)
 			correctedFirstIndex = header.FirstIndex
@@ -1184,7 +1186,7 @@ func (w *wal) Close() {
 	w.closed = true
 
 	if len(errs) > 0 {
-		log.Printf("wal: close errors: %v\n", errs)
+		w.logger.Error("Close errors", zap.Errors("errors", errs))
 	}
 }
 

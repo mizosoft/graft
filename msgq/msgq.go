@@ -7,14 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"github.com/google/uuid"
-	"github.com/mizosoft/graft/graftpb"
-	"github.com/mizosoft/graft/raftpb"
-	"log"
+	"go.uber.org/zap"
 	"net/http"
 	"reflect"
 	"sync"
 
 	"github.com/mizosoft/graft"
+	"github.com/mizosoft/graft/pb"
 )
 
 type CommandType = int
@@ -44,6 +43,7 @@ type msgq struct {
 	queues      map[string]*Queue
 	publisher   *publisher
 	initialized bool
+	logger      *zap.SugaredLogger
 	mut         sync.Mutex
 	mux         *http.ServeMux
 }
@@ -105,10 +105,6 @@ func decodeJson[T any](r *http.Request) (T, error) {
 	return req, err
 }
 
-func (m *msgq) log(format string, args ...interface{}) {
-	log.Printf("msgq(%s): %s\n", m.g.Id, fmt.Sprintf(format, args...))
-}
-
 func (m *msgq) respondJson(w http.ResponseWriter, payload interface{}) {
 	m.respondJsonWithStatus(w, payload, http.StatusOK)
 }
@@ -117,7 +113,7 @@ func (m *msgq) respondJsonWithStatus(w http.ResponseWriter, payload interface{},
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(payload); err != nil {
-		m.log("Error encoding to JSON: %v", err)
+		m.logger.Error("Error encoding to JSON", err)
 		http.Error(w, "Server error", http.StatusInternalServerError)
 	}
 }
@@ -190,15 +186,15 @@ func (m *msgq) handleConfigUpdate(w http.ResponseWriter, r *http.Request) {
 				LeaderId: m.g.LeaderId(),
 			}, http.StatusMisdirectedRequest)
 		} else {
-			m.log("Error updating config: %v", err)
+			m.logger.Error("Error updating config", err)
 			http.Error(w, "Internal server error", http.StatusInternalServerError)
 		}
 		return
 	}
 
 	for update := range ch {
-		u := update.(*graftpb.ConfigUpdate)
-		if u.Phase == graftpb.ConfigUpdate_APPLIED {
+		u := update.(*pb.ConfigUpdate)
+		if u.Phase == pb.ConfigUpdate_APPLIED {
 			m.publisher.unsubscribe(id)
 			config := make(map[string]string)
 			for _, c := range u.New {
@@ -211,7 +207,7 @@ func (m *msgq) handleConfigUpdate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	m.log("Config %s never applied", id)
+	m.logger.Errorf("Config %s never applied", id)
 	http.Error(w, "Internal server error", http.StatusInternalServerError)
 }
 
@@ -219,7 +215,7 @@ func executeCommand[T any](m *msgq, command *Command, w http.ResponseWriter) {
 	notify := m.publisher.subscribe(command.Id)
 	_, err := m.g.Append([][]byte{serializeCommand(command)})
 	if err != nil {
-		m.log("Error appending command: %v", err)
+		m.logger.Error("Error appending command", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -227,7 +223,7 @@ func executeCommand[T any](m *msgq, command *Command, w http.ResponseWriter) {
 	result := <-notify
 	if _, ok := result.(*T); !ok {
 		var temp *T
-		m.log("Couldn't cast (%v) response to %v", reflect.TypeOf(result).String(), reflect.TypeOf(temp).String())
+		m.logger.Error("Couldn't cast (%v) response to %v", reflect.TypeOf(result).String(), reflect.TypeOf(temp).String())
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -245,7 +241,7 @@ func serializeCommand(command *Command) []byte {
 	return buf.Bytes()
 }
 
-func deserializeCommands(entries []*raftpb.LogEntry) []*Command {
+func deserializeCommands(entries []*pb.LogEntry) []*Command {
 	commands := make([]*Command, 0, len(entries))
 	for _, entry := range entries {
 		var command Command
@@ -259,7 +255,7 @@ func deserializeCommands(entries []*raftpb.LogEntry) []*Command {
 	return commands
 }
 
-func (m *msgq) apply(entries []*raftpb.LogEntry) {
+func (m *msgq) apply(entries []*pb.LogEntry) {
 	for _, cmd := range deserializeCommands(entries) {
 		response := m.processCommand(cmd)
 		if cmd.ServerId == m.g.Id {
@@ -277,7 +273,7 @@ func (m *msgq) processCommand(cmd *Command) any {
 	case commandTypeAck:
 		return m.ack(cmd.Topic, cmd.Message.Id)
 	default:
-		log.Panicf("unknown command type: %v", cmd.Type)
+		m.logger.Errorf("Unknown command type: %v", cmd.Type)
 		return nil
 	}
 }
@@ -345,14 +341,15 @@ func (m *msgq) ack(topic string, id string) *AckResponse {
 	}
 }
 
-func newMsgq(g *graft.Graft) *msgq {
+func newMsgq(g *graft.Graft, logger *zap.Logger) *msgq {
 	return &msgq{
 		g:      g,
 		queues: make(map[string]*Queue),
 		publisher: &publisher{
 			listeners: make(map[string]chan any),
 		},
-		mux: http.NewServeMux(),
+		mux:    http.NewServeMux(),
+		logger: logger.With(zap.String("id", g.Id)).Sugar(),
 	}
 }
 
@@ -400,7 +397,7 @@ func (m *msgq) initialize() {
 	m.g.Restore = func(snapshot graft.Snapshot) {
 		m.queues = deserializeQueues(snapshot.Data())
 	}
-	m.g.Apply = func(entries []*raftpb.LogEntry) []byte {
+	m.g.Apply = func(entries []*pb.LogEntry) []byte {
 		m.apply(entries)
 		return nil
 	}
