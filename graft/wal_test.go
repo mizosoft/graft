@@ -2,7 +2,6 @@ package graft
 
 import (
 	"fmt"
-	"github.com/mizosoft/graft/raftpb"
 	"math/rand"
 	"os"
 	"path"
@@ -10,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mizosoft/graft/graftpb"
+	"github.com/mizosoft/graft/pb"
 	"github.com/mizosoft/graft/testutil"
 	"google.golang.org/protobuf/proto"
 	"gotest.tools/v3/assert"
@@ -46,18 +45,18 @@ func TestWalAppendSingleEntry(t *testing.T) {
 	assert.NilError(t, err)
 	defer w.Close()
 
-	state := &graftpb.PersistedState{
+	state := &pb.PersistedState{
 		CurrentTerm: 1,
 		VotedFor:    "s1",
 		CommitIndex: 0,
 	}
 
-	entry := &raftpb.LogEntry{
+	entry := &pb.LogEntry{
 		Term: 1,
 		Data: []byte("cmd"),
 	}
 
-	nextIndex := w.Append(state, []*raftpb.LogEntry{entry})
+	nextIndex := w.Append(state, []*pb.LogEntry{entry})
 	assert.Equal(t, nextIndex, int64(1))
 	assert.Equal(t, w.EntryCount(), int64(1))
 	assert.Assert(t, proto.Equal(state, w.RetrieveState()))
@@ -74,13 +73,13 @@ func TestWalAppendMultipleEntries(t *testing.T) {
 	assert.NilError(t, err)
 	defer w.Close()
 
-	state := &graftpb.PersistedState{
+	state := &pb.PersistedState{
 		CurrentTerm: 1,
 		VotedFor:    "s1",
 		CommitIndex: 0,
 	}
 
-	entries := []*raftpb.LogEntry{
+	entries := []*pb.LogEntry{
 		{Term: 1, Data: []byte("cmd1")},
 		{Term: 1, Data: []byte("cmd2")},
 		{Term: 1, Data: []byte("cmd3")},
@@ -105,13 +104,13 @@ func TestWalGetEntriesFromMiddle(t *testing.T) {
 	assert.NilError(t, err)
 	defer w.Close()
 
-	state := &graftpb.PersistedState{
+	state := &pb.PersistedState{
 		CurrentTerm: 1,
 		VotedFor:    "s1",
 		CommitIndex: 0,
 	}
 
-	entries := []*raftpb.LogEntry{
+	entries := []*pb.LogEntry{
 		{Term: 1, Data: []byte("entry 0")},
 		{Term: 1, Data: []byte("entry 1")},
 		{Term: 1, Data: []byte("entry 2")},
@@ -138,7 +137,7 @@ func TestWalSetState(t *testing.T) {
 	defer w.Close()
 
 	// Initial state
-	state1 := &graftpb.PersistedState{
+	state1 := &pb.PersistedState{
 		CurrentTerm: 1,
 		VotedFor:    "s1",
 		CommitIndex: 0,
@@ -148,7 +147,7 @@ func TestWalSetState(t *testing.T) {
 	assert.Assert(t, proto.Equal(state1, w.RetrieveState()))
 
 	// Updated state
-	state2 := &graftpb.PersistedState{
+	state2 := &pb.PersistedState{
 		CurrentTerm: 2,
 		VotedFor:    "s1",
 		CommitIndex: 5,
@@ -164,13 +163,13 @@ func TestWalTruncateEntries(t *testing.T) {
 	assert.NilError(t, err)
 	defer w.Close()
 
-	state := &graftpb.PersistedState{
+	state := &pb.PersistedState{
 		CurrentTerm: 1,
 		VotedFor:    "s1",
 		CommitIndex: 0,
 	}
 
-	entries := []*raftpb.LogEntry{
+	entries := []*pb.LogEntry{
 		{Term: 1, Data: []byte("cmd0")},
 		{Term: 1, Data: []byte("cmd1")},
 		{Term: 1, Data: []byte("cmd2")},
@@ -200,7 +199,7 @@ func TestWalMultipleSegments(t *testing.T) {
 	assert.NilError(t, err)
 	defer w.Close()
 
-	state := &graftpb.PersistedState{
+	state := &pb.PersistedState{
 		CurrentTerm: 1,
 		VotedFor:    "s1",
 		CommitIndex: 0,
@@ -208,9 +207,9 @@ func TestWalMultipleSegments(t *testing.T) {
 
 	// Fill multiple segments.
 	entryCount := 30
-	entries := make([]*raftpb.LogEntry, entryCount)
+	entries := make([]*pb.LogEntry, entryCount)
 	for i := range entryCount {
-		entries[i] = &raftpb.LogEntry{
+		entries[i] = &pb.LogEntry{
 			Term: 1,
 			Data: []byte("entry data that is long enough to force segment creation"),
 		}
@@ -242,13 +241,13 @@ func TestWalReopen(t *testing.T) {
 	w1, err := openWal(dir, 1024)
 	assert.NilError(t, err)
 
-	state := &graftpb.PersistedState{
+	state := &pb.PersistedState{
 		CurrentTerm: 1,
 		VotedFor:    "s1",
 		CommitIndex: 5,
 	}
 
-	entries := []*raftpb.LogEntry{
+	entries := []*pb.LogEntry{
 		{Term: 1, Data: []byte("entry 0")},
 		{Term: 1, Data: []byte("entry 1")},
 		{Term: 1, Data: []byte("entry 2")},
@@ -308,18 +307,18 @@ func TestWalCorruptedCRC(t *testing.T) {
 	w, err := openWal(dir, 1024)
 	assert.NilError(t, err)
 
-	state := &graftpb.PersistedState{
+	state := &pb.PersistedState{
 		CurrentTerm: 1,
 		VotedFor:    "s1",
 		CommitIndex: 0,
 	}
 
-	entry := &raftpb.LogEntry{
+	entry := &pb.LogEntry{
 		Term: 1,
 		Data: []byte("test"),
 	}
 
-	w.Append(state, []*raftpb.LogEntry{entry})
+	w.Append(state, []*pb.LogEntry{entry})
 	w.Close()
 
 	// Corrupt the file.
@@ -348,7 +347,7 @@ func TestWalOverwriteState(t *testing.T) {
 	defer w.Close()
 
 	// Set initial state.
-	state1 := &graftpb.PersistedState{
+	state1 := &pb.PersistedState{
 		CurrentTerm: 1,
 		VotedFor:    "s1",
 		CommitIndex: 0,
@@ -356,7 +355,7 @@ func TestWalOverwriteState(t *testing.T) {
 	w.SaveState(state1)
 
 	// Update state.
-	state2 := &graftpb.PersistedState{
+	state2 := &pb.PersistedState{
 		CurrentTerm: 2,
 		VotedFor:    "s2",
 		CommitIndex: 5,
@@ -384,7 +383,7 @@ func TestWalAppendSegmentAfterStateUpdate(t *testing.T) {
 	assert.NilError(t, err)
 	defer w1.Close()
 
-	state := &graftpb.PersistedState{
+	state := &pb.PersistedState{
 		CurrentTerm: 1,
 		VotedFor:    "some cool server",
 		CommitIndex: 1,
@@ -414,12 +413,12 @@ func TestWalTruncateAfterStateUpdate(t *testing.T) {
 	defer w1.Close()
 
 	// Set initial state.
-	state := &graftpb.PersistedState{
+	state := &pb.PersistedState{
 		CurrentTerm: 1,
 		VotedFor:    "s1",
 		CommitIndex: 0,
 	}
-	nextIndex := w1.Append(state, []*raftpb.LogEntry{
+	nextIndex := w1.Append(state, []*pb.LogEntry{
 		{Term: 1, Data: []byte("a")},
 		{Term: 2, Data: []byte("b")},
 	})
@@ -444,7 +443,7 @@ func TestWalAppendAfterTruncating(t *testing.T) {
 	assert.NilError(t, err)
 	defer w.Close()
 
-	nextIndex := w.Append(nil, []*raftpb.LogEntry{
+	nextIndex := w.Append(nil, []*pb.LogEntry{
 		{Term: 1, Data: []byte("a")},
 		{Term: 2, Data: []byte("b")},
 	})
@@ -452,7 +451,7 @@ func TestWalAppendAfterTruncating(t *testing.T) {
 
 	w.TruncateEntriesFrom(1)
 
-	nextIndex = w.Append(nil, []*raftpb.LogEntry{
+	nextIndex = w.Append(nil, []*pb.LogEntry{
 		{Term: 3, Data: []byte("c")},
 		{Term: 4, Data: []byte("d")},
 	})
@@ -461,7 +460,7 @@ func TestWalAppendAfterTruncating(t *testing.T) {
 	retrievedEntries := w.GetEntriesFrom(0)
 	assert.Equal(t, len(retrievedEntries), 3, len(retrievedEntries))
 
-	expectedEntries := []*raftpb.LogEntry{
+	expectedEntries := []*pb.LogEntry{
 		{Term: 1, Index: 0, Data: []byte("a")},
 		{Term: 3, Index: 1, Data: []byte("c")},
 		{Term: 4, Index: 2, Data: []byte("d")},
@@ -477,7 +476,7 @@ func TestWalTruncateMultipleSegments(t *testing.T) {
 	assert.NilError(t, err)
 	defer w.Close()
 
-	state := &graftpb.PersistedState{
+	state := &pb.PersistedState{
 		CurrentTerm: 1,
 		VotedFor:    "s1",
 		CommitIndex: 0,
@@ -485,9 +484,9 @@ func TestWalTruncateMultipleSegments(t *testing.T) {
 
 	// Fill multiple segments.
 	entryCount := 30
-	entries := make([]*raftpb.LogEntry, entryCount)
+	entries := make([]*pb.LogEntry, entryCount)
 	for i := range entryCount {
-		entries[i] = &raftpb.LogEntry{
+		entries[i] = &pb.LogEntry{
 			Term: 1,
 			Data: []byte("they see me rollin' they hatin'"),
 		}
@@ -514,7 +513,7 @@ func TestWalTruncateMultipleSegments(t *testing.T) {
 	assert.Equal(t, 5, len(remaining))
 
 	// Append after truncation.
-	newEntries := []*raftpb.LogEntry{
+	newEntries := []*pb.LogEntry{
 		{Term: 2, Data: []byte("e5")},
 		{Term: 2, Data: []byte("e6")},
 	}
@@ -547,7 +546,7 @@ func TestWalStorageFailures(t *testing.T) {
 	assert.NilError(t, err)
 	defer w.Close()
 
-	state := &graftpb.PersistedState{
+	state := &pb.PersistedState{
 		CurrentTerm: 1,
 		VotedFor:    "s1",
 		CommitIndex: 0,
@@ -555,7 +554,7 @@ func TestWalStorageFailures(t *testing.T) {
 	w.SaveState(state)
 	assert.NilError(t, err)
 
-	entries := []*raftpb.LogEntry{
+	entries := []*pb.LogEntry{
 		{Term: 1, Data: []byte("cmd1")},
 	}
 
@@ -565,13 +564,27 @@ func TestWalStorageFailures(t *testing.T) {
 	f := w.tail.f
 	f.Close()
 
-	w.Append(state, entries)
+	func() {
+		defer func() {
+			r := recover()
+			assert.Assert(t, r != nil)
+		}()
 
-	w.SaveState(&graftpb.PersistedState{
-		CurrentTerm: 2,
-		VotedFor:    "s2",
-		CommitIndex: 0,
-	})
+		w.Append(state, entries)
+	}()
+
+	func() {
+		defer func() {
+			r := recover()
+			assert.Assert(t, r != nil)
+		}()
+
+		w.SaveState(&pb.PersistedState{
+			CurrentTerm: 2,
+			VotedFor:    "s2",
+			CommitIndex: 0,
+		})
+	}()
 }
 
 func TestWalHeadEntry(t *testing.T) {
@@ -583,7 +596,7 @@ func TestWalHeadEntry(t *testing.T) {
 	entry := w.HeadEntry()
 	testutil.AssertNil(t, entry)
 
-	entries := []*raftpb.LogEntry{
+	entries := []*pb.LogEntry{
 		{Term: 1, Data: []byte("cmd1")},
 		{Term: 2, Data: []byte("cmd2")},
 	}
@@ -605,7 +618,7 @@ func TestWalTailEntry(t *testing.T) {
 	entry := w.TailEntry()
 	testutil.AssertNil(t, entry)
 
-	entries := []*raftpb.LogEntry{
+	entries := []*pb.LogEntry{
 		{Term: 1, Data: []byte("cmd1")},
 		{Term: 2, Data: []byte("cmd2")},
 	}
@@ -627,16 +640,16 @@ func TestWalTailEntryWithEmptySegments(t *testing.T) {
 	entry := w.TailEntry()
 	testutil.AssertNil(t, entry)
 
-	entries := []*raftpb.LogEntry{
+	entries := []*pb.LogEntry{
 		{Term: 1, Data: []byte("cmd1")},
 		{Term: 1, Data: []byte("cmd2")},
 	}
 	lastIndex := w.Append(nil, entries)
 	assert.Equal(t, lastIndex, int64(2))
 
-	w.SaveState(&graftpb.PersistedState{CurrentTerm: 1, VotedFor: "s1", CommitIndex: 0})
+	w.SaveState(&pb.PersistedState{CurrentTerm: 1, VotedFor: "s1", CommitIndex: 0})
 
-	w.SaveState(&graftpb.PersistedState{CurrentTerm: 2, VotedFor: "s2", CommitIndex: 1})
+	w.SaveState(&pb.PersistedState{CurrentTerm: 2, VotedFor: "s2", CommitIndex: 1})
 
 	assert.Assert(t, len(w.segments) > 2, len(w.segments))
 
@@ -651,7 +664,7 @@ func TestWalMismatchingSegNumber(t *testing.T) {
 	assert.NilError(t, err)
 	defer w1.Close()
 
-	lastIndex := w1.Append(nil, []*raftpb.LogEntry{
+	lastIndex := w1.Append(nil, []*pb.LogEntry{
 		{Term: 1, Data: []byte("cmd1")},
 	})
 	assert.Equal(t, lastIndex, int64(1))
@@ -683,7 +696,7 @@ func TestWalMismatchingFirstIndex(t *testing.T) {
 	assert.NilError(t, err)
 	defer w1.Close()
 
-	lastIndex := w1.Append(nil, []*raftpb.LogEntry{
+	lastIndex := w1.Append(nil, []*pb.LogEntry{
 		{Term: 1, Data: []byte("cmd1")},
 	})
 	assert.Equal(t, lastIndex, int64(1))
@@ -716,16 +729,16 @@ func TestWalGetEntriesFromTo(t *testing.T) {
 	defer w.Close()
 
 	entryCount := 40
-	var entries []*raftpb.LogEntry
+	var entries []*pb.LogEntry
 	for range entryCount / 2 {
 		term := int64(len(entries))
-		entries = append(entries, &raftpb.LogEntry{
+		entries = append(entries, &pb.LogEntry{
 			Term: term,
 			Data: []byte(fmt.Sprintf("entry data %d that is long enough to force segment creation", term)),
 		})
 	}
 
-	checkEntries := func(retrieved []*raftpb.LogEntry, expected []*raftpb.LogEntry) {
+	checkEntries := func(retrieved []*pb.LogEntry, expected []*pb.LogEntry) {
 		assert.Equal(t, len(retrieved), len(expected))
 		for j, entry := range expected {
 			assert.Assert(t, proto.Equal(retrieved[j], entry), retrieved[j].String(), entry.String())
@@ -733,8 +746,8 @@ func TestWalGetEntriesFromTo(t *testing.T) {
 	}
 
 	for i := range entries {
-		state := &graftpb.PersistedState{CurrentTerm: int64(i), VotedFor: "s1"}
-		nextIndex := w.Append(state, []*raftpb.LogEntry{entries[i]})
+		state := &pb.PersistedState{CurrentTerm: int64(i), VotedFor: "s1"}
+		nextIndex := w.Append(state, []*pb.LogEntry{entries[i]})
 		assert.Equal(t, nextIndex, int64(i+1))
 
 		retrieved := w.GetEntries(0, int64(i))
@@ -745,21 +758,21 @@ func TestWalGetEntriesFromTo(t *testing.T) {
 	segCount := len(w.segments)
 	_, lastTerm := w.LastLogIndexAndTerm()
 	for segCount == len(w.segments) {
-		w.SaveState(&graftpb.PersistedState{CurrentTerm: lastTerm, VotedFor: "s1"})
+		w.SaveState(&pb.PersistedState{CurrentTerm: lastTerm, VotedFor: "s1"})
 		lastTerm++
 	}
 
 	for range entryCount / 2 {
 		term := int64(len(entries))
-		entries = append(entries, &raftpb.LogEntry{
+		entries = append(entries, &pb.LogEntry{
 			Term: term,
 			Data: []byte(fmt.Sprintf("entry data %d that is long enough to force segment creation", term)),
 		})
 	}
 
 	for i := entryCount / 2; i < entryCount; i++ {
-		state := &graftpb.PersistedState{CurrentTerm: int64(i), VotedFor: "s1"}
-		nextIndex := w.Append(state, []*raftpb.LogEntry{entries[i]})
+		state := &pb.PersistedState{CurrentTerm: int64(i), VotedFor: "s1"}
+		nextIndex := w.Append(state, []*pb.LogEntry{entries[i]})
 		assert.Equal(t, nextIndex, int64(i+1))
 
 		retrieved := w.GetEntries(0, int64(i))
@@ -790,7 +803,25 @@ func TestWalSaveAndRetrieveSnapshot(t *testing.T) {
 	snapshot := w.RetrieveSnapshot()
 	assert.Assert(t, snapshot == nil)
 
-	snapshot = NewSnapshot(&graftpb.SnapshotMetadata{LastAppliedIndex: 1, LastAppliedTerm: 1}, []byte("Pikachu"))
+	snapshot = NewSnapshot(&pb.SnapshotMetadata{
+		LastAppliedIndex: 1,
+		LastAppliedTerm:  1,
+		ConfigUpdate: &pb.ConfigUpdate{
+			Old: []*pb.NodeConfig{
+				{
+					Id:      "s1",
+					Address: "127.0.0.1:1234",
+				},
+			},
+			New: []*pb.NodeConfig{
+				{
+					Id:      "s2",
+					Address: "127.0.0.2:1234",
+				},
+			},
+			Phase: pb.ConfigUpdate_LEARNING,
+		},
+	}, []byte("Pikachu"))
 	w.SaveSnapshot(snapshot)
 
 	retrievedSnapshot := w.RetrieveSnapshot()
@@ -804,7 +835,25 @@ func TestWalRetrieveSnapshotOnReopen(t *testing.T) {
 	assert.NilError(t, err)
 	defer w1.Close()
 
-	snapshot := NewSnapshot(&graftpb.SnapshotMetadata{LastAppliedIndex: 1, LastAppliedTerm: 1}, []byte("Pikachu"))
+	snapshot := NewSnapshot(&pb.SnapshotMetadata{
+		LastAppliedIndex: 1,
+		LastAppliedTerm:  1,
+		ConfigUpdate: &pb.ConfigUpdate{
+			Old: []*pb.NodeConfig{
+				{
+					Id:      "s1",
+					Address: "127.0.0.1:1234",
+				},
+			},
+			New: []*pb.NodeConfig{
+				{
+					Id:      "s2",
+					Address: "127.0.0.2:1234",
+				},
+			},
+			Phase: pb.ConfigUpdate_LEARNING,
+		},
+	}, []byte("Pikachu"))
 	w1.SaveSnapshot(snapshot)
 	assert.NilError(t, err)
 
@@ -826,10 +875,10 @@ func TestWalTruncateEntriesTo(t *testing.T) {
 
 	rnd := rand.New(rand.NewSource(0))
 	entryCount := int64(100)
-	entries := make([]*raftpb.LogEntry, entryCount)
+	entries := make([]*pb.LogEntry, entryCount)
 	for i := range entries {
-		commandSize := rnd.Intn(256)
-		entries[i] = &raftpb.LogEntry{
+		commandSize := rnd.Intn(128)
+		entries[i] = &pb.LogEntry{
 			Index: int64(i),
 			Term:  int64(i),
 			Data:  []byte(strings.Repeat("a", commandSize)),
@@ -837,7 +886,7 @@ func TestWalTruncateEntriesTo(t *testing.T) {
 	}
 
 	for _, entry := range entries {
-		w.Append(nil, []*raftpb.LogEntry{entry})
+		w.Append(nil, []*pb.LogEntry{entry})
 	}
 
 	assert.Assert(t, len(w.segments) > 1)
@@ -850,7 +899,6 @@ func TestWalTruncateEntriesTo(t *testing.T) {
 			assert.Equal(t, firstIndex, i+1)
 
 			retrievedEntries := w.GetEntriesFrom(firstIndex)
-
 			for j, entry := range entries[i+1:] {
 				assert.Assert(t, proto.Equal(retrievedEntries[j], entry))
 			}

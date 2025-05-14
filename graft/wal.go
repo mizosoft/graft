@@ -32,6 +32,81 @@ var (
 	errClosed = errors.New("closed")
 )
 
+type entryCache struct {
+	data    []*pb.LogEntry
+	size    int64
+	maxSize int64
+}
+
+func (c *entryCache) append(entries []*pb.LogEntry) {
+	for _, entry := range entries {
+		c.data = append(c.data, entry)
+		c.size += int64(len(entry.Data))
+	}
+
+	for c.size > c.maxSize {
+		e := c.data[0]
+		c.data = c.data[1:]
+		c.size -= int64(len(e.Data))
+	}
+}
+
+func (c *entryCache) get(index int64) *pb.LogEntry {
+	if index < c.firstIndex() || index > c.lastIndex() {
+		return nil
+	}
+	return c.data[index-c.firstIndex()]
+}
+
+func (c *entryCache) getEntries(from, to int64) []*pb.LogEntry {
+	if from > to || from < c.firstIndex() || from > c.lastIndex() || to < c.firstIndex() || to > c.lastIndex() {
+		return nil
+	}
+	return c.data[from-c.firstIndex() : to-c.firstIndex()+1]
+}
+
+func (c *entryCache) getAll() []*pb.LogEntry {
+	return c.data
+}
+
+func (c *entryCache) truncateFrom(index int64) {
+	if index < c.firstIndex() || index > c.lastIndex() {
+		return
+	}
+
+	truncated := c.data[index-c.firstIndex():]
+	c.data = c.data[:index-c.firstIndex()]
+	for _, entry := range truncated {
+		c.size -= int64(len(entry.Data))
+	}
+}
+
+func (c *entryCache) truncateTo(index int64) {
+	if index < c.firstIndex() || index > c.lastIndex() {
+		return
+	}
+
+	truncated := c.data[0 : index-c.firstIndex()+1]
+	c.data = c.data[index-c.firstIndex()+1:]
+	for _, entry := range truncated {
+		c.size -= int64(len(entry.Data))
+	}
+}
+
+func (c *entryCache) firstIndex() int64 {
+	if len(c.data) == 0 {
+		return -1
+	}
+	return c.data[0].Index
+}
+
+func (c *entryCache) lastIndex() int64 {
+	if len(c.data) == 0 {
+		return -1
+	}
+	return c.data[len(c.data)-1].Index
+}
+
 type wal struct {
 	dir                       string
 	softSegmentSize           int64
@@ -42,6 +117,7 @@ type wal struct {
 	lastState                 *pb.PersistedState
 	lastSnapshot              *pb.SnapshotMetadata // TODO we might want to make sure this is appended on truncation.
 	firstLogTerm, lastLogTerm int64
+	cache                     *entryCache
 }
 
 type segment struct {
@@ -400,6 +476,10 @@ func openWal(dir string, softSegmentSize int64) (*wal, error) {
 		softSegmentSize: softSegmentSize,
 		segments:        make([]*segment, 0),
 		crcTable:        crc32.MakeTable(crc32.Castagnoli),
+		cache: &entryCache{
+			data:    make([]*pb.LogEntry, 0),
+			maxSize: 64 * 1024 * 1024, // TODO may want to make this configurable.
+		},
 	}
 
 	// Find segments.
@@ -528,6 +608,10 @@ func openWal(dir string, softSegmentSize int64) (*wal, error) {
 			case entryRecordType:
 				seg.entryOffsets = append(seg.entryOffsets, seg.lastOffset)
 				seg.nextIndex++
+
+				var entry pb.LogEntry
+				protoUnmarshal(record.Data, &entry)
+				w.cache.append([]*pb.LogEntry{&entry})
 			case stateRecordType:
 				var state pb.PersistedState
 				if err := proto.Unmarshal(record.Data, &state); err != nil {
@@ -665,6 +749,9 @@ func (w *wal) Append(state *pb.PersistedState, entries []*pb.LogEntry) int64 {
 	if err := w.appendSegmentIfNeeded(); err != nil {
 		panic(err)
 	}
+
+	w.cache.append(entries)
+
 	return nextIndex
 }
 
@@ -785,6 +872,10 @@ func (w *wal) TruncateEntriesFrom(index int64) {
 			panic(err)
 		}
 	}
+
+	if w.cache.firstIndex() >= 0 {
+		w.cache.truncateFrom(max(index, w.cache.firstIndex()))
+	}
 }
 
 func (w *wal) TruncateEntriesTo(index int64) {
@@ -825,6 +916,10 @@ func (w *wal) TruncateEntriesTo(index int64) {
 			panic(err)
 		}
 	}
+
+	if w.cache.firstIndex() >= 0 && index >= w.cache.firstIndex() {
+		w.cache.truncateTo(index)
+	}
 }
 
 func (w *wal) EntryCount() int64 {
@@ -840,6 +935,15 @@ func (w *wal) GetEntry(index int64) *pb.LogEntry {
 		panic(errClosed)
 	}
 
+	e := w.cache.get(index)
+	if e != nil {
+		return e
+	} else {
+		return w.getEntry(index)
+	}
+}
+
+func (w *wal) getEntry(index int64) *pb.LogEntry {
 	segIndex, err := w.findSegment(index)
 	if err != nil {
 		panic(err)
@@ -861,8 +965,22 @@ func (w *wal) GetEntries(from, to int64) []*pb.LogEntry {
 		panic(fmt.Errorf("from (%d) must be smaller than or equal to (%d)", from, to))
 	}
 
+	if w.cache.firstIndex() >= 0 && to >= w.cache.firstIndex() {
+		entries := w.cache.getEntries(max(w.cache.firstIndex(), from), to)
+		if from < w.cache.firstIndex() {
+			suffix := entries
+			prefix := w.getEntries(from, w.cache.firstIndex()-1)
+			entries = append(prefix, suffix...)
+		}
+		return entries
+	} else {
+		return w.getEntries(from, to)
+	}
+}
+
+func (w *wal) getEntries(from, to int64) []*pb.LogEntry {
 	if from == to {
-		return []*pb.LogEntry{w.GetEntry(from)}
+		return []*pb.LogEntry{w.getEntry(from)}
 	}
 
 	firstSegIndex, err := w.findSegment(from)
@@ -938,17 +1056,29 @@ func (w *wal) TailEntry() *pb.LogEntry {
 	return nil
 }
 
-func (w *wal) GetEntriesFrom(index int64) []*pb.LogEntry {
+func (w *wal) GetEntriesFrom(from int64) []*pb.LogEntry {
 	if w.closed {
 		panic(errClosed)
 	}
 
-	segIndex, err := w.findSegment(index)
+	if w.cache.firstIndex() >= 0 && from >= w.cache.firstIndex() {
+		return w.cache.getEntries(from, w.cache.lastIndex())
+	} else if w.cache.firstIndex() >= 0 {
+		entries := w.getEntries(from, w.cache.firstIndex()-1)
+		entries = append(entries, w.cache.getAll()...)
+		return entries
+	} else {
+		return w.getEntriesFrom(from)
+	}
+}
+
+func (w *wal) getEntriesFrom(from int64) []*pb.LogEntry {
+	segIndex, err := w.findSegment(from)
 	if err != nil {
 		panic(err)
 	}
 
-	entries, err := w.segments[segIndex].getEntriesFrom(index)
+	entries, err := w.segments[segIndex].getEntriesFrom(from)
 	if err != nil {
 		panic(err)
 	}
