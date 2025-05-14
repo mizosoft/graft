@@ -2,8 +2,8 @@ package graft
 
 import (
 	"fmt"
-	"github.com/mizosoft/graft/graftpb"
-	"github.com/mizosoft/graft/raftpb"
+
+	"github.com/mizosoft/graft/pb"
 )
 
 type indexOutOfRangeError struct {
@@ -28,11 +28,11 @@ func indexOutOfRangeWithCount(index int64, count int64) error {
 }
 
 type Persistence interface {
-	RetrieveState() *graftpb.PersistedState
+	RetrieveState() *pb.PersistedState
 
-	SaveState(state *graftpb.PersistedState)
+	SaveState(state *pb.PersistedState)
 
-	Append(state *graftpb.PersistedState, entries []*raftpb.LogEntry) int64
+	Append(state *pb.PersistedState, entries []*pb.LogEntry) int64
 
 	TruncateEntriesFrom(index int64)
 
@@ -40,13 +40,13 @@ type Persistence interface {
 
 	EntryCount() int64
 
-	GetEntry(index int64) *raftpb.LogEntry
+	GetEntry(index int64) *pb.LogEntry
 
 	GetEntryTerm(index int64) int64
 
-	GetEntriesFrom(index int64) []*raftpb.LogEntry
+	GetEntriesFrom(index int64) []*pb.LogEntry
 
-	GetEntries(from, to int64) []*raftpb.LogEntry
+	GetEntries(from, to int64) []*pb.LogEntry
 
 	FirstLogIndexAndTerm() (int64, int64)
 
@@ -56,23 +56,23 @@ type Persistence interface {
 
 	RetrieveSnapshot() Snapshot
 
-	SnapshotMetadata() *graftpb.SnapshotMetadata
+	SnapshotMetadata() *pb.SnapshotMetadata
 
 	Close()
 }
 
 type Snapshot interface {
-	Metadata() *graftpb.SnapshotMetadata
+	Metadata() *pb.SnapshotMetadata
 
 	Data() []byte
 }
 
 type snapshot struct {
-	metadata *graftpb.SnapshotMetadata
+	metadata *pb.SnapshotMetadata
 	data     []byte
 }
 
-func (s *snapshot) Metadata() *graftpb.SnapshotMetadata {
+func (s *snapshot) Metadata() *pb.SnapshotMetadata {
 	return s.metadata
 }
 
@@ -88,25 +88,25 @@ func OpenWal(dir string, softSegmentSize int64) (Persistence, error) {
 	return openWal(dir, softSegmentSize)
 }
 
-func NewSnapshot(metadata *graftpb.SnapshotMetadata, data []byte) Snapshot {
+func NewSnapshot(metadata *pb.SnapshotMetadata, data []byte) Snapshot {
 	return &snapshot{metadata: metadata, data: data}
 }
 
 type memoryPersistence struct {
-	log      []*raftpb.LogEntry
-	state    *graftpb.PersistedState
+	log      []*pb.LogEntry
+	state    *pb.PersistedState
 	snapshot Snapshot
 }
 
-func (p *memoryPersistence) RetrieveState() *graftpb.PersistedState {
+func (p *memoryPersistence) RetrieveState() *pb.PersistedState {
 	return p.state
 }
 
-func (p *memoryPersistence) SaveState(state *graftpb.PersistedState) {
+func (p *memoryPersistence) SaveState(state *pb.PersistedState) {
 	p.state = state
 }
 
-func (p *memoryPersistence) Append(state *graftpb.PersistedState, entries []*raftpb.LogEntry) int64 {
+func (p *memoryPersistence) Append(state *pb.PersistedState, entries []*pb.LogEntry) int64 {
 	p.state = state
 	nextIndex := len(p.log)
 	for _, entry := range entries {
@@ -129,7 +129,7 @@ func (p *memoryPersistence) EntryCount() int64 {
 	return int64(len(p.log))
 }
 
-func (p *memoryPersistence) GetEntry(index int64) *raftpb.LogEntry {
+func (p *memoryPersistence) GetEntry(index int64) *pb.LogEntry {
 	if index >= p.EntryCount() {
 		panic(indexOutOfRangeWithCount(index, p.EntryCount()))
 	}
@@ -140,14 +140,14 @@ func (p *memoryPersistence) GetEntryTerm(index int64) int64 {
 	return p.GetEntry(index).Term
 }
 
-func (p *memoryPersistence) GetEntriesFrom(index int64) []*raftpb.LogEntry {
+func (p *memoryPersistence) GetEntriesFrom(index int64) []*pb.LogEntry {
 	if index >= p.EntryCount() {
 		panic(indexOutOfRangeWithCount(index, p.EntryCount()))
 	}
 	return p.log[index:]
 }
 
-func (p *memoryPersistence) GetEntries(from, to int64) []*raftpb.LogEntry {
+func (p *memoryPersistence) GetEntries(from, to int64) []*pb.LogEntry {
 	firstIndex, _ := p.FirstLogIndexAndTerm()
 	if from < firstIndex {
 		panic(indexOutOfRange(firstIndex))
@@ -161,14 +161,14 @@ func (p *memoryPersistence) GetEntries(from, to int64) []*raftpb.LogEntry {
 	return p.log[from:to]
 }
 
-func (p *memoryPersistence) headEntry() *raftpb.LogEntry {
+func (p *memoryPersistence) headEntry() *pb.LogEntry {
 	if len(p.log) == 0 {
 		return nil
 	}
 	return p.log[0]
 }
 
-func (p *memoryPersistence) tailEntry() *raftpb.LogEntry {
+func (p *memoryPersistence) tailEntry() *pb.LogEntry {
 	lastIndex := len(p.log) - 1
 	if lastIndex < 0 {
 		return nil
@@ -200,7 +200,7 @@ func (p *memoryPersistence) RetrieveSnapshot() Snapshot {
 	return p.snapshot
 }
 
-func (p *memoryPersistence) SnapshotMetadata() *graftpb.SnapshotMetadata {
+func (p *memoryPersistence) SnapshotMetadata() *pb.SnapshotMetadata {
 	return p.snapshot.Metadata()
 }
 

@@ -12,8 +12,7 @@ import (
 	"path"
 	"sort"
 
-	"github.com/mizosoft/graft/graftpb"
-	"github.com/mizosoft/graft/raftpb"
+	"github.com/mizosoft/graft/pb"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -40,8 +39,8 @@ type wal struct {
 	tail                      *segment
 	crcTable                  *crc32.Table
 	closed                    bool
-	lastState                 *graftpb.PersistedState
-	lastSnapshot              *graftpb.SnapshotMetadata // TODO we might want to make sure this is appended on truncation.
+	lastState                 *pb.PersistedState
+	lastSnapshot              *pb.SnapshotMetadata // TODO we might want to make sure this is appended on truncation.
 	firstLogTerm, lastLogTerm int64
 }
 
@@ -59,11 +58,11 @@ func segFileName(number int, firstIndex int64) string {
 	return fmt.Sprintf("log_%d_%d.dat", number, firstIndex)
 }
 
-func snapFileName(metadata *graftpb.SnapshotMetadata) string {
+func snapFileName(metadata *pb.SnapshotMetadata) string {
 	return fmt.Sprintf("snap_%d_%d.dat", metadata.LastAppliedIndex, metadata.LastAppliedTerm)
 }
 
-func appendRecord(f *os.File, record *graftpb.Record) (int, error) {
+func appendRecord(f *os.File, record *pb.WalRecord) (int, error) {
 	recordBytes := protoMarshal(record)
 	byteCount := 4 + len(recordBytes)
 	chunk := make([]byte, byteCount)
@@ -82,7 +81,7 @@ func (s *segment) entryCount() int {
 	return len(s.entryOffsets)
 }
 
-func (s *segment) getEntry(index int64) (*raftpb.LogEntry, error) {
+func (s *segment) getEntry(index int64) (*pb.LogEntry, error) {
 	localIndex := int(index - s.firstIndex)
 	if localIndex < 0 || localIndex >= s.entryCount() {
 		return nil, indexOutOfRange(index)
@@ -90,21 +89,21 @@ func (s *segment) getEntry(index int64) (*raftpb.LogEntry, error) {
 	return s.getEntryAtOffset(localIndex)
 }
 
-func (s *segment) headEntry() (*raftpb.LogEntry, error) {
+func (s *segment) headEntry() (*pb.LogEntry, error) {
 	if s.entryCount() == 0 {
 		return nil, nil
 	}
 	return s.getEntryAtOffset(0)
 }
 
-func (s *segment) tailEntry() (*raftpb.LogEntry, error) {
+func (s *segment) tailEntry() (*pb.LogEntry, error) {
 	if s.entryCount() == 0 {
 		return nil, nil
 	}
 	return s.getEntryAtOffset(len(s.entryOffsets) - 1)
 }
 
-func (s *segment) getEntryAtOffset(offsetIndex int) (*raftpb.LogEntry, error) {
+func (s *segment) getEntryAtOffset(offsetIndex int) (*pb.LogEntry, error) {
 	offset := s.entryOffsets[offsetIndex]
 	var limit int64
 	if offsetIndex < len(s.entryOffsets)-1 {
@@ -127,21 +126,21 @@ func (s *segment) getEntryAtOffset(offsetIndex int) (*raftpb.LogEntry, error) {
 		panic(fmt.Errorf("unexpected record type when expecting an entry: %d", record.Type))
 	}
 
-	var entry raftpb.LogEntry
+	var entry pb.LogEntry
 	if err := proto.Unmarshal(record.Data, &entry); err != nil {
 		return nil, err
 	}
 	return &entry, nil
 }
 
-func (s *segment) getEntriesFrom(from int64) ([]*raftpb.LogEntry, error) {
+func (s *segment) getEntriesFrom(from int64) ([]*pb.LogEntry, error) {
 	localFrom := int(from - s.firstIndex)
 	if localFrom < 0 || localFrom >= s.entryCount() {
-		return []*raftpb.LogEntry{}, nil
+		return []*pb.LogEntry{}, nil
 	}
 
 	reader := newBufferedReader(newReaderAt(s.f, s.entryOffsets[localFrom]))
-	for entries := []*raftpb.LogEntry{}; ; {
+	for entries := []*pb.LogEntry{}; ; {
 		var recordLen int32
 		if err := binary.Read(reader, binary.BigEndian, &recordLen); err != nil {
 			if errors.Is(err, io.EOF) {
@@ -163,7 +162,7 @@ func (s *segment) getEntriesFrom(from int64) ([]*raftpb.LogEntry, error) {
 			continue // Might have some non-entry records.
 		}
 
-		var entry raftpb.LogEntry
+		var entry pb.LogEntry
 		if err := proto.Unmarshal(record.Data, &entry); err != nil {
 			return nil, err
 		}
@@ -171,14 +170,14 @@ func (s *segment) getEntriesFrom(from int64) ([]*raftpb.LogEntry, error) {
 	}
 }
 
-func (s *segment) getEntriesTo(to int64) ([]*raftpb.LogEntry, error) {
+func (s *segment) getEntriesTo(to int64) ([]*pb.LogEntry, error) {
 	localTo := int(to - s.firstIndex)
 	if localTo < 0 || localTo >= s.entryCount() {
-		return []*raftpb.LogEntry{}, nil
+		return []*pb.LogEntry{}, nil
 	}
 
 	reader := newBufferedReader(newReaderAt(s.f, s.entryOffsets[0]))
-	var entries []*raftpb.LogEntry
+	var entries []*pb.LogEntry
 	for index := s.firstIndex; index <= to; {
 		var recordLen int32
 		if err := binary.Read(reader, binary.BigEndian, &recordLen); err != nil {
@@ -201,7 +200,7 @@ func (s *segment) getEntriesTo(to int64) ([]*raftpb.LogEntry, error) {
 			continue // Might have some non-entry records.
 		}
 
-		var entry raftpb.LogEntry
+		var entry pb.LogEntry
 		if err := proto.Unmarshal(record.Data, &entry); err != nil {
 			return nil, err
 		}
@@ -260,7 +259,7 @@ func (s *segment) truncateEntriesTo(index int64) (removeHead bool, err error) {
 	var offsetDiff int64
 	err = func() error {
 		// Append new header record.
-		nHeader, err := appendRecord(tempF, s.w.recordOf(headerRecordType, &graftpb.WalSegmentHeader{
+		nHeader, err := appendRecord(tempF, s.w.recordOf(headerRecordType, &pb.WalSegmentHeader{
 			Magic:         walMagic,
 			Version:       walVersion,
 			Flags:         0,
@@ -339,11 +338,11 @@ func (s *segment) appendRecord(recordType uint32, msg proto.Message) error {
 	return nil
 }
 
-func (s *segment) appendState(state *graftpb.PersistedState) error {
+func (s *segment) appendState(state *pb.PersistedState) error {
 	return s.appendRecord(stateRecordType, state)
 }
 
-func (s *segment) append(state *graftpb.PersistedState, entries []*raftpb.LogEntry) (int64, error) {
+func (s *segment) append(state *pb.PersistedState, entries []*pb.LogEntry) (int64, error) {
 	if state == nil && len(entries) == 0 {
 		return s.nextIndex, nil
 	}
@@ -355,7 +354,7 @@ func (s *segment) append(state *graftpb.PersistedState, entries []*raftpb.LogEnt
 			"appending entries with mismatching index continuity, expected %d, got %d", s.nextIndex, entries[0].Term)
 	}
 
-	records := make([]*graftpb.Record, 0, 1+len(entries))
+	records := make([]*pb.WalRecord, 0, 1+len(entries))
 	for _, entry := range entries {
 		records = append(records, s.w.recordOf(entryRecordType, entry))
 	}
@@ -454,7 +453,7 @@ func openWal(dir string, softSegmentSize int64) (*wal, error) {
 			return nil, fmt.Errorf("unexpected record type: %d", record.Type)
 		}
 
-		var header graftpb.WalSegmentHeader
+		var header pb.WalSegmentHeader
 		if err := proto.Unmarshal(record.Data, &header); err != nil {
 			return nil, err
 		}
@@ -530,13 +529,13 @@ func openWal(dir string, softSegmentSize int64) (*wal, error) {
 				seg.entryOffsets = append(seg.entryOffsets, seg.lastOffset)
 				seg.nextIndex++
 			case stateRecordType:
-				var state graftpb.PersistedState
+				var state pb.PersistedState
 				if err := proto.Unmarshal(record.Data, &state); err != nil {
 					return nil, err
 				}
 				w.lastState = &state
 			case snapshotMetadataRecordType:
-				var snapshot graftpb.SnapshotMetadata
+				var snapshot pb.SnapshotMetadata
 				if err := proto.Unmarshal(record.Data, &snapshot); err != nil {
 					return nil, err
 				}
@@ -593,7 +592,7 @@ func openWal(dir string, softSegmentSize int64) (*wal, error) {
 	return w, nil
 }
 
-func (w *wal) verify(record *graftpb.Record) error {
+func (w *wal) verify(record *pb.WalRecord) error {
 	dataCrc32 := w.crc32Of(record.Data)
 	if dataCrc32 != record.Crc32 {
 		return fmt.Errorf("mismatching CRC32s computed: %x, read: %x", dataCrc32, record.Crc32)
@@ -601,8 +600,8 @@ func (w *wal) verify(record *graftpb.Record) error {
 	return nil
 }
 
-func (w *wal) decodeRecord(recordBytes []byte) (*graftpb.Record, error) {
-	var record graftpb.Record
+func (w *wal) decodeRecord(recordBytes []byte) (*pb.WalRecord, error) {
+	var record pb.WalRecord
 	if err := proto.Unmarshal(recordBytes, &record); err != nil {
 		return nil, err
 	}
@@ -612,11 +611,11 @@ func (w *wal) decodeRecord(recordBytes []byte) (*graftpb.Record, error) {
 	return &record, nil
 }
 
-func (w *wal) RetrieveState() *graftpb.PersistedState {
+func (w *wal) RetrieveState() *pb.PersistedState {
 	return w.lastState
 }
 
-func (w *wal) SaveState(state *graftpb.PersistedState) {
+func (w *wal) SaveState(state *pb.PersistedState) {
 	if w.closed {
 		panic(errClosed)
 	}
@@ -634,7 +633,7 @@ func (w *wal) SaveState(state *graftpb.PersistedState) {
 	w.lastState = state
 }
 
-func (w *wal) Append(state *graftpb.PersistedState, entries []*raftpb.LogEntry) int64 {
+func (w *wal) Append(state *pb.PersistedState, entries []*pb.LogEntry) int64 {
 	if w.closed {
 		panic(errClosed)
 	}
@@ -679,7 +678,7 @@ func (w *wal) appendSegmentIfNeeded() error {
 func (w *wal) appendSegment() error {
 	firstIndex := int64(0)
 	segNumber := 0
-	var lastState *graftpb.PersistedState
+	var lastState *pb.PersistedState
 	if len(w.segments) > 0 {
 		firstIndex = w.tail.nextIndex
 		segNumber = w.tail.number + 1
@@ -697,7 +696,7 @@ func (w *wal) appendSegment() error {
 
 	var buf bytes.Buffer
 	recordBytes := protoMarshal(
-		w.recordOf(headerRecordType, &graftpb.WalSegmentHeader{
+		w.recordOf(headerRecordType, &pb.WalSegmentHeader{
 			Magic:         walMagic,
 			Version:       walVersion,
 			Flags:         0,
@@ -836,7 +835,7 @@ func (w *wal) EntryCount() int64 {
 	return count
 }
 
-func (w *wal) GetEntry(index int64) *raftpb.LogEntry {
+func (w *wal) GetEntry(index int64) *pb.LogEntry {
 	if w.closed {
 		panic(errClosed)
 	}
@@ -857,13 +856,13 @@ func (w *wal) GetEntryTerm(index int64) int64 {
 	return w.GetEntry(index).Term
 }
 
-func (w *wal) GetEntries(from, to int64) []*raftpb.LogEntry {
+func (w *wal) GetEntries(from, to int64) []*pb.LogEntry {
 	if from > to {
 		panic(fmt.Errorf("from (%d) must be smaller than or equal to (%d)", from, to))
 	}
 
 	if from == to {
-		return []*raftpb.LogEntry{w.GetEntry(from)}
+		return []*pb.LogEntry{w.GetEntry(from)}
 	}
 
 	firstSegIndex, err := w.findSegment(from)
@@ -901,7 +900,7 @@ func (w *wal) GetEntries(from, to int64) []*raftpb.LogEntry {
 	}
 }
 
-func (w *wal) HeadEntry() *raftpb.LogEntry {
+func (w *wal) HeadEntry() *pb.LogEntry {
 	if w.closed {
 		panic(errClosed)
 	}
@@ -920,7 +919,7 @@ func (w *wal) HeadEntry() *raftpb.LogEntry {
 	return nil
 }
 
-func (w *wal) TailEntry() *raftpb.LogEntry {
+func (w *wal) TailEntry() *pb.LogEntry {
 	if w.closed {
 		panic(errClosed)
 	}
@@ -939,7 +938,7 @@ func (w *wal) TailEntry() *raftpb.LogEntry {
 	return nil
 }
 
-func (w *wal) GetEntriesFrom(index int64) []*raftpb.LogEntry {
+func (w *wal) GetEntriesFrom(index int64) []*pb.LogEntry {
 	if w.closed {
 		panic(errClosed)
 	}
@@ -1017,7 +1016,7 @@ func (w *wal) RetrieveSnapshot() Snapshot {
 	return NewSnapshot(metadata, data)
 }
 
-func (w *wal) SnapshotMetadata() *graftpb.SnapshotMetadata {
+func (w *wal) SnapshotMetadata() *pb.SnapshotMetadata {
 	return w.lastSnapshot
 }
 
@@ -1074,9 +1073,9 @@ func (w *wal) findSegment(entryIndex int64) (int, error) {
 	return -1, indexOutOfRange(entryIndex)
 }
 
-func (w *wal) recordOf(recordType uint32, msg proto.Message) *graftpb.Record {
+func (w *wal) recordOf(recordType uint32, msg proto.Message) *pb.WalRecord {
 	data := protoMarshal(msg)
-	return &graftpb.Record{Type: recordType, Crc32: w.crc32Of(data), Data: data}
+	return &pb.WalRecord{Type: recordType, Crc32: w.crc32Of(data), Data: data}
 }
 
 func (w *wal) crc32Of(data []byte) uint32 {

@@ -2,9 +2,9 @@
 // versions:
 // - protoc-gen-go-grpc v1.5.1
 // - protoc             v5.29.3
-// source: raft.proto
+// source: graft.proto
 
-package raftpb
+package pb
 
 import (
 	context "context"
@@ -19,9 +19,9 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	Raft_RequestVote_FullMethodName     = "/raft.Raft/RequestVote"
-	Raft_AppendEntries_FullMethodName   = "/raft.Raft/AppendEntries"
-	Raft_InstallSnapshot_FullMethodName = "/raft.Raft/InstallSnapshot"
+	Raft_RequestVote_FullMethodName     = "/graft.Raft/RequestVote"
+	Raft_AppendEntries_FullMethodName   = "/graft.Raft/AppendEntries"
+	Raft_InstallSnapshot_FullMethodName = "/graft.Raft/InstallSnapshot"
 )
 
 // RaftClient is the client API for Raft service.
@@ -176,7 +176,7 @@ func _Raft_InstallSnapshot_Handler(srv interface{}, ctx context.Context, dec fun
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
 var Raft_ServiceDesc = grpc.ServiceDesc{
-	ServiceName: "raft.Raft",
+	ServiceName: "graft.Raft",
 	HandlerType: (*RaftServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
@@ -193,5 +193,5 @@ var Raft_ServiceDesc = grpc.ServiceDesc{
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
-	Metadata: "raft.proto",
+	Metadata: "graft.proto",
 }

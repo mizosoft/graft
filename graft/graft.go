@@ -4,16 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"google.golang.org/protobuf/proto"
 	"log"
 	"net"
 	"runtime/debug"
 	"sync"
 	"time"
 
-	"github.com/mizosoft/graft/graftpb"
-	"github.com/mizosoft/graft/raftpb"
+	"github.com/mizosoft/graft/pb"
 	"google.golang.org/grpc"
+	"google.golang.org/protobuf/proto"
 )
 
 const UnknownLeader = "UNKNOWN"
@@ -116,16 +115,16 @@ type Graft struct {
 	heartbeatChan                   chan struct{}
 	broadcastChans                  map[string]*broadcastChannel
 	initialized                     bool
-	lastUpdate, lastCommittedUpdate *graftpb.ConfigUpdate
-	lastUpdateIndex                 int64
-	leaving                         bool // Set to true when a leader is not part of the new configuration.
+	lastUpdate, lastCommittedUpdate *pb.ConfigUpdate
+	lastUpdateIndex                 int64 // -1 if no update has been applied (using static configuration).
+	leaving                         bool  // Set to true when a leader is not part of the new configuration.
 	lastHeartbeatTime               time.Time
 	minElectionTimeout              time.Duration
 
 	Id               string
 	Restore          func(snapshot Snapshot)
-	Apply            func(entries []*raftpb.LogEntry) (snapshot []byte)
-	ConfigUpdateDone func(update *graftpb.ConfigUpdate)
+	Apply            func(entries []*pb.LogEntry) (snapshot []byte)
+	ConfigUpdateDone func(update *pb.ConfigUpdate)
 	Closed           func()
 }
 
@@ -157,11 +156,11 @@ func New(config Config) (*Graft, error) {
 		return nil, fmt.Errorf("sever ID cannot be %s", UnknownLeader)
 	}
 
-	update := &graftpb.ConfigUpdate{
-		Phase: graftpb.ConfigUpdate_APPLIED,
+	update := &pb.ConfigUpdate{
+		Phase: pb.ConfigUpdate_APPLIED,
 	}
 	for id, addr := range config.Addresses {
-		update.New = append(update.New, &graftpb.NodeConfig{
+		update.New = append(update.New, &pb.NodeConfig{
 			Id:      id,
 			Address: addr,
 		})
@@ -192,8 +191,8 @@ func New(config Config) (*Graft, error) {
 		peers:             make(map[string]*peer),
 		lastHeartbeatTime: time.Now().Add(-time.Duration(config.ElectionTimeoutLowMillis) * time.Millisecond),
 
-		ConfigUpdateDone: func(update *graftpb.ConfigUpdate) {},
-		Apply: func(entries []*raftpb.LogEntry) (snapshot []byte) {
+		ConfigUpdateDone: func(update *pb.ConfigUpdate) {},
+		Apply: func(entries []*pb.LogEntry) (snapshot []byte) {
 			return nil
 		},
 		Restore: func(snapshot Snapshot) {},
@@ -223,7 +222,7 @@ func (g *Graft) Serve() error {
 			func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (resp any, err error) {
 				return handler(context.WithValue(ctx, graftKey{}, g), req)
 			}))
-	raftpb.RegisterRaftServer(g.grpcServer, &g.server)
+	pb.RegisterRaftServer(g.grpcServer, &g.server)
 	return g.grpcServer.Serve(listener)
 }
 
@@ -252,7 +251,7 @@ func (g *Graft) Initialize() {
 
 	state := g.persistence.RetrieveState()
 	if state == nil {
-		state = &graftpb.PersistedState{
+		state = &pb.PersistedState{
 			CurrentTerm: 0,
 			VotedFor:    UnknownLeader,
 			CommitIndex: -1,
@@ -307,7 +306,7 @@ func (g *Graft) Close() {
 
 func (g *Graft) unguardedCountMajority(condition func(*peer) bool) bool {
 	switch g.lastUpdate.Phase {
-	case graftpb.ConfigUpdate_LEARNING:
+	case pb.ConfigUpdate_LEARNING:
 		satisfiedCount := 1 // Count self.
 		learnerCount := 0
 		for _, p := range g.peers {
@@ -321,7 +320,7 @@ func (g *Graft) unguardedCountMajority(condition func(*peer) bool) bool {
 		if 2*satisfiedCount > len(g.peers)+1-learnerCount {
 			return true
 		}
-	case graftpb.ConfigUpdate_JOINT:
+	case pb.ConfigUpdate_JOINT:
 		// Make sure we satisfy the two majorities.
 
 		count1 := len(g.lastUpdate.Old)
@@ -347,7 +346,7 @@ func (g *Graft) unguardedCountMajority(condition func(*peer) bool) bool {
 				}
 			}
 		}
-	case graftpb.ConfigUpdate_APPLIED:
+	case pb.ConfigUpdate_APPLIED:
 		count := len(g.peers)
 		satisfiedCount := 0
 		if in(g.Id, g.lastUpdate.New) {
@@ -369,7 +368,7 @@ func (g *Graft) unguardedCountMajority(condition func(*peer) bool) bool {
 func (g *Graft) applyWorker() {
 	for e := range g.applyChan {
 		switch e := e.(type) {
-		case []*raftpb.LogEntry:
+		case []*pb.LogEntry:
 			snapshotData := g.Apply(e)
 			g.lastApplied = e[len(e)-1].Index
 			if snapshotData != nil {
@@ -377,10 +376,14 @@ func (g *Graft) applyWorker() {
 					g.mut.Lock()
 					defer g.mut.Unlock()
 
-					metadata := &graftpb.SnapshotMetadata{
+					metadata := &pb.SnapshotMetadata{
 						LastAppliedIndex: g.lastApplied,
 						LastAppliedTerm:  e[len(e)-1].Term,
 					}
+					if g.lastUpdateIndex >= 0 && g.lastUpdateIndex <= g.lastApplied {
+						metadata.ConfigUpdate = g.lastUpdate
+					}
+
 					g.persistence.SaveSnapshot(NewSnapshot(metadata, snapshotData))
 					g.persistence.TruncateEntriesTo(metadata.LastAppliedIndex)
 				}()
@@ -388,7 +391,7 @@ func (g *Graft) applyWorker() {
 		case Snapshot:
 			g.Restore(e)
 			g.lastApplied = e.Metadata().LastAppliedIndex
-		case []*graftpb.ConfigUpdate:
+		case []*pb.ConfigUpdate:
 			for _, c := range e {
 				g.ConfigUpdateDone(c)
 			}
@@ -434,7 +437,7 @@ func (g *Graft) runElection(timeoutTerm int64) {
 			} else {
 				var lastLogIndex int64
 				var lastLogTerm int64
-				request := func() *raftpb.RequestVoteRequest {
+				request := func() *pb.RequestVoteRequest {
 					g.mut.Lock()
 					defer g.mut.Unlock()
 
@@ -449,7 +452,7 @@ func (g *Graft) runElection(timeoutTerm int64) {
 						}
 					}
 
-					return &raftpb.RequestVoteRequest{
+					return &pb.RequestVoteRequest{
 						Term:         electionTerm,
 						CandidateId:  g.Id,
 						LastLogIndex: lastLogIndex,
@@ -528,19 +531,18 @@ func (g *Graft) broadcastWorker(peer *peer, c *broadcastChannel) {
 
 			if firstIndex < 0 || nextIndex < firstIndex {
 				if snapshot := g.persistence.RetrieveSnapshot(); snapshot != nil {
-					return &raftpb.SnapshotRequest{
-						Term:              g.currentTerm,
-						LeaderId:          g.Id,
-						LastIncludedTerm:  snapshot.Metadata().LastAppliedTerm,
-						LastIncludedIndex: snapshot.Metadata().LastAppliedIndex,
-						Offset:            0,
-						Done:              true,
-						Data:              snapshot.Data(),
+					return &pb.SnapshotRequest{
+						Term:     g.currentTerm,
+						LeaderId: g.Id,
+						Offset:   0,
+						Done:     true,
+						Metadata: snapshot.Metadata(),
+						Data:     snapshot.Data(),
 					}
 				}
 			}
 
-			request := &raftpb.AppendEntriesRequest{
+			request := &pb.AppendEntriesRequest{
 				Term:              g.currentTerm,
 				LeaderId:          g.Id,
 				LeaderCommitIndex: g.commitIndex,
@@ -578,14 +580,14 @@ func (g *Graft) broadcastWorker(peer *peer, c *broadcastChannel) {
 		} else {
 			res := func() proto.Message {
 				switch req := req.(type) {
-				case *raftpb.AppendEntriesRequest:
+				case *pb.AppendEntriesRequest:
 					if res, err := client.AppendEntries(context.Background(), req); err != nil {
 						g.log("AppendEntries(%v) to %s failed: %v", req, peer.id, err)
 						return nil
 					} else {
 						return res
 					}
-				case *raftpb.SnapshotRequest:
+				case *pb.SnapshotRequest:
 					if res, err := client.InstallSnapshot(context.Background(), req); err != nil {
 						g.log("InstallSnapshot(%v) to %s failed: %v", req, peer.id, err)
 						return nil
@@ -600,7 +602,7 @@ func (g *Graft) broadcastWorker(peer *peer, c *broadcastChannel) {
 
 			var doRetry bool
 			switch res := res.(type) {
-			case *raftpb.AppendEntriesResponse:
+			case *pb.AppendEntriesResponse:
 				doRetry = func() bool {
 					g.mut.Lock()
 					defer g.mut.Unlock()
@@ -617,7 +619,7 @@ func (g *Graft) broadcastWorker(peer *peer, c *broadcastChannel) {
 					} else if res.Success {
 						peer.lastHeartbeatTime = time.Now()
 
-						req := req.(*raftpb.AppendEntriesRequest)
+						req := req.(*pb.AppendEntriesRequest)
 						if len(req.Entries) > 0 {
 							peer.nextIndex = req.Entries[len(req.Entries)-1].Index + 1
 							peer.matchIndex = peer.nextIndex - 1
@@ -643,7 +645,7 @@ func (g *Graft) broadcastWorker(peer *peer, c *broadcastChannel) {
 					}
 				}()
 
-			case *raftpb.SnapshotResponse:
+			case *pb.SnapshotResponse:
 				doRetry = func() bool {
 					g.mut.Lock()
 					defer g.mut.Unlock()
@@ -660,9 +662,9 @@ func (g *Graft) broadcastWorker(peer *peer, c *broadcastChannel) {
 					} else {
 						peer.lastHeartbeatTime = time.Now()
 
-						req := req.(*raftpb.SnapshotRequest)
-						peer.nextIndex = req.LastIncludedIndex + 1
-						peer.matchIndex = req.LastIncludedIndex
+						req := req.(*pb.SnapshotRequest)
+						peer.nextIndex = req.Metadata.LastAppliedIndex + 1
+						peer.matchIndex = req.Metadata.LastAppliedIndex
 						return true // Continue emitting log.
 					}
 				}()
@@ -706,10 +708,10 @@ func (g *Graft) unguardedTransitionToLeader() {
 
 	// Append NOOP entry if we have uncommitted entries from previous terms.
 	if g.commitIndex < lastIndex {
-		g.persistence.Append(g.unguardedCapturePersistedState(), []*raftpb.LogEntry{
+		g.persistence.Append(g.unguardedCapturePersistedState(), []*pb.LogEntry{
 			{
 				Term: g.currentTerm,
-				Type: raftpb.LogEntry_NOOP,
+				Type: pb.LogEntry_NOOP,
 			},
 		})
 	}
@@ -738,12 +740,12 @@ func (g *Graft) unguardedTransitionToFollower(term int64) {
 }
 
 func (g *Graft) unguardedContinueConfigUpdate() {
-	if g.commitIndex < g.lastUpdateIndex {
+	if g.lastUpdateIndex < 0 || g.commitIndex < g.lastUpdateIndex {
 		return
 	}
 
 	switch g.lastUpdate.Phase {
-	case graftpb.ConfigUpdate_LEARNING:
+	case pb.ConfigUpdate_LEARNING:
 		hasLearners := false
 		for _, p := range g.peers {
 			if p.learner {
@@ -754,14 +756,14 @@ func (g *Graft) unguardedContinueConfigUpdate() {
 
 		if !hasLearners {
 			update := cloneMsg(g.lastUpdate)
-			update.Phase = graftpb.ConfigUpdate_JOINT
+			update.Phase = pb.ConfigUpdate_JOINT
 			g.unguardedAppendUpdate(update)
 		}
-	case graftpb.ConfigUpdate_JOINT:
+	case pb.ConfigUpdate_JOINT:
 		update := cloneMsg(g.lastUpdate)
-		update.Phase = graftpb.ConfigUpdate_APPLIED
+		update.Phase = pb.ConfigUpdate_APPLIED
 		g.unguardedAppendUpdate(update)
-	case graftpb.ConfigUpdate_APPLIED:
+	case pb.ConfigUpdate_APPLIED:
 		if g.leaving {
 			g.leaving = false
 			g.unguardedTransitionToFollower(g.currentTerm) // Step down.
@@ -770,7 +772,7 @@ func (g *Graft) unguardedContinueConfigUpdate() {
 }
 
 func (g *Graft) unguardedCommit(newCommitIndex int64) {
-	if newCommitIndex >= g.lastUpdateIndex {
+	if g.lastUpdateIndex >= 0 && newCommitIndex >= g.lastUpdateIndex {
 		g.lastCommittedUpdate = g.lastUpdate
 	}
 
@@ -780,18 +782,18 @@ func (g *Graft) unguardedCommit(newCommitIndex int64) {
 }
 
 func (g *Graft) unguardedApply(from, to int64, applyConfigUpdates bool) {
-	commandEntries := make([]*raftpb.LogEntry, 0)
+	commandEntries := make([]*pb.LogEntry, 0)
 	for _, entry := range g.persistence.GetEntries(from, to) {
 		switch entry.Type {
-		case raftpb.LogEntry_COMMAND:
+		case pb.LogEntry_COMMAND:
 			commandEntries = append(commandEntries, entry)
-		case raftpb.LogEntry_CONFIG:
+		case pb.LogEntry_CONFIG:
 			if len(commandEntries) > 0 {
 				g.applyChan <- cloneMsgs(commandEntries)
 				commandEntries = commandEntries[:0]
 			}
 
-			var update graftpb.ConfigUpdate
+			var update pb.ConfigUpdate
 			protoUnmarshal(entry.Data, &update)
 			if applyConfigUpdates {
 				g.unguardedApplyUpdate(&update, entry.Index)
@@ -805,8 +807,8 @@ func (g *Graft) unguardedApply(from, to int64, applyConfigUpdates bool) {
 	}
 }
 
-func (g *Graft) unguardedCapturePersistedState() *graftpb.PersistedState {
-	return &graftpb.PersistedState{
+func (g *Graft) unguardedCapturePersistedState() *pb.PersistedState {
+	return &pb.PersistedState{
 		CurrentTerm: g.currentTerm,
 		VotedFor:    g.votedFor,
 		CommitIndex: g.commitIndex,
@@ -833,11 +835,11 @@ func (g *Graft) unguardedIsUnknownPeer(peerId string) bool {
 	}
 
 	switch g.lastCommittedUpdate.Phase {
-	case graftpb.ConfigUpdate_LEARNING:
+	case pb.ConfigUpdate_LEARNING:
 		return !in(peerId, g.lastCommittedUpdate.Old)
-	case graftpb.ConfigUpdate_JOINT:
+	case pb.ConfigUpdate_JOINT:
 		return !in(peerId, g.lastCommittedUpdate.Old) && !in(peerId, g.lastCommittedUpdate.New)
-	case graftpb.ConfigUpdate_APPLIED:
+	case pb.ConfigUpdate_APPLIED:
 		return !in(peerId, g.lastCommittedUpdate.New)
 	default:
 		log.Panicf("Unknown phase: %v", g.lastCommittedUpdate.Phase)
@@ -845,7 +847,7 @@ func (g *Graft) unguardedIsUnknownPeer(peerId string) bool {
 	}
 }
 
-func (g *Graft) unguardedIsCandidateLogUpToDate(request *raftpb.RequestVoteRequest) bool {
+func (g *Graft) unguardedIsCandidateLogUpToDate(request *pb.RequestVoteRequest) bool {
 	myLastLogIndex, myLastLogTerm := g.persistence.LastLogIndexAndTerm()
 	if myLastLogIndex < 0 {
 		if metadata := g.persistence.SnapshotMetadata(); metadata != nil {
@@ -858,7 +860,7 @@ func (g *Graft) unguardedIsCandidateLogUpToDate(request *raftpb.RequestVoteReque
 		(myLastLogTerm == request.LastLogTerm && myLastLogIndex <= request.LastLogIndex)
 }
 
-func (g *Graft) requestVote(request *raftpb.RequestVoteRequest) (*raftpb.RequestVoteResponse, error) {
+func (g *Graft) requestVote(request *pb.RequestVoteRequest) (*pb.RequestVoteResponse, error) {
 	g.mut.Lock()
 	defer g.mut.Unlock()
 
@@ -871,7 +873,7 @@ func (g *Graft) requestVote(request *raftpb.RequestVoteRequest) (*raftpb.Request
 	if request.Term < g.currentTerm ||
 		g.unguardedIsUnknownPeer(request.CandidateId) ||
 		g.unguardedProbablyHasLeader() {
-		return &raftpb.RequestVoteResponse{
+		return &pb.RequestVoteResponse{
 			Term:        g.currentTerm,
 			VoteGranted: false,
 		}, nil
@@ -896,13 +898,13 @@ func (g *Graft) requestVote(request *raftpb.RequestVoteRequest) (*raftpb.Request
 	}
 
 	g.persistence.SaveState(g.unguardedCapturePersistedState())
-	return &raftpb.RequestVoteResponse{
+	return &pb.RequestVoteResponse{
 		Term:        g.currentTerm,
 		VoteGranted: grantVote,
 	}, nil
 }
 
-func (g *Graft) appendEntries(request *raftpb.AppendEntriesRequest) (*raftpb.AppendEntriesResponse, error) {
+func (g *Graft) appendEntries(request *pb.AppendEntriesRequest) (*pb.AppendEntriesResponse, error) {
 	g.mut.Lock()
 	defer g.mut.Unlock()
 
@@ -913,7 +915,7 @@ func (g *Graft) appendEntries(request *raftpb.AppendEntriesRequest) (*raftpb.App
 	}
 
 	if request.Term < g.currentTerm || g.unguardedIsUnknownPeer(request.LeaderId) {
-		return &raftpb.AppendEntriesResponse{
+		return &pb.AppendEntriesResponse{
 			Term:    g.currentTerm,
 			Success: false,
 		}, nil
@@ -935,7 +937,7 @@ func (g *Graft) appendEntries(request *raftpb.AppendEntriesRequest) (*raftpb.App
 	lastIndex, _ := g.persistence.LastLogIndexAndTerm()
 	if request.PrevLogIndex > lastIndex {
 		g.persistence.SaveState(g.unguardedCapturePersistedState())
-		return &raftpb.AppendEntriesResponse{
+		return &pb.AppendEntriesResponse{
 			Term:    request.Term,
 			Success: false,
 		}, nil
@@ -946,7 +948,7 @@ func (g *Graft) appendEntries(request *raftpb.AppendEntriesRequest) (*raftpb.App
 		myPrevLogTerm := g.persistence.GetEntryTerm(request.PrevLogIndex)
 		if request.PrevLogTerm != myPrevLogTerm {
 			g.persistence.SaveState(g.unguardedCapturePersistedState())
-			return &raftpb.AppendEntriesResponse{
+			return &pb.AppendEntriesResponse{
 				Term:    request.Term,
 				Success: false,
 			}, nil
@@ -968,22 +970,21 @@ func (g *Graft) appendEntries(request *raftpb.AppendEntriesRequest) (*raftpb.App
 	}
 
 	for _, entry := range request.Entries {
-		if entry.Type == raftpb.LogEntry_CONFIG {
-			var update graftpb.ConfigUpdate
+		if entry.Type == pb.LogEntry_CONFIG {
+			var update pb.ConfigUpdate
 			protoUnmarshal(entry.Data, &update)
 			g.unguardedApplyUpdate(&update, entry.Index)
 		}
 	}
 
-	return &raftpb.AppendEntriesResponse{
+	return &pb.AppendEntriesResponse{
 		Term:    request.Term,
 		Success: true,
 	}, nil
 }
 
-// FIXME handle snapshot configuration.
 // FIXME may want to use streaming
-func (g *Graft) installSnapshot(request *raftpb.SnapshotRequest) (*raftpb.SnapshotResponse, error) {
+func (g *Graft) installSnapshot(request *pb.SnapshotRequest) (*pb.SnapshotResponse, error) {
 	g.mut.Lock()
 	defer g.mut.Unlock()
 
@@ -994,7 +995,7 @@ func (g *Graft) installSnapshot(request *raftpb.SnapshotRequest) (*raftpb.Snapsh
 	}
 
 	if request.Term < g.currentTerm || g.unguardedIsUnknownPeer(request.LeaderId) {
-		return &raftpb.SnapshotResponse{
+		return &pb.SnapshotResponse{
 			Term: g.currentTerm,
 		}, nil
 	}
@@ -1022,21 +1023,22 @@ func (g *Graft) installSnapshot(request *raftpb.SnapshotRequest) (*raftpb.Snapsh
 		return nil, fmt.Errorf("expected offset to be zero")
 	}
 
-	snapshot := NewSnapshot(&graftpb.SnapshotMetadata{
-		LastAppliedIndex: request.LastIncludedIndex,
-		LastAppliedTerm:  request.LastIncludedTerm,
-	}, request.Data)
+	snapshot := NewSnapshot(request.Metadata, request.Data)
 	g.persistence.SaveSnapshot(snapshot)
 
 	firstIndex, _ := g.persistence.FirstLogIndexAndTerm()
-	if request.LastIncludedIndex >= firstIndex {
-		g.persistence.TruncateEntriesTo(request.LastIncludedIndex)
+	if request.Metadata.LastAppliedIndex >= firstIndex {
+		g.persistence.TruncateEntriesTo(request.Metadata.LastAppliedIndex)
 	} else if firstIndex >= 0 {
 		g.persistence.TruncateEntriesFrom(firstIndex) // Truncate entire log.
 	}
 
+	if request.Metadata.ConfigUpdate != nil {
+		g.unguardedApplyUpdate(request.Metadata.ConfigUpdate, request.Metadata.LastAppliedIndex)
+	}
+
 	g.applyChan <- snapshot
-	return &raftpb.SnapshotResponse{
+	return &pb.SnapshotResponse{
 		Term: g.currentTerm,
 	}, nil
 }
@@ -1047,7 +1049,7 @@ type peerFactory struct {
 	defaultLastHeartbeat time.Time
 }
 
-func (f *peerFactory) get(config *graftpb.NodeConfig) *peer {
+func (f *peerFactory) get(config *pb.NodeConfig) *peer {
 	p, ok := f.existingPeers[config.Id]
 	if !ok {
 		p = &peer{
@@ -1063,24 +1065,24 @@ func (f *peerFactory) get(config *graftpb.NodeConfig) *peer {
 	return p
 }
 
-func (g *Graft) unguardedAppendUpdate(update *graftpb.ConfigUpdate) {
-	updateIndex := g.persistence.Append(g.unguardedCapturePersistedState(), []*raftpb.LogEntry{{
+func (g *Graft) unguardedAppendUpdate(update *pb.ConfigUpdate) {
+	updateIndex := g.persistence.Append(g.unguardedCapturePersistedState(), []*pb.LogEntry{{
 		Term: g.currentTerm,
-		Type: raftpb.LogEntry_CONFIG,
+		Type: pb.LogEntry_CONFIG,
 		Data: protoMarshal(update),
 	}}) - 1
 	g.unguardedApplyUpdate(update, updateIndex)
 	g.heartbeatTimer.poke() // Broadcast update.
 }
 
-func (g *Graft) unguardedApplyUpdate(update *graftpb.ConfigUpdate, updateIndex int64) {
+func (g *Graft) unguardedApplyUpdate(update *pb.ConfigUpdate, updateIndex int64) {
 	g.log("Applying update: %v", update)
 
 	g.lastUpdate = update
 	g.lastUpdateIndex = updateIndex
 
 	// Leaders not in the new configuration step down when the configuration is committed.
-	if g.state == stateLeader && update.Phase == graftpb.ConfigUpdate_APPLIED && !in(g.Id, update.New) {
+	if g.state == stateLeader && update.Phase == pb.ConfigUpdate_APPLIED && !in(g.Id, update.New) {
 		g.leaving = true
 	}
 
@@ -1093,7 +1095,7 @@ func (g *Graft) unguardedApplyUpdate(update *graftpb.ConfigUpdate, updateIndex i
 	}
 
 	switch update.Phase {
-	case graftpb.ConfigUpdate_LEARNING:
+	case pb.ConfigUpdate_LEARNING:
 		for _, config := range update.Old {
 			newPeers[config.Id] = factory.get(config)
 		}
@@ -1105,7 +1107,7 @@ func (g *Graft) unguardedApplyUpdate(update *graftpb.ConfigUpdate, updateIndex i
 				newPeers[config.Id] = p
 			}
 		}
-	case graftpb.ConfigUpdate_JOINT:
+	case pb.ConfigUpdate_JOINT:
 		for _, config := range update.Old {
 			newPeers[config.Id] = factory.get(config)
 		}
@@ -1115,7 +1117,7 @@ func (g *Graft) unguardedApplyUpdate(update *graftpb.ConfigUpdate, updateIndex i
 				newPeers[config.Id] = factory.get(config)
 			}
 		}
-	case graftpb.ConfigUpdate_APPLIED:
+	case pb.ConfigUpdate_APPLIED:
 		for _, config := range update.New {
 			newPeers[config.Id] = factory.get(config)
 		}
@@ -1171,12 +1173,12 @@ func (g *Graft) Append(commands [][]byte) (int64, error) {
 		return -1, nil
 	}
 
-	entries := make([]*raftpb.LogEntry, len(commands))
+	entries := make([]*pb.LogEntry, len(commands))
 	for i, cmd := range commands {
-		entries[i] = &raftpb.LogEntry{
+		entries[i] = &pb.LogEntry{
 			Term: g.currentTerm,
 			Data: cmd,
-			Type: raftpb.LogEntry_COMMAND,
+			Type: pb.LogEntry_COMMAND,
 		}
 	}
 
@@ -1224,14 +1226,14 @@ func (g *Graft) ConfigUpdate(id string, addedNodes map[string]string, removedNod
 
 	// Create config update.
 
-	update := &graftpb.ConfigUpdate{
+	update := &pb.ConfigUpdate{
 		Id:  id,
 		Old: g.lastUpdate.New,
 	}
 
 	for id, address := range existingNodes {
 		if !contains(removedNodes, id) {
-			update.New = append(update.New, &graftpb.NodeConfig{
+			update.New = append(update.New, &pb.NodeConfig{
 				Id:      id,
 				Address: address,
 			})
@@ -1239,22 +1241,22 @@ func (g *Graft) ConfigUpdate(id string, addedNodes map[string]string, removedNod
 	}
 
 	for id, address := range addedNodes {
-		update.New = append(update.New, &graftpb.NodeConfig{
+		update.New = append(update.New, &pb.NodeConfig{
 			Id:      id,
 			Address: address,
 		})
 	}
 
 	if len(addedNodes) > 0 {
-		update.Phase = graftpb.ConfigUpdate_LEARNING
+		update.Phase = pb.ConfigUpdate_LEARNING
 	} else {
-		update.Phase = graftpb.ConfigUpdate_JOINT
+		update.Phase = pb.ConfigUpdate_JOINT
 	}
 	g.unguardedAppendUpdate(update)
 	return nil
 }
 
-func in(id string, configs []*graftpb.NodeConfig) bool {
+func in(id string, configs []*pb.NodeConfig) bool {
 	for _, config := range configs {
 		if config.Id == id {
 			return true
