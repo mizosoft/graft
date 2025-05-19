@@ -1,9 +1,10 @@
-package main
+package kvstore
 
 import (
 	"bufio"
 	"flag"
 	"github.com/mizosoft/graft"
+	"go.uber.org/zap"
 	"os"
 	"strings"
 )
@@ -44,35 +45,28 @@ func main() {
 		panic(err)
 	}
 
-	wal, err := graft.OpenWal(walDir, 1*1024*1024) // 1MB
+	wal, err := graft.OpenWal(walDir, 1*1024*1024, zap.NewExample()) // 1MB
 	if err != nil {
 		panic(err)
 	}
 
-	g, err := graft.New(graft.Config{
+	logger := zap.NewExample()
+
+	kvs, err := NewKvService(*address, graft.Config{
 		Id:                        *id,
 		Addresses:                 addresses,
 		ElectionTimeoutLowMillis:  1500,
 		ElectionTimeoutHighMillis: 3000,
 		HeartbeatMillis:           500,
 		Persistence:               wal,
+		Logger:                    logger,
 	})
 	if err != nil {
 		panic(err)
 	}
 
-	kvs := newKvStore(g)
-	kvs.initialize()
-	g.Initialize()
-
-	go func() {
-		err := g.Serve()
-		if err != nil {
-			panic(err)
-		}
-	}()
-
-	err = kvs.listenAndServe(*address)
+	kvs.Initialize()
+	err = kvs.ListenAndServe()
 	if err != nil {
 		panic(err)
 	}

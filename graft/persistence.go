@@ -2,6 +2,7 @@ package graft
 
 import (
 	"fmt"
+	"go.uber.org/zap"
 
 	"github.com/mizosoft/graft/pb"
 )
@@ -84,8 +85,8 @@ func MemoryPersistence() Persistence {
 	return &memoryPersistence{}
 }
 
-func OpenWal(dir string, softSegmentSize int64) (Persistence, error) {
-	return openWal(dir, softSegmentSize)
+func OpenWal(dir string, softSegmentSize int64, logger *zap.Logger) (Persistence, error) {
+	return openWal(dir, softSegmentSize, logger)
 }
 
 func NewSnapshot(metadata *pb.SnapshotMetadata, data []byte) Snapshot {

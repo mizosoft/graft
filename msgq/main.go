@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"flag"
 	"github.com/mizosoft/graft"
+	"go.uber.org/zap"
 	"os"
 	"strings"
 )
@@ -44,10 +45,12 @@ func main() {
 		panic(err)
 	}
 
-	wal, err := graft.OpenWal(walDir, 1*1024*1024) // 1MB
+	wal, err := graft.OpenWal(walDir, 1*1024*1024, zap.NewExample()) // 1MB
 	if err != nil {
 		panic(err)
 	}
+
+	logger := zap.NewExample()
 
 	g, err := graft.New(graft.Config{
 		Id:                        *id,
@@ -56,17 +59,18 @@ func main() {
 		ElectionTimeoutHighMillis: 3000,
 		HeartbeatMillis:           500,
 		Persistence:               wal,
+		Logger:                    logger,
 	})
 	if err != nil {
 		panic(err)
 	}
 
-	kvs := newMsgq(g)
+	kvs := newMsgq(g, logger)
 	kvs.initialize()
 	g.Initialize()
 
 	go func() {
-		err := g.Serve()
+		err := g.ListenAndServe()
 		if err != nil {
 			panic(err)
 		}

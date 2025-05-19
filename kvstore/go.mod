@@ -1,4 +1,4 @@
-module github.com/mizosoft/graft/kvstore
+module github.com/mizosoft/graft/kvstore2
 
 go 1.24.2
 

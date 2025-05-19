@@ -1,9 +1,8 @@
 package testutil
 
 import (
-	"testing"
-
 	"gotest.tools/v3/assert"
+	"testing"
 )
 
 func NilOf[T any]() T {

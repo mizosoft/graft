@@ -1,20 +1,11 @@
-package main
+package kvstore
 
 import (
 	"bytes"
 	"encoding/gob"
-	"encoding/json"
-	"errors"
-	"fmt"
 	"go.uber.org/zap"
-	"net/http"
-	"reflect"
 	"sync"
 	"sync/atomic"
-
-	"github.com/google/uuid"
-	"github.com/mizosoft/graft"
-	"github.com/mizosoft/graft/pb"
 )
 
 type CommandType = int
@@ -25,6 +16,7 @@ const (
 	commandTypeDel
 	commandTypeGet
 	commandTypeCas
+	commandTypeAppend
 )
 
 type Command struct {
@@ -38,265 +30,13 @@ type Command struct {
 
 type kvstore struct {
 	data                map[string]string
-	publisher           *publisher
-	g                   *graft.Graft
-	initialized         bool
-	configUpdateChan    chan *pb.ConfigUpdate
-	mut                 sync.RWMutex
-	mux                 *http.ServeMux
 	logger              *zap.SugaredLogger
+	mut                 sync.RWMutex
 	redundantOperations int32 // Number of operations increasing log unnecessarily.
 }
 
-type GetRequest struct {
-	Key          string `json:"key"`
-	Linearizable bool   `json:"linearizable"`
-}
-
-type GetResponse struct {
-	Exists bool   `json:"exists"`
-	Value  string `json:"value"`
-}
-
-type PutRequest struct {
-	Key   string `json:"key"`
-	Value string `json:"value"`
-}
-
-type PutResponse struct {
-	Exists        bool   `json:"exists"`
-	PreviousValue string `json:"previousValue"`
-}
-
-type CasRequest struct {
-	Key           string `json:"key"`
-	Value         string `json:"value"`
-	ExpectedValue string `json:"expectedValue"`
-}
-
-type CasResponse struct {
-	Exists bool   `json:"exists"`
-	Value  string `json:"currValue"`
-}
-
-type DeleteRequest struct {
-	Key string `json:"key"`
-}
-
-type DeleteResponse struct {
-	Exists bool   `json:"exists"`
-	Value  string `json:"value"`
-}
-
-type PutIfAbsentResponse struct {
-	Exists bool `json:"exists"`
-}
-
-type ConfigUpdateRequest struct {
-	Add    map[string]string `json:"add"`
-	Remove []string          `json:"remove"`
-}
-
-type ConfigUpdateResponse struct {
-	Config map[string]string `json:"config"`
-}
-
-type NotLeaderResponse struct {
-	LeaderId string `json:"leaderId"`
-}
-
-func (s *kvstore) respondJson(w http.ResponseWriter, payload interface{}) {
-	s.respondJsonWithStatus(w, payload, http.StatusOK)
-}
-
-func (s *kvstore) respondJsonWithStatus(w http.ResponseWriter, payload interface{}, status int) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	if err := json.NewEncoder(w).Encode(payload); err != nil {
-		s.logger.Error("Error encoding to JSON", err)
-		http.Error(w, "Server error", http.StatusInternalServerError)
-	}
-}
-
-func executeCommand[T any](s *kvstore, command *Command, w http.ResponseWriter) {
-	notify := s.publisher.subscribe(command.Id)
-	_, err := s.g.Append([][]byte{serializeCommand(command)})
-	if err != nil {
-		if errors.Is(err, graft.ErrNotLeader) {
-			s.respondJsonWithStatus(w, &NotLeaderResponse{
-				LeaderId: s.g.LeaderId(),
-			}, http.StatusMisdirectedRequest)
-		} else {
-			s.logger.Error("Error appending command", err)
-			http.Error(w, "Internal server error", http.StatusInternalServerError)
-		}
-		return
-	}
-
-	result := <-notify
-	if _, ok := result.(*T); !ok {
-		var temp *T
-		s.logger.Errorf("Couldn't cast (%v) response to %v", reflect.TypeOf(result).String(), reflect.TypeOf(temp).String())
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
-		return
-	}
-
-	s.respondJson(w, result)
-}
-
-func (s *kvstore) handleGet(w http.ResponseWriter, r *http.Request) {
-	req, err := decodeJson[GetRequest](r)
-	if err != nil {
-		http.Error(w, "Invalid request format: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	if req.Linearizable {
-		executeCommand[GetResponse](s, &Command{
-			Id:       uuid.New().String(),
-			ServerId: s.g.Id,
-			Type:     commandTypeGet,
-			Key:      req.Key,
-		}, w)
-	} else {
-		value, ok := func() (string, bool) {
-			s.mut.RLock()
-			defer s.mut.RUnlock()
-
-			value, ok := s.data[req.Key]
-			return value, ok
-		}()
-
-		s.respondJson(w, &GetResponse{
-			Value:  value,
-			Exists: ok,
-		})
-	}
-}
-
-func (s *kvstore) handlePut(w http.ResponseWriter, r *http.Request) {
-	req, err := decodeJson[PutRequest](r)
-	if err != nil {
-		http.Error(w, "Invalid request format: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	executeCommand[PutResponse](s, &Command{
-		Id:       uuid.New().String(),
-		ServerId: s.g.Id,
-		Type:     commandTypePut,
-		Key:      req.Key,
-		Value:    req.Value,
-	}, w)
-}
-
-func (s *kvstore) handlePutIfAbsent(w http.ResponseWriter, r *http.Request) {
-	req, err := decodeJson[PutRequest](r)
-	if err != nil {
-		http.Error(w, "Invalid request format: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	executeCommand[PutIfAbsentResponse](s, &Command{
-		Id:       uuid.New().String(),
-		ServerId: s.g.Id,
-		Type:     commandTypePutIfAbsent,
-		Key:      req.Key,
-		Value:    req.Value,
-	}, w)
-}
-
-func (s *kvstore) handleCas(w http.ResponseWriter, r *http.Request) {
-	req, err := decodeJson[CasRequest](r)
-	if err != nil {
-		http.Error(w, "Invalid request format: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	executeCommand[CasResponse](s, &Command{
-		Id:            uuid.New().String(),
-		ServerId:      s.g.Id,
-		Type:          commandTypeCas,
-		Key:           req.Key,
-		Value:         req.Value,
-		ExpectedValue: req.ExpectedValue,
-	}, w)
-}
-
-func (s *kvstore) handleDelete(w http.ResponseWriter, r *http.Request) {
-	req, err := decodeJson[DeleteRequest](r)
-	if err != nil {
-		http.Error(w, "Invalid request format: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	executeCommand[DeleteResponse](s, &Command{
-		Id:       uuid.New().String(),
-		ServerId: s.g.Id,
-		Type:     commandTypeDel,
-		Key:      req.Key,
-	}, w)
-}
-
-func (s *kvstore) handleConfigUpdate(w http.ResponseWriter, r *http.Request) {
-	req, err := decodeJson[ConfigUpdateRequest](r)
-	if err != nil {
-		http.Error(w, "Invalid request format: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	id := uuid.New().String()
-	ch := s.publisher.subscribe(id)
-	if err := s.g.ConfigUpdate(id, req.Add, req.Remove); err != nil {
-		if errors.Is(err, graft.ErrNotLeader) {
-			s.respondJsonWithStatus(w, &NotLeaderResponse{
-				LeaderId: s.g.LeaderId(),
-			}, http.StatusMisdirectedRequest)
-		} else {
-			s.logger.Error("Error updating config", err)
-			http.Error(w, "Internal server error", http.StatusInternalServerError)
-		}
-		return
-	}
-
-	for update := range ch {
-		u := update.(*pb.ConfigUpdate)
-		if u.Phase == pb.ConfigUpdate_APPLIED {
-			s.publisher.unsubscribe(id)
-			config := make(map[string]string)
-			for _, c := range u.New {
-				config[c.Id] = c.Address
-			}
-			s.respondJson(w, &ConfigUpdateResponse{
-				Config: config,
-			})
-			return
-		}
-	}
-
-	s.logger.Errorf("Config %s never applied", id)
-	http.Error(w, "Internal server error", http.StatusInternalServerError)
-}
-
-func decodeJson[T any](r *http.Request) (T, error) {
-	var req T
-	decoder := json.NewDecoder(r.Body)
-	err := decoder.Decode(&req)
-	defer r.Body.Close()
-	return req, err
-}
-
-func (s *kvstore) apply(entries []*pb.LogEntry) {
-	for _, cmd := range deserializeCommands(entries) {
-		fmt.Println("Applying command:", cmd)
-		response := s.processCommand(cmd)
-		if cmd.ServerId == s.g.Id {
-			s.publisher.publishOnce(cmd.Id, response)
-		}
-	}
-}
-
-func (s *kvstore) processCommand(cmd *Command) any {
+func (s *kvstore) Apply(command any) any {
+	cmd := command.(Command)
 	switch cmd.Type {
 	case commandTypePut:
 		return s.put(cmd.Key, cmd.Value)
@@ -308,14 +48,46 @@ func (s *kvstore) processCommand(cmd *Command) any {
 		return s.get(cmd.Key)
 	case commandTypeCas:
 		return s.cas(cmd.Key, cmd.ExpectedValue, cmd.Value)
+	case commandTypeAppend:
+		return s.append(cmd.Key, cmd.Value)
 	default:
 		s.logger.Panicf("Unknown command type: %v", cmd.Type)
 		return nil
 	}
 }
 
+func (s *kvstore) Restore(snapshot []byte) {
+	s.mut.Lock()
+	defer s.mut.Unlock()
+
+	var mp map[string]string
+	decoder := gob.NewDecoder(bytes.NewReader(snapshot))
+	err := decoder.Decode(&mp)
+	if err != nil {
+		panic(err)
+	}
+	s.data = mp
+}
+
+func (s *kvstore) MaybeSnapshot() []byte {
+	if atomic.LoadInt32(&s.redundantOperations) < 4096 {
+		return nil
+	}
+
+	s.mut.Lock()
+	defer s.mut.Unlock()
+
+	buf := new(bytes.Buffer)
+	encoder := gob.NewEncoder(buf)
+	err := encoder.Encode(s.data)
+	if err != nil {
+		panic(err)
+	}
+	return buf.Bytes()
+}
+
 func (s *kvstore) get(key string) *GetResponse {
-	s.logger.Info("Get", "key", key)
+	s.logger.Info("Get", zap.String("key", key))
 
 	s.mut.RLock()
 	defer s.mut.RUnlock()
@@ -329,7 +101,7 @@ func (s *kvstore) get(key string) *GetResponse {
 }
 
 func (s *kvstore) put(key string, value string) *PutResponse {
-	s.logger.Info("Put", "key", key, "value", value)
+	s.logger.Info("Put", zap.String("key", key), zap.String("value", value))
 
 	s.mut.Lock()
 	defer s.mut.Unlock()
@@ -346,24 +118,24 @@ func (s *kvstore) put(key string, value string) *PutResponse {
 }
 
 func (s *kvstore) putIfAbsent(key string, value string) *PutIfAbsentResponse {
-	s.logger.Info("PutIfAbsent", "key", key, "value", value)
+	s.logger.Info("PutIfAbsent", zap.String("key", key), zap.String("value", value))
 
 	s.mut.Lock()
 	defer s.mut.Unlock()
 
 	_, ok := s.data[key]
 	if ok {
-		s.data[key] = value
-	} else {
 		atomic.AddInt32(&s.redundantOperations, 1)
+	} else {
+		s.data[key] = value
 	}
 	return &PutIfAbsentResponse{
-		Exists: ok,
+		Success: !ok,
 	}
 }
 
 func (s *kvstore) del(key string) *DeleteResponse {
-	s.logger.Info("Del", "key", key)
+	s.logger.Info("Del", zap.String("key", key))
 
 	s.mut.Lock()
 	defer s.mut.Unlock()
@@ -373,6 +145,7 @@ func (s *kvstore) del(key string) *DeleteResponse {
 	if ok {
 		delete(s.data, key)
 	}
+	s.logger.Info("Delddfdf", zap.String("key", key))
 	return &DeleteResponse{
 		Exists: ok,
 		Value:  value,
@@ -380,7 +153,7 @@ func (s *kvstore) del(key string) *DeleteResponse {
 }
 
 func (s *kvstore) cas(key string, expectedValue string, value string) *CasResponse {
-	s.logger.Info("Cas", "key", key, "expectedValue", expectedValue, "value", value)
+	s.logger.Info("Cas", zap.String("key", key), zap.String("expectedValue", expectedValue), zap.String("value", value))
 
 	s.mut.Lock()
 	defer s.mut.Unlock()
@@ -397,97 +170,19 @@ func (s *kvstore) cas(key string, expectedValue string, value string) *CasRespon
 	}
 }
 
-func serializeCommand(command *Command) []byte {
-	buf := new(bytes.Buffer)
-	encoder := gob.NewEncoder(buf)
-	err := encoder.Encode(command)
-	if err != nil {
-		panic(err)
-	}
-	return buf.Bytes()
-}
+func (s *kvstore) append(key string, value string) *AppendResponse {
+	s.logger.Info("Append", zap.String("key", key), zap.String("value", value))
 
-func deserializeCommands(entries []*pb.LogEntry) []*Command {
-	commands := make([]*Command, 0, len(entries))
-	for _, entry := range entries {
-		var command Command
-		decoder := gob.NewDecoder(bytes.NewReader(entry.Data))
-		err := decoder.Decode(&command)
-		if err != nil {
-			panic(err)
-		}
-		commands = append(commands, &command)
-	}
-	return commands
-}
-
-func (s *kvstore) registerHandlers() {
-	s.mux.HandleFunc("POST /get", s.handleGet)
-	s.mux.HandleFunc("POST /put", s.handlePut)
-	s.mux.HandleFunc("POST /cas", s.handleCas)
-	s.mux.HandleFunc("POST /delete", s.handleDelete)
-	s.mux.HandleFunc("POST /config", s.handleConfigUpdate)
-}
-
-func (s *kvstore) listenAndServe(address string) error {
-	return http.ListenAndServe(address, s.mux)
-}
-
-func serializeData(data map[string]string) []byte {
-	buf := new(bytes.Buffer)
-	encoder := gob.NewEncoder(buf)
-	err := encoder.Encode(data)
-	if err != nil {
-		panic(err)
-	}
-	return buf.Bytes()
-}
-
-func deserializeData(data []byte) map[string]string {
-	var mp map[string]string
-	decoder := gob.NewDecoder(bytes.NewReader(data))
-	err := decoder.Decode(&mp)
-	if err != nil {
-		panic(err)
-	}
-	return mp
-}
-
-func newKvStore(g *graft.Graft, logger *zap.Logger) *kvstore {
-	return &kvstore{
-		g:    g,
-		mux:  http.NewServeMux(),
-		data: make(map[string]string),
-		publisher: &publisher{
-			listeners: make(map[string]chan any),
-		},
-		logger: logger.With(zap.String("name", "kvstore"), zap.String("id", g.Id)).Sugar(),
-	}
-}
-
-func (s *kvstore) initialize() {
 	s.mut.Lock()
 	defer s.mut.Unlock()
 
-	if s.initialized {
-		return
+	_, ok := s.data[key]
+	if ok {
+		s.data[key] += value
+	} else {
+		s.data[key] = value
 	}
-	s.initialized = true
-
-	s.registerHandlers()
-	s.g.Restore = func(snapshot graft.Snapshot) {
-		s.mut.Lock()
-		defer s.mut.Unlock()
-		s.data = deserializeData(snapshot.Data())
-	}
-	s.g.Apply = func(entries []*pb.LogEntry) []byte {
-		s.apply(entries)
-		if atomic.LoadInt32(&s.redundantOperations) >= 4096 {
-			return serializeData(s.data)
-		}
-		return nil
-	}
-	s.g.ConfigUpdateCommitted = func(update *pb.ConfigUpdate) {
-		s.publisher.publish(update.Id, update)
+	return &AppendResponse{
+		Length: len(s.data),
 	}
 }

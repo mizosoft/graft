@@ -466,7 +466,7 @@ func (s *segment) append(state *pb.PersistedState, entries []*pb.LogEntry) (int6
 	return s.nextIndex, nil
 }
 
-func openWal(dir string, softSegmentSize int64, logger *zap.Logger) (*wal, error) {
+func openCachedWal(dir string, softSegmentSize int64, cacheSize int64, logger *zap.Logger) (*wal, error) {
 	files, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, err
@@ -479,9 +479,9 @@ func openWal(dir string, softSegmentSize int64, logger *zap.Logger) (*wal, error
 		crcTable:        crc32.MakeTable(crc32.Castagnoli),
 		cache: &entryCache{
 			data:    make([]*pb.LogEntry, 0),
-			maxSize: 64 * 1024 * 1024, // TODO may want to make this configurable.
+			maxSize: 0, // Disable cache
 		},
-		logger: logger.Sugar(),
+		logger: logger.With(zap.String("name", "WAL")).Sugar(),
 	}
 
 	// Find segments.
@@ -676,6 +676,10 @@ func openWal(dir string, softSegmentSize int64, logger *zap.Logger) (*wal, error
 		return nil, err
 	}
 	return w, nil
+}
+
+func openWal(dir string, softSegmentSize int64, logger *zap.Logger) (*wal, error) {
+	return openCachedWal(dir, softSegmentSize, 0, logger)
 }
 
 func (w *wal) verify(record *pb.WalRecord) error {

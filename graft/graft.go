@@ -49,46 +49,6 @@ func (s state) String() string {
 
 const entryBatchSize = 4096
 
-type broadcastChannel struct {
-	c      chan struct{}
-	closed bool
-	mut    sync.Mutex
-}
-
-func newBroadcastChannel() *broadcastChannel {
-	return &broadcastChannel{
-		c: make(chan struct{}, 1), // We only need an additional (keep_broadcasting) signal.
-	}
-}
-
-func (c *broadcastChannel) notify() {
-	c.mut.Lock()
-	defer c.mut.Unlock()
-
-	if c.closed {
-		return
-	}
-
-	select {
-	case c.c <- struct{}{}:
-	default:
-		// Ignore: c has a capacity of 1 so a new AppendEntries is surely running in the future and that is all
-		// what we need.
-	}
-}
-
-func (c *broadcastChannel) close() {
-	c.mut.Lock()
-	defer c.mut.Unlock()
-
-	if c.closed {
-		return
-	}
-
-	c.closed = true
-	close(c.c)
-}
-
 type raftState struct {
 	state       state
 	currentTerm int64
@@ -145,6 +105,13 @@ type Config struct {
 	Logger                    *zap.Logger
 }
 
+func (c *Config) LoggerOrNoop() *zap.Logger {
+	if c.Logger != nil {
+		return c.Logger
+	}
+	return zap.NewNop()
+}
+
 func New(config Config) (*Graft, error) {
 	if config.Id == UnknownLeader {
 		return nil, fmt.Errorf("sever ID cannot be %s", UnknownLeader)
@@ -160,10 +127,6 @@ func New(config Config) (*Graft, error) {
 		})
 	}
 
-	if config.Logger == nil {
-		config.Logger = zap.NewNop()
-	}
-
 	g := &Graft{
 		Id: config.Id,
 		raftState: raftState{
@@ -173,6 +136,7 @@ func New(config Config) (*Graft, error) {
 			commitIndex: -1,
 			lastApplied: -1,
 		},
+		leaderId:           UnknownLeader,
 		address:            config.Addresses[config.Id],
 		lastUpdateIndex:    -1,
 		minElectionTimeout: time.Duration(config.ElectionTimeoutLowMillis) * time.Millisecond,
@@ -188,7 +152,7 @@ func New(config Config) (*Graft, error) {
 		persistence:       config.Persistence,
 		peers:             make(map[string]*peer),
 		lastHeartbeatTime: time.Now().Add(-time.Duration(config.ElectionTimeoutLowMillis) * time.Millisecond),
-		logger:            config.Logger.With(zap.String("name", "Graft"), zap.String("id", config.Id)).Sugar(),
+		logger:            config.LoggerOrNoop().With(zap.String("name", "Graft"), zap.String("id", config.Id)).Sugar(),
 
 		ConfigUpdateCommitted: func(update *pb.ConfigUpdate) {},
 		Apply: func(entries []*pb.LogEntry) (snapshot []byte) {
@@ -207,7 +171,7 @@ func (g *Graft) GetCurrentTerm() int64 {
 	return g.currentTerm
 }
 
-func (g *Graft) Serve() error {
+func (g *Graft) ListenAndServe() error {
 	g.Initialize()
 
 	listener, err := net.Listen("tcp", g.address)
@@ -267,12 +231,14 @@ func (g *Graft) Initialize() {
 	snapshot := g.persistence.RetrieveSnapshot()
 	if snapshot != nil {
 		g.Restore(snapshot)
+		g.lastApplied = snapshot.Metadata().LastAppliedIndex
 	}
 
 	firstIndex, _ := g.persistence.FirstLogIndexAndTerm()
 	commitIndex := g.commitIndex // Only apply committed entries.
 	if firstIndex >= 0 && commitIndex >= firstIndex {
 		g.unguardedApply(firstIndex, commitIndex, true)
+		g.lastApplied = commitIndex
 	}
 }
 
@@ -430,7 +396,7 @@ func (g *Graft) runElection(timeoutTerm int64) {
 	for _, p := range g.peers {
 		go func() {
 			if client, cerr := p.client(); cerr != nil {
-				g.logger.Error("Error connecting to peer", "peer", p.id, zap.Error(cerr))
+				g.logger.Error("Error connecting to peer", zap.String("peer", p.id), zap.Error(cerr))
 			} else {
 				var lastLogIndex int64
 				var lastLogTerm int64
@@ -462,12 +428,12 @@ func (g *Graft) runElection(timeoutTerm int64) {
 				}
 
 				if res, rerr := client.RequestVote(context.Background(), request); rerr != nil {
-					g.logger.Error("RequestVote failed", "peer", p.id, "request", request, zap.Error(cerr))
+					g.logger.Error("RequestVote failed", zap.String("peer", p.id), zap.Any("request", request), zap.Error(cerr))
 				} else {
 					g.mut.Lock()
 					defer g.mut.Unlock()
 
-					g.logger.Error("Sent RequestVote", "request", request, "peer", p.id, "election", electionTerm, "response", res)
+					g.logger.Error("Sent RequestVote", zap.Any("request", request), zap.String("peer", p.id), zap.Int64("election", electionTerm), zap.Any("response", res))
 
 					if res.Term > g.currentTerm {
 						g.unguardedTransitionToFollower(res.Term)
@@ -573,20 +539,20 @@ func (g *Graft) broadcastWorker(p *peer, c *broadcastChannel) {
 		}
 
 		if client, err := p.client(); err != nil {
-			g.logger.Error("Error connecting to peer", "id", p.id, zap.Error(err))
+			g.logger.Error("Error connecting to peer", zap.String("id", p.id), zap.Error(err))
 		} else {
 			res := func() proto.Message {
 				switch req := req.(type) {
 				case *pb.AppendEntriesRequest:
 					if res, err := client.AppendEntries(context.Background(), req); err != nil {
-						g.logger.Error("AppendEntries failed", "peer", p.id, "request", req, zap.Error(err))
+						g.logger.Error("AppendEntries failed", zap.String("peer", p.id), zap.Any("request", req), zap.Error(err))
 						return nil
 					} else {
 						return res
 					}
 				case *pb.SnapshotRequest:
 					if res, err := client.InstallSnapshot(context.Background(), req); err != nil {
-						g.logger.Error("InstallSnapshot failed", "peer", p.id, "request", req, zap.Error(err))
+						g.logger.Error("InstallSnapshot failed", zap.String("peer", p.id), zap.Any("request", req), zap.Error(err))
 						return nil
 					} else {
 						return res
@@ -604,7 +570,7 @@ func (g *Graft) broadcastWorker(p *peer, c *broadcastChannel) {
 					g.mut.Lock()
 					defer g.mut.Unlock()
 
-					g.logger.Info("Sent AppendEntries", "peer", p.id, "request", req, "response", res)
+					g.logger.Info("Sent AppendEntries", zap.String("peer", p.id), zap.Any("request", req), zap.Any("response", res))
 
 					if g.state != stateLeader {
 						return false
@@ -647,7 +613,7 @@ func (g *Graft) broadcastWorker(p *peer, c *broadcastChannel) {
 					g.mut.Lock()
 					defer g.mut.Unlock()
 
-					g.logger.Info("Sent InstallSnapshot", "peer", p.id, "request", req, "response", res)
+					g.logger.Info("Sent InstallSnapshot", zap.String("peer", p.id), zap.Any("request", req), zap.Any("response", res))
 
 					if g.state != stateLeader {
 						return false
@@ -864,7 +830,7 @@ func (g *Graft) requestVote(request *pb.RequestVoteRequest) (*pb.RequestVoteResp
 	g.mut.Lock()
 	defer g.mut.Unlock()
 
-	g.logger.Info("Received RequestVote", "request", request)
+	g.logger.Info("Received RequestVote", zap.Any("request", request))
 
 	if g.state == stateDead {
 		return nil, ErrDead
@@ -908,7 +874,7 @@ func (g *Graft) appendEntries(request *pb.AppendEntriesRequest) (*pb.AppendEntri
 	g.mut.Lock()
 	defer g.mut.Unlock()
 
-	g.logger.Info("Received AppendEntries", "request", request)
+	g.logger.Info("Received AppendEntries", zap.Any("request", request))
 
 	if g.state == stateDead {
 		return nil, ErrDead
@@ -930,7 +896,7 @@ func (g *Graft) appendEntries(request *pb.AppendEntriesRequest) (*pb.AppendEntri
 	}
 
 	if g.leaderId != request.LeaderId {
-		g.logger.Info("Changed leadership", "leaderId", request.LeaderId)
+		g.logger.Info("Changed leadership", zap.String("leaderId", request.LeaderId))
 		g.leaderId = request.LeaderId
 	}
 
@@ -988,7 +954,7 @@ func (g *Graft) installSnapshot(request *pb.SnapshotRequest) (*pb.SnapshotRespon
 	g.mut.Lock()
 	defer g.mut.Unlock()
 
-	g.logger.Info("Received InstallSnapshot", "request", request)
+	g.logger.Info("Received InstallSnapshot", zap.Any("request", request))
 
 	if g.state == stateDead {
 		return nil, ErrDead
@@ -1009,7 +975,7 @@ func (g *Graft) installSnapshot(request *pb.SnapshotRequest) (*pb.SnapshotRespon
 	}
 
 	if g.leaderId != request.LeaderId {
-		g.logger.Info("Changed leadership", "leaderId", request.LeaderId)
+		g.logger.Info("Changed leadership", zap.String("leaderId", request.LeaderId))
 		g.leaderId = request.LeaderId
 	}
 
@@ -1076,7 +1042,7 @@ func (g *Graft) unguardedAppendUpdate(update *pb.ConfigUpdate) {
 }
 
 func (g *Graft) unguardedApplyUpdate(update *pb.ConfigUpdate, updateIndex int64) {
-	g.logger.Info("Applying ConfigUpdate", "update", update)
+	g.logger.Info("Applying ConfigUpdate", zap.Any("update", update))
 
 	g.lastUpdate = update
 	g.lastUpdateIndex = updateIndex
@@ -1269,4 +1235,15 @@ func (g *Graft) LeaderId() string {
 	g.mut.Lock()
 	defer g.mut.Unlock()
 	return g.leaderId
+}
+
+func (g *Graft) Config() map[string]string {
+	g.mut.Lock()
+	defer g.mut.Unlock()
+
+	config := make(map[string]string)
+	for _, nodeConfig := range g.lastUpdate.New {
+		config[nodeConfig.Id] = nodeConfig.Address
+	}
+	return config
 }
