@@ -1,10 +1,15 @@
 package graft
 
 import (
+	"errors"
 	"fmt"
 	"go.uber.org/zap"
 
 	"github.com/mizosoft/graft/pb"
+)
+
+var (
+	ErrClosed = errors.New("closed")
 )
 
 type indexOutOfRangeError struct {

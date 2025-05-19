@@ -11,6 +11,7 @@ import (
 	"os"
 	"path"
 	"sort"
+	"sync"
 
 	"github.com/mizosoft/graft/pb"
 	"google.golang.org/protobuf/proto"
@@ -26,10 +27,6 @@ const (
 const (
 	walMagic   uint64 = 0x6420655767271765
 	walVersion int32  = 1
-)
-
-var (
-	errClosed = errors.New("closed")
 )
 
 type entryCache struct {
@@ -119,6 +116,7 @@ type wal struct {
 	firstLogTerm, lastLogTerm int64
 	cache                     *entryCache
 	logger                    *zap.SugaredLogger
+	mut                       sync.RWMutex
 }
 
 type segment struct {
@@ -479,7 +477,7 @@ func openCachedWal(dir string, softSegmentSize int64, cacheSize int64, logger *z
 		crcTable:        crc32.MakeTable(crc32.Castagnoli),
 		cache: &entryCache{
 			data:    make([]*pb.LogEntry, 0),
-			maxSize: 0, // Disable cache
+			maxSize: cacheSize,
 		},
 		logger: logger.With(zap.String("name", "WAL")).Sugar(),
 	}
@@ -702,12 +700,17 @@ func (w *wal) decodeRecord(recordBytes []byte) (*pb.WalRecord, error) {
 }
 
 func (w *wal) RetrieveState() *pb.PersistedState {
+	w.mut.RLock()
+	defer w.mut.RUnlock()
 	return w.lastState
 }
 
 func (w *wal) SaveState(state *pb.PersistedState) {
+	w.mut.Lock()
+	defer w.mut.Unlock()
+
 	if w.closed {
-		panic(errClosed)
+		panic(ErrClosed)
 	}
 
 	if proto.Equal(state, w.lastState) {
@@ -724,8 +727,11 @@ func (w *wal) SaveState(state *pb.PersistedState) {
 }
 
 func (w *wal) Append(state *pb.PersistedState, entries []*pb.LogEntry) int64 {
+	w.mut.Lock()
+	defer w.mut.Unlock()
+
 	if w.closed {
-		panic(errClosed)
+		panic(ErrClosed)
 	}
 
 	if proto.Equal(state, w.lastState) {
@@ -846,8 +852,11 @@ func (w *wal) appendSegment() error {
 }
 
 func (w *wal) TruncateEntriesFrom(index int64) {
+	w.mut.Lock()
+	defer w.mut.Unlock()
+
 	if w.closed {
-		panic(errClosed)
+		panic(ErrClosed)
 	}
 
 	segIndex, err := w.findSegment(index)
@@ -885,8 +894,11 @@ func (w *wal) TruncateEntriesFrom(index int64) {
 }
 
 func (w *wal) TruncateEntriesTo(index int64) {
+	w.mut.Lock()
+	defer w.mut.Unlock()
+
 	if w.closed {
-		panic(errClosed)
+		panic(ErrClosed)
 	}
 
 	segIndex, err := w.findSegment(index)
@@ -929,6 +941,9 @@ func (w *wal) TruncateEntriesTo(index int64) {
 }
 
 func (w *wal) EntryCount() int64 {
+	w.mut.RLock()
+	defer w.mut.RUnlock()
+
 	count := int64(0)
 	for _, seg := range w.segments {
 		count += int64(seg.entryCount())
@@ -937,8 +952,11 @@ func (w *wal) EntryCount() int64 {
 }
 
 func (w *wal) GetEntry(index int64) *pb.LogEntry {
+	w.mut.RLock()
+	defer w.mut.RUnlock()
+
 	if w.closed {
-		panic(errClosed)
+		panic(ErrClosed)
 	}
 
 	e := w.cache.get(index)
@@ -967,6 +985,9 @@ func (w *wal) GetEntryTerm(index int64) int64 {
 }
 
 func (w *wal) GetEntries(from, to int64) []*pb.LogEntry {
+	w.mut.RLock()
+	defer w.mut.RUnlock()
+
 	if from > to {
 		panic(fmt.Errorf("from (%d) must be smaller than or equal to (%d)", from, to))
 	}
@@ -1025,8 +1046,11 @@ func (w *wal) getEntries(from, to int64) []*pb.LogEntry {
 }
 
 func (w *wal) HeadEntry() *pb.LogEntry {
+	w.mut.RLock()
+	defer w.mut.RUnlock()
+
 	if w.closed {
-		panic(errClosed)
+		panic(ErrClosed)
 	}
 
 	// Search for the first segment from the start that has an entry.
@@ -1044,8 +1068,11 @@ func (w *wal) HeadEntry() *pb.LogEntry {
 }
 
 func (w *wal) TailEntry() *pb.LogEntry {
+	w.mut.RLock()
+	defer w.mut.RUnlock()
+
 	if w.closed {
-		panic(errClosed)
+		panic(ErrClosed)
 	}
 
 	// Search for the first segment from the end that has an entry.
@@ -1063,8 +1090,11 @@ func (w *wal) TailEntry() *pb.LogEntry {
 }
 
 func (w *wal) GetEntriesFrom(from int64) []*pb.LogEntry {
+	w.mut.RLock()
+	defer w.mut.RUnlock()
+
 	if w.closed {
-		panic(errClosed)
+		panic(ErrClosed)
 	}
 
 	if w.cache.firstIndex() >= 0 && from >= w.cache.firstIndex() {
@@ -1101,8 +1131,11 @@ func (w *wal) getEntriesFrom(from int64) []*pb.LogEntry {
 }
 
 func (w *wal) SaveSnapshot(snapshot Snapshot) {
+	w.mut.Lock()
+	defer w.mut.Unlock()
+
 	if w.closed {
-		panic(errClosed)
+		panic(ErrClosed)
 	}
 
 	metadata := snapshot.Metadata()
@@ -1136,8 +1169,11 @@ func (w *wal) SaveSnapshot(snapshot Snapshot) {
 }
 
 func (w *wal) RetrieveSnapshot() Snapshot {
+	w.mut.RLock()
+	defer w.mut.RUnlock()
+
 	if w.closed {
-		panic(errClosed)
+		panic(ErrClosed)
 	}
 
 	metadata := w.lastSnapshot
@@ -1153,10 +1189,15 @@ func (w *wal) RetrieveSnapshot() Snapshot {
 }
 
 func (w *wal) SnapshotMetadata() *pb.SnapshotMetadata {
+	w.mut.RLock()
+	defer w.mut.RUnlock()
 	return w.lastSnapshot
 }
 
 func (w *wal) FirstLogIndexAndTerm() (int64, int64) {
+	w.mut.RLock()
+	defer w.mut.RUnlock()
+
 	if w.EntryCount() == 0 {
 		return -1, -1
 	}
@@ -1167,6 +1208,9 @@ func (w *wal) FirstLogIndexAndTerm() (int64, int64) {
 }
 
 func (w *wal) LastLogIndexAndTerm() (int64, int64) {
+	w.mut.RLock()
+	defer w.mut.RUnlock()
+
 	if w.EntryCount() == 0 {
 		return -1, -1
 	}
@@ -1177,6 +1221,9 @@ func (w *wal) LastLogIndexAndTerm() (int64, int64) {
 }
 
 func (w *wal) Close() {
+	w.mut.Lock()
+	defer w.mut.Unlock()
+
 	if w.closed {
 		return
 	}

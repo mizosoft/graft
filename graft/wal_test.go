@@ -296,7 +296,7 @@ func TestWalErrorCases(t *testing.T) {
 	func() {
 		defer func() {
 			r := recover()
-			assert.ErrorIs(t, r.(error), errClosed)
+			assert.ErrorIs(t, r.(error), ErrClosed)
 		}()
 
 		w.GetEntry(0)
