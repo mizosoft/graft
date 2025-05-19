@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/mizosoft/graft"
 	"github.com/mizosoft/graft/server"
 	"net/http"
 	"net/url"
@@ -15,52 +16,43 @@ import (
 
 type KvClient struct {
 	id            string
+	leaderId      string
 	url           string
 	http          *http.Client
 	serviceConfig map[string]string
 	mut           sync.Mutex
 }
 
-func (c *KvClient) Get(key string) (*string, error) {
+func (c *KvClient) Get(key string) (string, bool, error) {
 	return c.get(key, true)
 }
 
-func (c *KvClient) FastGet(key string) (*string, error) {
+func (c *KvClient) FastGet(key string) (string, bool, error) {
 	return c.get(key, false)
 }
 
-func (c *KvClient) get(key string, linearizable bool) (*string, error) {
+func (c *KvClient) get(key string, linearizable bool) (string, bool, error) {
 	res, err := Post[GetResponse](c, "get", GetRequest{
 		ClientId:     c.id,
 		Key:          key,
 		Linearizable: linearizable,
 	})
 	if err != nil {
-		return nil, err
+		return "", false, err
 	}
-
-	if res.Exists {
-		return &res.Value, nil
-	} else {
-		return nil, nil
-	}
+	return res.Value, res.Exists, nil
 }
 
-func (c *KvClient) Put(key string, value string) (*string, error) {
+func (c *KvClient) Put(key string, value string) (string, bool, error) {
 	res, err := Post[PutResponse](c, "put", PutRequest{
 		ClientId: c.id,
 		Key:      key,
 		Value:    value,
 	})
 	if err != nil {
-		return nil, err
+		return "", false, err
 	}
-
-	if res.Exists {
-		return &res.PreviousValue, nil
-	} else {
-		return nil, nil
-	}
+	return res.PreviousValue, res.Exists, nil
 }
 
 func (c *KvClient) PutIfAbsent(key string, value string) (bool, error) {
@@ -72,24 +64,18 @@ func (c *KvClient) PutIfAbsent(key string, value string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-
 	return res.Success, nil
 }
 
-func (c *KvClient) Delete(key string) (*string, error) {
+func (c *KvClient) Delete(key string) (string, bool, error) {
 	res, err := Post[DeleteResponse](c, "delete", DeleteRequest{
 		ClientId: c.id,
 		Key:      key,
 	})
 	if err != nil {
-		return nil, err
+		return "", false, err
 	}
-
-	if res.Exists {
-		return &res.Value, nil
-	} else {
-		return nil, nil
-	}
+	return res.Value, res.Exists, nil
 }
 
 func (c *KvClient) Append(key string, value string) (int, error) {
@@ -104,7 +90,7 @@ func (c *KvClient) Append(key string, value string) (int, error) {
 	return res.Length, nil
 }
 
-func (c *KvClient) Cas(key string, expectedValue string, value string) (*string, error) {
+func (c *KvClient) Cas(key string, expectedValue string, value string) (bool, string, error) {
 	res, err := Post[CasResponse](c, "cas", CasRequest{
 		ClientId:      c.id,
 		Key:           key,
@@ -112,14 +98,17 @@ func (c *KvClient) Cas(key string, expectedValue string, value string) (*string,
 		Value:         value,
 	})
 	if err != nil {
-		return nil, err
+		return false, "", err
 	}
 
+	var currValue string
 	if res.Exists {
-		return &res.Value, nil
+		currValue = res.Value
 	} else {
-		return nil, nil
+		currValue = ""
 	}
+
+	return res.Success, currValue, nil
 }
 
 func (c *KvClient) CheckHealthy() error {
@@ -148,13 +137,17 @@ retry:
 	return nil
 }
 
+func (c *KvClient) LeaderId() string {
+	return c.leaderId
+}
+
 func Post[T any](c *KvClient, path string, body interface{}) (T, error) {
 	bodyJson, err := json.Marshal(body)
 	if err != nil {
 		return *new(T), err
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 retry:
@@ -187,7 +180,8 @@ retry:
 				return *new(T), err
 			}
 
-			if config.LeaderId != "UNKNOWN" && len(config.LeaderId) > 0 {
+			if config.LeaderId != graft.UnknownLeader && len(config.LeaderId) > 0 {
+				c.leaderId = config.LeaderId
 				c.url = "http://" + c.serviceConfig[config.LeaderId] + "/"
 			}
 
@@ -211,15 +205,18 @@ func decodeJson[T any](response *http.Response) (T, error) {
 }
 
 func NewKvClient(id string, serviceConfig map[string]string) *KvClient {
+	var anyId string
 	var anyAddress string
-	for _, address := range serviceConfig {
+	for id, address := range serviceConfig {
 		anyAddress = address
+		anyId = id
 		break
 	}
 	return &KvClient{
 		id:            id,
 		serviceConfig: serviceConfig,
 		url:           "http://" + anyAddress + "/",
+		leaderId:      anyId,
 		http:          &http.Client{},
 	}
 }

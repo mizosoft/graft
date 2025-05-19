@@ -35,10 +35,12 @@ func (t *periodicTimer) reset() {
 	t.mut.Lock()
 	defer t.mut.Unlock()
 
-	if t.timer != nil {
-		t.timer.Reset(t.duration())
-	} else {
-		t.timer = time.AfterFunc(t.duration(), t.tick)
+	if t.c != nil {
+		if t.timer != nil {
+			t.timer.Reset(t.duration())
+		} else {
+			t.timer = time.AfterFunc(t.duration(), t.tick)
+		}
 	}
 }
 
@@ -64,6 +66,7 @@ func (t *periodicTimer) stop() {
 		t.timer.Stop()
 		t.timer = nil
 	}
+	close(t.c)
 	t.c = nil
 }
 

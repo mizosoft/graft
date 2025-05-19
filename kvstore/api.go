@@ -30,8 +30,9 @@ type CasRequest struct {
 }
 
 type CasResponse struct {
-	Exists bool   `json:"exists"`
-	Value  string `json:"currValue"`
+	Success bool   `json:"success"`
+	Exists  bool   `json:"exists"`
+	Value   string `json:"value"`
 }
 
 type DeleteRequest struct {

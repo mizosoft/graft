@@ -1,9 +1,10 @@
-package kvstore
+package main
 
 import (
 	"bufio"
 	"flag"
 	"github.com/mizosoft/graft"
+	"github.com/mizosoft/graft/kvstore2"
 	"go.uber.org/zap"
 	"os"
 	"strings"
@@ -52,7 +53,7 @@ func main() {
 
 	logger := zap.NewExample()
 
-	kvs, err := NewKvService(*address, graft.Config{
+	kvs, err := kvstore.NewKvService(*address, graft.Config{
 		Id:                        *id,
 		Addresses:                 addresses,
 		ElectionTimeoutLowMillis:  1500,

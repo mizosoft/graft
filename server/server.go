@@ -52,6 +52,7 @@ func (s *Server) ListenAndServe() error {
 
 func (s *Server) Shutdown() {
 	s.G.Close()
+	s.G.Persistence.Close()
 	err := s.srv.Shutdown(context.Background())
 	if err != nil {
 		s.Logger.Error("Server shutdown", zap.Error(err))
@@ -97,7 +98,7 @@ func (s *Server) Execute(clientId string, smCommand any, w http.ResponseWriter) 
 			}, http.StatusForbidden)
 		} else {
 			s.Logger.Error("Error appending command", err)
-			http.Error(w, "Internal server error", http.StatusForbidden)
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
 		}
 		return
 	}

@@ -13,6 +13,10 @@ type KvService struct {
 	server *server.Server
 }
 
+func (s *KvService) Id() string {
+	return s.server.G.Id
+}
+
 func (s *KvService) Address() string {
 	return s.server.Address()
 }
@@ -146,6 +150,7 @@ func NewKvService(address string, config graft.Config) (*KvService, error) {
 		srv.Mux.HandleFunc("POST /put", service.handlePut)
 		srv.Mux.HandleFunc("POST /cas", service.handleCas)
 		srv.Mux.HandleFunc("POST /delete", service.handleDelete)
+		srv.Mux.HandleFunc("POST /putIfAbsent", service.handlePutIfAbsent)
 		srv.Mux.HandleFunc("POST /append", service.handleAppend)
 
 		gob.Register(Command{})

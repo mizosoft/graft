@@ -16,7 +16,7 @@ func (l *publisher) subscribe(id string) chan any {
 		return nil
 	}
 
-	listenChan := make(chan any)
+	listenChan := make(chan any, 1)
 	l.listeners[id] = listenChan
 	return listenChan
 }

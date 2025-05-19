@@ -74,8 +74,8 @@ func (s *kvstore) MaybeSnapshot() []byte {
 		return nil
 	}
 
-	s.mut.Lock()
-	defer s.mut.Unlock()
+	s.mut.RLock()
+	defer s.mut.RUnlock()
 
 	buf := new(bytes.Buffer)
 	encoder := gob.NewEncoder(buf)
@@ -160,13 +160,17 @@ func (s *kvstore) cas(key string, expectedValue string, value string) *CasRespon
 
 	atomic.AddInt32(&s.redundantOperations, 1)
 	currValue, ok := s.data[key]
-	if ok && currValue == expectedValue {
+	success := false
+	if (ok && currValue == expectedValue) || (!ok && expectedValue == "") {
 		s.data[key] = value
 		currValue = value
+		ok = true
+		success = true
 	}
 	return &CasResponse{
-		Exists: ok,
-		Value:  currValue,
+		Success: success,
+		Exists:  ok,
+		Value:   currValue,
 	}
 }
 
@@ -176,13 +180,14 @@ func (s *kvstore) append(key string, value string) *AppendResponse {
 	s.mut.Lock()
 	defer s.mut.Unlock()
 
-	_, ok := s.data[key]
+	prevValue, ok := s.data[key]
+	length := len(prevValue) + len(value)
 	if ok {
 		s.data[key] += value
 	} else {
 		s.data[key] = value
 	}
 	return &AppendResponse{
-		Length: len(s.data),
+		Length: length,
 	}
 }
