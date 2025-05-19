@@ -42,10 +42,9 @@ func (s *KvService) handleGet(w http.ResponseWriter, r *http.Request) {
 
 	if req.Linearizable {
 		s.server.Execute(req.ClientId, Command{
-			Id:       uuid.New().String(),
-			ServerId: s.server.G.Id,
-			Type:     commandTypeGet,
-			Key:      req.Key,
+			Id:   uuid.New().String(),
+			Type: commandTypeGet,
+			Key:  req.Key,
 		}, w)
 	} else {
 		s.server.RespondOk(w, s.store.get(req.Key))
@@ -60,11 +59,10 @@ func (s *KvService) handlePut(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.server.Execute(req.ClientId, Command{
-		Id:       uuid.New().String(),
-		ServerId: s.server.G.Id,
-		Type:     commandTypePut,
-		Key:      req.Key,
-		Value:    req.Value,
+		Id:    uuid.New().String(),
+		Type:  commandTypePut,
+		Key:   req.Key,
+		Value: req.Value,
 	}, w)
 }
 
@@ -76,11 +74,10 @@ func (s *KvService) handlePutIfAbsent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.server.Execute(req.ClientId, Command{
-		Id:       uuid.New().String(),
-		ServerId: s.server.G.Id,
-		Type:     commandTypePutIfAbsent,
-		Key:      req.Key,
-		Value:    req.Value,
+		Id:    uuid.New().String(),
+		Type:  commandTypePutIfAbsent,
+		Key:   req.Key,
+		Value: req.Value,
 	}, w)
 }
 
@@ -93,7 +90,6 @@ func (s *KvService) handleCas(w http.ResponseWriter, r *http.Request) {
 
 	s.server.Execute(req.ClientId, Command{
 		Id:            uuid.New().String(),
-		ServerId:      s.server.G.Id,
 		Type:          commandTypeCas,
 		Key:           req.Key,
 		Value:         req.Value,
@@ -109,10 +105,9 @@ func (s *KvService) handleDelete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.server.Execute(req.ClientId, Command{
-		Id:       uuid.New().String(),
-		ServerId: s.server.G.Id,
-		Type:     commandTypeDel,
-		Key:      req.Key,
+		Id:   uuid.New().String(),
+		Type: commandTypeDel,
+		Key:  req.Key,
 	}, w)
 }
 
@@ -124,11 +119,10 @@ func (s *KvService) handleAppend(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.server.Execute(req.ClientId, Command{
-		Id:       uuid.New().String(),
-		ServerId: s.server.G.Id,
-		Type:     commandTypeAppend,
-		Key:      req.Key,
-		Value:    req.Value,
+		Id:    uuid.New().String(),
+		Type:  commandTypeAppend,
+		Key:   req.Key,
+		Value: req.Value,
 	}, w)
 }
 

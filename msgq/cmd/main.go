@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"flag"
 	"github.com/mizosoft/graft"
+	"github.com/mizosoft/graft/msgq"
 	"go.uber.org/zap"
 	"os"
 	"strings"
@@ -52,7 +53,7 @@ func main() {
 
 	logger := zap.NewExample()
 
-	g, err := graft.New(graft.Config{
+	q, err := msgq.NewMsgqService(*address, graft.Config{
 		Id:                        *id,
 		Addresses:                 addresses,
 		ElectionTimeoutLowMillis:  1500,
@@ -65,18 +66,8 @@ func main() {
 		panic(err)
 	}
 
-	kvs := newMsgq(g, logger)
-	kvs.initialize()
-	g.Initialize()
-
-	go func() {
-		err := g.ListenAndServe()
-		if err != nil {
-			panic(err)
-		}
-	}()
-
-	err = kvs.listenAndServe(*address)
+	q.Initialize()
+	err = q.ListenAndServe()
 	if err != nil {
 		panic(err)
 	}
