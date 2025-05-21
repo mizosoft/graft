@@ -262,6 +262,142 @@ func TestDlockServiceRefreshRLock(t *testing.T) {
 	assert.Assert(t, !ok)
 }
 
+func TestDlockServiceBlockingLockWithExpiredTtl(t *testing.T) {
+	cluster, client1 := NewClusterClient(t, 3, SystemClock())
+	defer cluster.Shutdown()
+
+	client2 := NewDlockClient("client2-"+t.Name(), cluster.ServiceConfig())
+
+	now := time.Now()
+	t1, ok, err := client1.TryLock("r1", 500*time.Millisecond)
+	assert.NilError(t, err)
+	assert.Assert(t, ok)
+
+	type result struct {
+		t   uint64
+		err error
+	}
+
+	done := make(chan result)
+	go func() {
+		t, err := client2.Lock("r1", 500*time.Millisecond, 1*time.Second)
+		done <- result{t: t, err: err}
+	}()
+
+	r := <-done
+	timeToAcquire := time.Now().Sub(now) // Should be more than ttl and less than timeout.
+
+	assert.NilError(t, r.err)
+	assert.Assert(t, timeToAcquire >= 500*time.Millisecond)
+	assert.Assert(t, timeToAcquire <= 1*time.Second)
+	assert.Assert(t, t1 < r.t)
+}
+
+func TestDlockServiceBlockingLockWithUnlock(t *testing.T) {
+	cluster, client1 := NewClusterClient(t, 3, SystemClock())
+	defer cluster.Shutdown()
+
+	client2 := NewDlockClient("client2-"+t.Name(), cluster.ServiceConfig())
+
+	now := time.Now()
+	t1, ok, err := client1.TryLock("r1", 1*time.Second)
+	assert.NilError(t, err)
+	assert.Assert(t, ok)
+
+	type result struct {
+		t   uint64
+		err error
+	}
+
+	done := make(chan result)
+	go func() {
+		t, err := client2.Lock("r1", 1*time.Second, 1*time.Second)
+		done <- result{t: t, err: err}
+	}()
+
+	time.AfterFunc(500*time.Millisecond, func() {
+		ok, err := client1.Unlock("r1", t1)
+		assert.NilError(t, err)
+		assert.Assert(t, ok)
+	})
+
+	r := <-done
+	timeToAcquire := time.Now().Sub(now) // Should be more than ttl and less than timeout.
+
+	assert.NilError(t, r.err)
+	assert.Assert(t, timeToAcquire >= 500*time.Millisecond)
+	assert.Assert(t, timeToAcquire <= 1*time.Second)
+	assert.Assert(t, t1 < r.t)
+}
+
+func TestDlockServiceBlockingRLockWithExpiredTtl(t *testing.T) {
+	cluster, client1 := NewClusterClient(t, 3, SystemClock())
+	defer cluster.Shutdown()
+
+	client2 := NewDlockClient("client2-"+t.Name(), cluster.ServiceConfig())
+
+	now := time.Now()
+	t1, ok, err := client1.TryLock("r1", 500*time.Millisecond)
+	assert.NilError(t, err)
+	assert.Assert(t, ok)
+
+	type result struct {
+		t   uint64
+		err error
+	}
+
+	done := make(chan result)
+	go func() {
+		t, err := client2.RLock("r1", 500*time.Millisecond, 1*time.Second)
+		done <- result{t: t, err: err}
+	}()
+
+	r := <-done
+	timeToAcquire := time.Now().Sub(now) // Should be more than ttl and less than timeout.
+
+	assert.NilError(t, r.err)
+	assert.Assert(t, timeToAcquire >= 500*time.Millisecond)
+	assert.Assert(t, timeToAcquire <= 1*time.Second)
+	assert.Assert(t, t1 == r.t)
+}
+
+func TestDlockServiceBlockingRLockWithUnlock(t *testing.T) {
+	cluster, client1 := NewClusterClient(t, 3, SystemClock())
+	defer cluster.Shutdown()
+
+	client2 := NewDlockClient("client2-"+t.Name(), cluster.ServiceConfig())
+
+	now := time.Now()
+	t1, ok, err := client1.TryLock("r1", 1*time.Second)
+	assert.NilError(t, err)
+	assert.Assert(t, ok)
+
+	type result struct {
+		t   uint64
+		err error
+	}
+
+	done := make(chan result)
+	go func() {
+		t, err := client2.RLock("r1", 1*time.Second, 1*time.Second)
+		done <- result{t: t, err: err}
+	}()
+
+	time.AfterFunc(500*time.Millisecond, func() {
+		ok, err := client1.Unlock("r1", t1)
+		assert.NilError(t, err)
+		assert.Assert(t, ok)
+	})
+
+	r := <-done
+	timeToAcquire := time.Now().Sub(now) // Should be more than ttl and less than timeout.
+
+	assert.NilError(t, r.err)
+	assert.Assert(t, timeToAcquire >= 500*time.Millisecond)
+	assert.Assert(t, timeToAcquire <= 1*time.Second)
+	assert.Assert(t, t1 == r.t)
+}
+
 type MockClock struct {
 	now time.Time
 }

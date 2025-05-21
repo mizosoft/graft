@@ -147,7 +147,7 @@ func Post[T any](c *KvClient, path string, body interface{}) (T, error) {
 		return *new(T), err
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 retry:

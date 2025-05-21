@@ -59,14 +59,15 @@ func (c *DlockClient) RLock(resource string, ttl time.Duration, timeout time.Dur
 
 func (c *DlockClient) blockingLock(resource string, ttl time.Duration, timeout time.Duration, path string) (uint64, error) {
 	retryCount := 0
-	base := 10 * time.Millisecond
-	const mx = 5 * time.Second
+	baseDelay := 10 * time.Millisecond
+	const maxDelay = 5 * time.Second
 	var timeoutChan <-chan time.Time
 	if timeout > 0 {
 		timeoutChan = time.After(timeout)
 	} else {
-		timeoutChan = make(<-chan time.Time)
+		timeoutChan = make(<-chan time.Time) // Will never complete.
 	}
+
 retry:
 	res, err := Post[LockResponse](c, path, LockRequest{
 		ClientId:  c.id,
@@ -82,7 +83,7 @@ retry:
 	}
 
 	select {
-	case <-time.After(backoff(base, mx, retryCount)):
+	case <-time.After(backoff(baseDelay, maxDelay, retryCount)):
 		retryCount++
 		goto retry
 	case <-timeoutChan:
@@ -91,7 +92,7 @@ retry:
 }
 
 func backoff(base time.Duration, mx time.Duration, retry int) time.Duration {
-	sleep := min(float64(mx), float64(base)*math.Pow(2, float64(retry)))
+	sleep := min(float64(mx), float64(base)*math.Pow(1.5, float64(retry)))
 	jitter := 0.2 * rand.Float64() * sleep // 20% jitter
 	return time.Duration(sleep + jitter)
 }
@@ -182,7 +183,7 @@ func Post[T any](d *DlockClient, path string, body interface{}) (T, error) {
 		return *new(T), err
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 retry:
