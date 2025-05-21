@@ -3,6 +3,7 @@ package msgq
 import (
 	"bytes"
 	"encoding/gob"
+	"github.com/mizosoft/graft/server"
 	"go.uber.org/zap"
 
 	"sync"
@@ -16,8 +17,7 @@ const (
 	commandTypeDeque
 )
 
-type Command struct {
-	Id      string
+type MsgqCommand struct {
 	Type    CommandType
 	Topic   string
 	Message Message
@@ -30,8 +30,8 @@ type msgq struct {
 	mut                 sync.Mutex
 }
 
-func (m *msgq) Apply(command any) any {
-	cmd := command.(Command)
+func (m *msgq) Apply(command *server.Command) any {
+	cmd := command.SmCommand.(MsgqCommand)
 	switch cmd.Type {
 	case commandTypeEnqueue:
 		return m.enqueue(cmd.Topic, cmd.Message)
@@ -53,6 +53,7 @@ func (m *msgq) Restore(snapshot []byte) {
 	if err != nil {
 		panic(err)
 	}
+	m.redundantOperations = 0
 	m.queues = queues
 }
 
@@ -104,6 +105,8 @@ func (m *msgq) deque(topic string) DequeResponse {
 		}
 	}
 
+	atomic.AddInt32(&m.redundantOperations, 1)
+
 	msg := q[0]
 	q[0] = Message{}
 	m.queues[topic] = q[1:]
@@ -113,5 +116,12 @@ func (m *msgq) deque(topic string) DequeResponse {
 			Id:   msg.Id,
 			Data: msg.Data,
 		},
+	}
+}
+
+func newMsgq(logger *zap.Logger) *msgq {
+	return &msgq{
+		queues: make(map[string][]Message),
+		logger: logger.With(zap.String("name", "msgq")).Sugar(),
 	}
 }

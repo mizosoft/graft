@@ -3,12 +3,13 @@ package kvstore
 import (
 	"bytes"
 	"encoding/gob"
+	"github.com/mizosoft/graft/server"
 	"go.uber.org/zap"
 	"sync"
 	"sync/atomic"
 )
 
-type CommandType = int
+type CommandType int
 
 const (
 	commandTypePut CommandType = iota
@@ -19,9 +20,7 @@ const (
 	commandTypeAppend
 )
 
-type Command struct {
-	Id            string
-	ServerId      string
+type KvCommand struct {
 	Type          CommandType
 	Key           string
 	Value         string
@@ -35,8 +34,8 @@ type kvstore struct {
 	redundantOperations int32 // Number of operations increasing log unnecessarily.
 }
 
-func (s *kvstore) Apply(command any) any {
-	cmd := command.(Command)
+func (s *kvstore) Apply(command *server.Command) any {
+	cmd := command.SmCommand.(KvCommand)
 	switch cmd.Type {
 	case commandTypePut:
 		return s.put(cmd.Key, cmd.Value)
@@ -66,6 +65,7 @@ func (s *kvstore) Restore(snapshot []byte) {
 	if err != nil {
 		panic(err)
 	}
+	s.redundantOperations = 0
 	s.data = mp
 }
 
@@ -189,5 +189,12 @@ func (s *kvstore) append(key string, value string) *AppendResponse {
 	}
 	return &AppendResponse{
 		Length: length,
+	}
+}
+
+func newKvstore(logger *zap.Logger) *kvstore {
+	return &kvstore{
+		data:   make(map[string]string),
+		logger: logger.With(zap.String("name", "kvstore")).Sugar(),
 	}
 }

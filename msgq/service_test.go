@@ -1,17 +1,13 @@
 package msgq
 
 import (
-	"context"
-	"errors"
 	"fmt"
 	"github.com/mizosoft/graft"
 	"github.com/mizosoft/graft/testutil"
 	"go.uber.org/zap"
 	"gotest.tools/v3/assert"
-	"net/http"
 	"strconv"
 	"testing"
-	"time"
 )
 
 func TestMsgqServiceEnqueueDequeAutoAck(t *testing.T) {
@@ -115,30 +111,4 @@ func NewClusterClient(t *testing.T, nodeCount int) (*testutil.Cluster[*MsgqServi
 	}
 
 	return cluster, client
-}
-
-func (c *MsgqClient) CheckHealthy() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
-	defer cancel()
-
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.url+"/config", nil)
-	if err != nil {
-		return err
-	}
-
-retry:
-	res, err := c.http.Do(request)
-	if err != nil {
-		select {
-		case <-ctx.Done():
-			return err
-		case <-time.After(50 * time.Millisecond): // backoff
-			goto retry
-		}
-	}
-
-	if res.StatusCode != 200 {
-		return errors.New(res.Status)
-	}
-	return nil
 }

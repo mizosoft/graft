@@ -2,7 +2,6 @@ package kvstore
 
 import (
 	"encoding/gob"
-	"github.com/google/uuid"
 	"github.com/mizosoft/graft"
 	"github.com/mizosoft/graft/server"
 	"net/http"
@@ -41,8 +40,7 @@ func (s *KvService) handleGet(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.Linearizable {
-		s.server.Execute(req.ClientId, Command{
-			Id:   uuid.New().String(),
+		s.server.Execute(req.ClientId, KvCommand{
 			Type: commandTypeGet,
 			Key:  req.Key,
 		}, w)
@@ -58,8 +56,7 @@ func (s *KvService) handlePut(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.server.Execute(req.ClientId, Command{
-		Id:    uuid.New().String(),
+	s.server.Execute(req.ClientId, KvCommand{
 		Type:  commandTypePut,
 		Key:   req.Key,
 		Value: req.Value,
@@ -73,8 +70,7 @@ func (s *KvService) handlePutIfAbsent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.server.Execute(req.ClientId, Command{
-		Id:    uuid.New().String(),
+	s.server.Execute(req.ClientId, KvCommand{
 		Type:  commandTypePutIfAbsent,
 		Key:   req.Key,
 		Value: req.Value,
@@ -88,8 +84,7 @@ func (s *KvService) handleCas(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.server.Execute(req.ClientId, Command{
-		Id:            uuid.New().String(),
+	s.server.Execute(req.ClientId, KvCommand{
 		Type:          commandTypeCas,
 		Key:           req.Key,
 		Value:         req.Value,
@@ -104,8 +99,7 @@ func (s *KvService) handleDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.server.Execute(req.ClientId, Command{
-		Id:   uuid.New().String(),
+	s.server.Execute(req.ClientId, KvCommand{
 		Type: commandTypeDel,
 		Key:  req.Key,
 	}, w)
@@ -118,8 +112,7 @@ func (s *KvService) handleAppend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.server.Execute(req.ClientId, Command{
-		Id:    uuid.New().String(),
+	s.server.Execute(req.ClientId, KvCommand{
 		Type:  commandTypeAppend,
 		Key:   req.Key,
 		Value: req.Value,
@@ -127,14 +120,11 @@ func (s *KvService) handleAppend(w http.ResponseWriter, r *http.Request) {
 }
 
 func NewKvService(address string, config graft.Config) (*KvService, error) {
-	kvStore := &kvstore{
-		data: make(map[string]string),
-	}
+	kvStore := newKvstore(config.Logger)
 	srv, err := server.NewServer("KvService", address, kvStore, config)
 	if err != nil {
 		return nil, err
 	}
-	kvStore.logger = srv.Logger
 	service := &KvService{
 		store:  kvStore,
 		server: srv,
@@ -147,7 +137,7 @@ func NewKvService(address string, config graft.Config) (*KvService, error) {
 		srv.Mux.HandleFunc("POST /putIfAbsent", service.handlePutIfAbsent)
 		srv.Mux.HandleFunc("POST /append", service.handleAppend)
 
-		gob.Register(Command{})
+		gob.Register(KvCommand{})
 	}
 	return service, nil
 }

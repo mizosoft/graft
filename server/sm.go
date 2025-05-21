@@ -1,7 +1,7 @@
 package server
 
 type StateMachine interface {
-	Apply(command any) any
+	Apply(command *Command) any
 
 	Restore(snapshot []byte)
 

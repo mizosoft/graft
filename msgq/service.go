@@ -41,8 +41,7 @@ func (m *MsgqService) handleEnqueue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	m.server.Execute(req.ClientId, &Command{
-		Id:    uuid.New().String(),
+	m.server.Execute(req.ClientId, &MsgqCommand{
 		Type:  commandTypeEnqueue,
 		Topic: req.Topic,
 		Message: Message{
@@ -59,22 +58,18 @@ func (m *MsgqService) handleDeque(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	m.server.Execute(req.ClientId, &Command{
-		Id:    uuid.New().String(),
+	m.server.Execute(req.ClientId, &MsgqCommand{
 		Type:  commandTypeDeque,
 		Topic: req.Topic,
 	}, w)
 }
 
 func NewMsgqService(address string, config graft.Config) (*MsgqService, error) {
-	q := &msgq{
-		queues: make(map[string][]Message),
-	}
+	q := newMsgq(config.Logger)
 	srv, err := server.NewServer("MsgqService", address, q, config)
 	if err != nil {
 		return nil, err
 	}
-	q.logger = srv.Logger
 	service := &MsgqService{
 		q:      q,
 		server: srv,
@@ -83,7 +78,7 @@ func NewMsgqService(address string, config graft.Config) (*MsgqService, error) {
 		srv.Mux.HandleFunc("POST /enqueue", service.handleEnqueue)
 		srv.Mux.HandleFunc("POST /deque", service.handleDeque)
 
-		gob.Register(Command{})
+		gob.Register(MsgqCommand{})
 	}
 	return service, nil
 }

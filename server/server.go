@@ -74,7 +74,7 @@ func (s *Server) Respond(w http.ResponseWriter, payload any, status int) {
 
 func (s *Server) apply(entries []*pb.LogEntry) {
 	for _, cmd := range deserializeCommands(entries) {
-		response := s.sm.Apply(cmd.SmCommand)
+		response := s.sm.Apply(cmd)
 		if cmd.ServerId == s.G.Id {
 			s.publisher.publishOnce(cmd.Id, response)
 		}

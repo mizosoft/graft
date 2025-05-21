@@ -6,4 +6,5 @@ use (
 	./msgq
 	./server
 	./kvstore
+	./dlock
 )

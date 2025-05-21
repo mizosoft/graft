@@ -121,12 +121,3 @@ func cloneMsgs[T proto.Message](msgs []T) []T {
 func cloneMsg[T proto.Message](msg T) T {
 	return proto.Clone(msg).(T)
 }
-
-func contains[T comparable](slice []T, item T) bool {
-	for _, v := range slice {
-		if v == item {
-			return true
-		}
-	}
-	return false
-}

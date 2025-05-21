@@ -7,6 +7,7 @@ import (
 	"go.uber.org/zap"
 	"log"
 	"net"
+	"slices"
 	"sync"
 	"time"
 
@@ -1199,7 +1200,7 @@ func (g *Graft) ConfigUpdate(id string, addedNodes map[string]string, removedNod
 	}
 
 	for id, address := range existingNodes {
-		if !contains(removedNodes, id) {
+		if !slices.Contains(removedNodes, id) {
 			update.New = append(update.New, &pb.NodeConfig{
 				Id:      id,
 				Address: address,
