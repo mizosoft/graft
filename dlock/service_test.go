@@ -1,10 +1,13 @@
 package dlock
 
 import (
+	"fmt"
 	"github.com/mizosoft/graft"
 	"github.com/mizosoft/graft/testutil"
 	"go.uber.org/zap"
 	"gotest.tools/v3/assert"
+	"math/rand"
+	"sync"
 	"testing"
 	"time"
 )
@@ -398,6 +401,62 @@ func TestDlockServiceBlockingRLockWithUnlock(t *testing.T) {
 	assert.Assert(t, t1 == r.t)
 }
 
+func TestDlockServiceContention(t *testing.T) {
+	cluster, _ := NewClusterClient(t, 3, SystemClock())
+	defer cluster.Shutdown()
+
+	clients := make([]*DlockClient, 0)
+	for i := range 50 {
+		clients = append(clients, NewDlockClient(fmt.Sprintf("client%d-%s", i, t.Name()), cluster.ServiceConfig()))
+	}
+
+	var mut sync.RWMutex
+	tokens := make([]uint64, 0)
+	var wg sync.WaitGroup
+	for _, client := range clients {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			writer := rand.Intn(5) == 1 // Make 20% writers.
+			if writer {
+				tok, err := client.Lock("r1", 1*time.Second, 5*time.Second)
+				assert.NilError(t, err)
+
+				assert.Assert(t, mut.TryLock())
+
+				if len(tokens) > 0 {
+					assert.Assert(t, tokens[len(tokens)-1] < tok)
+				}
+				tokens = append(tokens, tok)
+
+				mut.Unlock()
+
+				ok, err := client.Unlock("r1", tok)
+				assert.NilError(t, err)
+				assert.Assert(t, ok)
+			} else {
+				tok, err := client.RLock("r1", 1*time.Second, 5*time.Second)
+				assert.NilError(t, err)
+
+				assert.Assert(t, mut.TryRLock())
+
+				if len(tokens) > 0 {
+					assert.Assert(t, tokens[len(tokens)-1] == tok)
+				}
+
+				mut.RUnlock()
+
+				ok, err := client.RUnlock("r1", tok)
+				assert.NilError(t, err)
+				assert.Assert(t, ok)
+			}
+		}()
+	}
+
+	wg.Wait()
+}
+
 type MockClock struct {
 	now time.Time
 }
@@ -417,6 +476,8 @@ func mockClock() *MockClock {
 }
 
 func NewClusterClient(t *testing.T, nodeCount int, clock Clock) (*testutil.Cluster[*DlockService], *DlockClient) {
+	_, err := zap.NewDevelopment()
+	assert.NilError(t, err)
 	cluster, err := testutil.StartLocalCluster[*DlockService](
 		testutil.ClusterConfig[*DlockService]{
 			Dir:                       t.TempDir(),

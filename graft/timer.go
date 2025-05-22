@@ -27,7 +27,6 @@ func (t *periodicTimer) pause() {
 
 	if t.timer != nil {
 		t.timer.Stop()
-		t.timer = nil
 	}
 }
 
@@ -54,7 +53,11 @@ func (t *periodicTimer) tick() {
 	defer t.mut.Unlock()
 
 	if t.c != nil {
-		t.c <- struct{}{}
+		select {
+		case t.c <- struct{}{}:
+		default:
+			return
+		}
 	}
 }
 

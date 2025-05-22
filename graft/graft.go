@@ -435,7 +435,7 @@ func (g *Graft) runElection(timeoutTerm int64) {
 					g.mut.Lock()
 					defer g.mut.Unlock()
 
-					g.logger.Error("RequestVote->", zap.String("peer", p.id), zap.Any("request", request), zap.Int64("election", electionTerm), zap.Any("response", res))
+					g.logger.Info("RequestVote->", zap.String("peer", p.id), zap.Any("request", request), zap.Int64("election", electionTerm), zap.Any("response", res))
 
 					if res.Term > g.currentTerm {
 						g.unguardedTransitionToFollower(res.Term)
