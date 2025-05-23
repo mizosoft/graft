@@ -1,4 +1,4 @@
-package dlock
+package client
 
 import (
 	"bytes"
@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/mizosoft/graft"
+	"github.com/mizosoft/graft/dlock/service"
 	"github.com/mizosoft/graft/server"
 	"math"
 	"math/rand"
@@ -26,7 +27,7 @@ type DlockClient struct {
 }
 
 func (c *DlockClient) TryLock(resource string, ttl time.Duration) (uint64, bool, error) {
-	res, err := Post[LockResponse](c, "lock", LockRequest{
+	res, err := Post[service.LockResponse](c, "lock", service.LockRequest{
 		ClientId:  c.id,
 		Resource:  resource,
 		TtlMillis: int64(ttl / time.Millisecond),
@@ -38,10 +39,36 @@ func (c *DlockClient) TryLock(resource string, ttl time.Duration) (uint64, bool,
 }
 
 func (c *DlockClient) TryRLock(resource string, ttl time.Duration) (uint64, bool, error) {
-	res, err := Post[LockResponse](c, "rlock", LockRequest{
+	res, err := Post[service.LockResponse](c, "rlock", service.LockRequest{
 		ClientId:  c.id,
 		Resource:  resource,
 		TtlMillis: int64(ttl / time.Millisecond),
+	})
+	if err != nil {
+		return 0, false, err
+	}
+	return res.Token, res.Success, nil
+}
+
+func (c *DlockClient) TryLockFair(resource string, ttl time.Duration) (uint64, bool, error) {
+	res, err := Post[service.LockResponse](c, "lock", service.LockRequest{
+		ClientId:  c.id,
+		Resource:  resource,
+		TtlMillis: int64(ttl / time.Millisecond),
+		Fair:      true,
+	})
+	if err != nil {
+		return 0, false, err
+	}
+	return res.Token, res.Success, nil
+}
+
+func (c *DlockClient) TryRLockFair(resource string, ttl time.Duration) (uint64, bool, error) {
+	res, err := Post[service.LockResponse](c, "rlock", service.LockRequest{
+		ClientId:  c.id,
+		Resource:  resource,
+		TtlMillis: int64(ttl / time.Millisecond),
+		Fair:      true,
 	})
 	if err != nil {
 		return 0, false, err
@@ -69,7 +96,7 @@ func (c *DlockClient) blockingLock(resource string, ttl time.Duration, timeout t
 	}
 
 retry:
-	res, err := Post[LockResponse](c, path, LockRequest{
+	res, err := Post[service.LockResponse](c, path, service.LockRequest{
 		ClientId:  c.id,
 		Resource:  resource,
 		TtlMillis: int64(ttl / time.Millisecond),
@@ -98,7 +125,7 @@ func backoff(base time.Duration, mx time.Duration, retry int) time.Duration {
 }
 
 func (c *DlockClient) Unlock(resource string, token uint64) (bool, error) {
-	res, err := Post[UnlockResponse](c, "unlock", UnlockRequest{
+	res, err := Post[service.UnlockResponse](c, "unlock", service.UnlockRequest{
 		ClientId: c.id,
 		Resource: resource,
 		Token:    token,
@@ -110,7 +137,7 @@ func (c *DlockClient) Unlock(resource string, token uint64) (bool, error) {
 }
 
 func (c *DlockClient) RUnlock(resource string, token uint64) (bool, error) {
-	res, err := Post[UnlockResponse](c, "runlock", UnlockRequest{
+	res, err := Post[service.UnlockResponse](c, "runlock", service.UnlockRequest{
 		ClientId: c.id,
 		Resource: resource,
 		Token:    token,
@@ -122,7 +149,7 @@ func (c *DlockClient) RUnlock(resource string, token uint64) (bool, error) {
 }
 
 func (c *DlockClient) RefreshLock(resource string, token uint64, ttl time.Duration) (bool, error) {
-	res, err := Post[RefreshResponse](c, "refreshLock", RefreshRequest{
+	res, err := Post[service.RefreshResponse](c, "refreshLock", service.RefreshRequest{
 		ClientId:  c.id,
 		Resource:  resource,
 		Token:     token,
@@ -135,7 +162,7 @@ func (c *DlockClient) RefreshLock(resource string, token uint64, ttl time.Durati
 }
 
 func (c *DlockClient) RefreshRLock(resource string, token uint64, ttl time.Duration) (bool, error) {
-	res, err := Post[RefreshResponse](c, "refreshRLock", RefreshRequest{
+	res, err := Post[service.RefreshResponse](c, "refreshRLock", service.RefreshRequest{
 		ClientId:  c.id,
 		Resource:  resource,
 		Token:     token,

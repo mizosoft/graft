@@ -1,4 +1,4 @@
-package dlock
+package service
 
 import (
 	"encoding/gob"
@@ -47,6 +47,7 @@ func (s *DlockService) handleLock(w http.ResponseWriter, r *http.Request) {
 		Now:      s.clock.Now(),
 		Resource: req.Resource,
 		Ttl:      time.Duration(req.TtlMillis) * time.Millisecond,
+		Fair:     req.Fair,
 	}, w)
 }
 
@@ -77,6 +78,7 @@ func (s *DlockService) handleRLock(w http.ResponseWriter, r *http.Request) {
 		Now:      s.clock.Now(),
 		Resource: req.Resource,
 		Ttl:      time.Duration(req.TtlMillis) * time.Millisecond,
+		Fair:     req.Fair,
 	}, w)
 }
 

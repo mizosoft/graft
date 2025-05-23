@@ -1,9 +1,10 @@
-package dlock
+package service
 
 type LockRequest struct {
 	ClientId  string `json:"clientId"`
 	Resource  string `json:"resource"`
 	TtlMillis int64  `json:"ttlMillis"`
+	Fair      bool   `json:"fair"`
 }
 
 type LockResponse struct {
