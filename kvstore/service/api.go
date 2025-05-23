@@ -1,4 +1,4 @@
-package kvstore
+package service
 
 type GetRequest struct {
 	ClientId     string `json:"clientId"`

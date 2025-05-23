@@ -4,7 +4,7 @@ import (
 	"bufio"
 	"flag"
 	"github.com/mizosoft/graft"
-	"github.com/mizosoft/graft/msgq"
+	"github.com/mizosoft/graft/msgq/service"
 	"go.uber.org/zap"
 	"os"
 	"strings"
@@ -53,7 +53,7 @@ func main() {
 
 	logger := zap.NewExample()
 
-	q, err := msgq.NewMsgqService(*address, graft.Config{
+	q, err := service.NewMsgqService(*address, graft.Config{
 		Id:                        *id,
 		Addresses:                 addresses,
 		ElectionTimeoutLowMillis:  1500,

@@ -1,4 +1,4 @@
-package msgq
+package service
 
 import (
 	"bytes"

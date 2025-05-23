@@ -3,6 +3,8 @@ package msgq
 import (
 	"fmt"
 	"github.com/mizosoft/graft"
+	"github.com/mizosoft/graft/msgq/client"
+	"github.com/mizosoft/graft/msgq/service"
 	"github.com/mizosoft/graft/testutil"
 	"go.uber.org/zap"
 	"gotest.tools/v3/assert"
@@ -84,16 +86,16 @@ func TestKvServiceFailOver(t *testing.T) {
 	}
 }
 
-func NewClusterClient(t *testing.T, nodeCount int) (*testutil.Cluster[*MsgqService], *MsgqClient) {
-	cluster, err := testutil.StartLocalCluster[*MsgqService](
-		testutil.ClusterConfig[*MsgqService]{
+func NewClusterClient(t *testing.T, nodeCount int) (*testutil.Cluster[*service.MsgqService], *client.MsgqClient) {
+	cluster, err := testutil.StartLocalCluster[*service.MsgqService](
+		testutil.ClusterConfig[*service.MsgqService]{
 			Dir:                       t.TempDir(),
 			NodeCount:                 nodeCount,
 			HeartbeatMillis:           50,
 			ElectionTimeoutLowMillis:  150,
 			ElectionTimeoutHighMillis: 300,
-			ServiceFactory: func(address string, config graft.Config) (*MsgqService, error) {
-				return NewMsgqService(address, config)
+			ServiceFactory: func(address string, config graft.Config) (*service.MsgqService, error) {
+				return service.NewMsgqService(address, config)
 			},
 			Logger: zap.NewNop(),
 		},
@@ -103,7 +105,7 @@ func NewClusterClient(t *testing.T, nodeCount int) (*testutil.Cluster[*MsgqServi
 		t.Fatalf("Couldn't start cluster: %v", err)
 	}
 
-	client := NewMsgqClient("client-"+t.Name(), cluster.ServiceConfig())
+	client := client.NewMsgqClient("client-"+t.Name(), cluster.ServiceConfig())
 
 	err = client.CheckHealthy()
 	if err != nil {

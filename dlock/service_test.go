@@ -668,12 +668,12 @@ func NewClusterClient(t *testing.T, nodeCount int, clock service.Clock) (*testut
 		t.Fatalf("Couldn't start cluster: %v", err)
 	}
 
-	dlockClient := client.NewDlockClient("client-"+t.Name(), cluster.ServiceConfig())
+	client := client.NewDlockClient("client-"+t.Name(), cluster.ServiceConfig())
 
-	err = dlockClient.CheckHealthy()
+	err = client.CheckHealthy()
 	if err != nil {
 		t.Fatalf("Couldn't connect to cluster: %v", err)
 	}
 
-	return cluster, dlockClient
+	return cluster, client
 }

@@ -3,6 +3,8 @@ package kvstore
 import (
 	"fmt"
 	"github.com/mizosoft/graft"
+	"github.com/mizosoft/graft/kvstore2/client"
+	"github.com/mizosoft/graft/kvstore2/service"
 	"github.com/mizosoft/graft/testutil"
 	"go.uber.org/zap"
 	"gotest.tools/v3/assert"
@@ -179,16 +181,16 @@ func TestKvServiceFailOver(t *testing.T) {
 	}
 }
 
-func NewClusterClient(t *testing.T, nodeCount int) (*testutil.Cluster[*KvService], *KvClient) {
-	cluster, err := testutil.StartLocalCluster[*KvService](
-		testutil.ClusterConfig[*KvService]{
+func NewClusterClient(t *testing.T, nodeCount int) (*testutil.Cluster[*service.KvService], *client.KvClient) {
+	cluster, err := testutil.StartLocalCluster[*service.KvService](
+		testutil.ClusterConfig[*service.KvService]{
 			Dir:                       t.TempDir(),
 			NodeCount:                 nodeCount,
 			HeartbeatMillis:           50,
 			ElectionTimeoutLowMillis:  150,
 			ElectionTimeoutHighMillis: 300,
-			ServiceFactory: func(address string, config graft.Config) (*KvService, error) {
-				return NewKvService(address, config)
+			ServiceFactory: func(address string, config graft.Config) (*service.KvService, error) {
+				return service.NewKvService(address, config)
 			},
 			Logger: zap.NewNop(),
 		},
@@ -198,7 +200,7 @@ func NewClusterClient(t *testing.T, nodeCount int) (*testutil.Cluster[*KvService
 		t.Fatalf("Couldn't start cluster: %v", err)
 	}
 
-	client := NewKvClient("client-"+t.Name(), cluster.ServiceConfig())
+	client := client.NewKvClient("client-"+t.Name(), cluster.ServiceConfig())
 
 	err = client.CheckHealthy()
 	if err != nil {

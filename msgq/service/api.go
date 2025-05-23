@@ -1,4 +1,4 @@
-package msgq
+package service
 
 type EnqueueRequest struct {
 	ClientId string `json:"clientId"`

@@ -1,4 +1,4 @@
-package kvstore
+package client
 
 import (
 	"bytes"
@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/mizosoft/graft"
+	"github.com/mizosoft/graft/kvstore2/service"
 	"github.com/mizosoft/graft/server"
 	"net/http"
 	"net/url"
@@ -32,7 +33,7 @@ func (c *KvClient) FastGet(key string) (string, bool, error) {
 }
 
 func (c *KvClient) get(key string, linearizable bool) (string, bool, error) {
-	res, err := Post[GetResponse](c, "get", GetRequest{
+	res, err := Post[service.GetResponse](c, "get", service.GetRequest{
 		ClientId:     c.id,
 		Key:          key,
 		Linearizable: linearizable,
@@ -44,7 +45,7 @@ func (c *KvClient) get(key string, linearizable bool) (string, bool, error) {
 }
 
 func (c *KvClient) Put(key string, value string) (string, bool, error) {
-	res, err := Post[PutResponse](c, "put", PutRequest{
+	res, err := Post[service.PutResponse](c, "put", service.PutRequest{
 		ClientId: c.id,
 		Key:      key,
 		Value:    value,
@@ -56,7 +57,7 @@ func (c *KvClient) Put(key string, value string) (string, bool, error) {
 }
 
 func (c *KvClient) PutIfAbsent(key string, value string) (bool, error) {
-	res, err := Post[PutIfAbsentResponse](c, "putIfAbsent", PutRequest{
+	res, err := Post[service.PutIfAbsentResponse](c, "putIfAbsent", service.PutRequest{
 		ClientId: c.id,
 		Key:      key,
 		Value:    value,
@@ -68,7 +69,7 @@ func (c *KvClient) PutIfAbsent(key string, value string) (bool, error) {
 }
 
 func (c *KvClient) Delete(key string) (string, bool, error) {
-	res, err := Post[DeleteResponse](c, "delete", DeleteRequest{
+	res, err := Post[service.DeleteResponse](c, "delete", service.DeleteRequest{
 		ClientId: c.id,
 		Key:      key,
 	})
@@ -79,7 +80,7 @@ func (c *KvClient) Delete(key string) (string, bool, error) {
 }
 
 func (c *KvClient) Append(key string, value string) (int, error) {
-	res, err := Post[AppendResponse](c, "append", AppendRequest{
+	res, err := Post[service.AppendResponse](c, "append", service.AppendRequest{
 		ClientId: c.id,
 		Key:      key,
 		Value:    value,
@@ -91,7 +92,7 @@ func (c *KvClient) Append(key string, value string) (int, error) {
 }
 
 func (c *KvClient) Cas(key string, expectedValue string, value string) (bool, string, error) {
-	res, err := Post[CasResponse](c, "cas", CasRequest{
+	res, err := Post[service.CasResponse](c, "cas", service.CasRequest{
 		ClientId:      c.id,
 		Key:           key,
 		ExpectedValue: expectedValue,

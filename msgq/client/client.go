@@ -1,4 +1,4 @@
-package msgq
+package client
 
 import (
 	"bytes"
@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/mizosoft/graft"
+	"github.com/mizosoft/graft/msgq/service"
 	"github.com/mizosoft/graft/server"
 	"net/http"
 	"net/url"
@@ -28,7 +29,7 @@ func (c *MsgqClient) LeaderId() string {
 }
 
 func (c *MsgqClient) Enqueue(topic string, data string) (string, error) {
-	res, err := Post[EnqueueResponse](c, "enqueue", EnqueueRequest{
+	res, err := Post[service.EnqueueResponse](c, "enqueue", service.EnqueueRequest{
 		ClientId: c.id,
 		Topic:    topic,
 		Data:     data,
@@ -39,13 +40,13 @@ func (c *MsgqClient) Enqueue(topic string, data string) (string, error) {
 	return res.Id, nil
 }
 
-func (c *MsgqClient) Dequeue(topic string) (Message, bool, error) {
-	res, err := Post[DequeResponse](c, "deque", DequeRequest{
+func (c *MsgqClient) Dequeue(topic string) (service.Message, bool, error) {
+	res, err := Post[service.DequeResponse](c, "deque", service.DequeRequest{
 		ClientId: c.id,
 		Topic:    topic,
 	})
 	if err != nil {
-		return Message{}, false, err
+		return service.Message{}, false, err
 	}
 	return res.Message, res.Success, nil
 }

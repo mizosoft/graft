@@ -1,4 +1,4 @@
-package kvstore
+package service
 
 import (
 	"encoding/gob"
