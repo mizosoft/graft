@@ -1,34 +1,29 @@
 package client
 
 import (
-	"bytes"
-	"context"
-	"encoding/json"
 	"errors"
-	"fmt"
-	"github.com/mizosoft/graft"
-	"github.com/mizosoft/graft/dlock/service"
-	"github.com/mizosoft/graft/server"
+	"github.com/mizosoft/graft/dlock/api"
+	"github.com/mizosoft/graft/infra/client"
 	"math"
 	"math/rand"
-	"net/http"
-	"net/url"
-	"sync"
 	"time"
 )
 
 type DlockClient struct {
-	id            string
-	leaderId      string
-	url           string
-	http          *http.Client
-	serviceConfig map[string]string
-	mut           sync.Mutex
+	client *client.Client
+}
+
+func (c *DlockClient) CheckHealthy() error {
+	return c.client.CheckHealthy()
+}
+
+func (c *DlockClient) LeaderId() string {
+	return c.client.LeaderId()
 }
 
 func (c *DlockClient) TryLock(resource string, ttl time.Duration) (uint64, bool, error) {
-	res, err := Post[service.LockResponse](c, "lock", service.LockRequest{
-		ClientId:  c.id,
+	res, err := client.Post[api.LockResponse](c.client, "lock", api.LockRequest{
+		ClientId:  c.client.Id(),
 		Resource:  resource,
 		TtlMillis: int64(ttl / time.Millisecond),
 	})
@@ -39,8 +34,8 @@ func (c *DlockClient) TryLock(resource string, ttl time.Duration) (uint64, bool,
 }
 
 func (c *DlockClient) TryRLock(resource string, ttl time.Duration) (uint64, bool, error) {
-	res, err := Post[service.LockResponse](c, "rlock", service.LockRequest{
-		ClientId:  c.id,
+	res, err := client.Post[api.LockResponse](c.client, "rlock", api.LockRequest{
+		ClientId:  c.client.Id(),
 		Resource:  resource,
 		TtlMillis: int64(ttl / time.Millisecond),
 	})
@@ -51,8 +46,8 @@ func (c *DlockClient) TryRLock(resource string, ttl time.Duration) (uint64, bool
 }
 
 func (c *DlockClient) TryLockFair(resource string, ttl time.Duration) (uint64, bool, error) {
-	res, err := Post[service.LockResponse](c, "lock", service.LockRequest{
-		ClientId:  c.id,
+	res, err := client.Post[api.LockResponse](c.client, "lock", api.LockRequest{
+		ClientId:  c.client.Id(),
 		Resource:  resource,
 		TtlMillis: int64(ttl / time.Millisecond),
 		Fair:      true,
@@ -64,8 +59,8 @@ func (c *DlockClient) TryLockFair(resource string, ttl time.Duration) (uint64, b
 }
 
 func (c *DlockClient) TryRLockFair(resource string, ttl time.Duration) (uint64, bool, error) {
-	res, err := Post[service.LockResponse](c, "rlock", service.LockRequest{
-		ClientId:  c.id,
+	res, err := client.Post[api.LockResponse](c.client, "rlock", api.LockRequest{
+		ClientId:  c.client.Id(),
 		Resource:  resource,
 		TtlMillis: int64(ttl / time.Millisecond),
 		Fair:      true,
@@ -96,8 +91,8 @@ func (c *DlockClient) blockingLock(resource string, ttl time.Duration, timeout t
 	}
 
 retry:
-	res, err := Post[service.LockResponse](c, path, service.LockRequest{
-		ClientId:  c.id,
+	res, err := client.Post[api.LockResponse](c.client, path, api.LockRequest{
+		ClientId:  c.client.Id(),
 		Resource:  resource,
 		TtlMillis: int64(ttl / time.Millisecond),
 	})
@@ -125,8 +120,8 @@ func backoff(base time.Duration, mx time.Duration, retry int) time.Duration {
 }
 
 func (c *DlockClient) Unlock(resource string, token uint64) (bool, error) {
-	res, err := Post[service.UnlockResponse](c, "unlock", service.UnlockRequest{
-		ClientId: c.id,
+	res, err := client.Post[api.UnlockResponse](c.client, "unlock", api.UnlockRequest{
+		ClientId: c.client.Id(),
 		Resource: resource,
 		Token:    token,
 	})
@@ -137,8 +132,8 @@ func (c *DlockClient) Unlock(resource string, token uint64) (bool, error) {
 }
 
 func (c *DlockClient) RUnlock(resource string, token uint64) (bool, error) {
-	res, err := Post[service.UnlockResponse](c, "runlock", service.UnlockRequest{
-		ClientId: c.id,
+	res, err := client.Post[api.UnlockResponse](c.client, "runlock", api.UnlockRequest{
+		ClientId: c.client.Id(),
 		Resource: resource,
 		Token:    token,
 	})
@@ -149,8 +144,8 @@ func (c *DlockClient) RUnlock(resource string, token uint64) (bool, error) {
 }
 
 func (c *DlockClient) RefreshLock(resource string, token uint64, ttl time.Duration) (bool, error) {
-	res, err := Post[service.RefreshResponse](c, "refreshLock", service.RefreshRequest{
-		ClientId:  c.id,
+	res, err := client.Post[api.RefreshResponse](c.client, "refreshLock", api.RefreshRequest{
+		ClientId:  c.client.Id(),
 		Resource:  resource,
 		Token:     token,
 		TtlMillis: int64(ttl / time.Millisecond),
@@ -162,8 +157,8 @@ func (c *DlockClient) RefreshLock(resource string, token uint64, ttl time.Durati
 }
 
 func (c *DlockClient) RefreshRLock(resource string, token uint64, ttl time.Duration) (bool, error) {
-	res, err := Post[service.RefreshResponse](c, "refreshRLock", service.RefreshRequest{
-		ClientId:  c.id,
+	res, err := client.Post[api.RefreshResponse](c.client, "refreshRLock", api.RefreshRequest{
+		ClientId:  c.client.Id(),
 		Resource:  resource,
 		Token:     token,
 		TtlMillis: int64(ttl / time.Millisecond),
@@ -174,112 +169,8 @@ func (c *DlockClient) RefreshRLock(resource string, token uint64, ttl time.Durat
 	return res.Success, nil
 }
 
-func (c *DlockClient) CheckHealthy() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
-	defer cancel()
-
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.url+"/config", nil)
-	if err != nil {
-		return err
-	}
-
-retry:
-	res, err := c.http.Do(request)
-	if err != nil {
-		select {
-		case <-ctx.Done():
-			return err
-		case <-time.After(50 * time.Millisecond): // backoff
-			goto retry
-		}
-	}
-
-	if res.StatusCode != 200 {
-		return errors.New(res.Status)
-	}
-	return nil
-}
-
-func (c *DlockClient) LeaderId() string {
-	return c.leaderId
-}
-
-func Post[T any](d *DlockClient, path string, body interface{}) (T, error) {
-	bodyJson, err := json.Marshal(body)
-	if err != nil {
-		return *new(T), err
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-retry:
-	u, err := url.JoinPath(d.url, path)
-	if err != nil {
-		return *new(T), err
-	}
-
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(bodyJson))
-	if err != nil {
-		return *new(T), err
-	}
-	request.Header.Set("Content-Type", "application/json")
-
-	res, err := d.http.Do(request)
-	if err != nil {
-		select {
-		case <-ctx.Done():
-			return *new(T), err
-		case <-time.After(50 * time.Millisecond): // backoff
-			goto retry
-		}
-	}
-
-	if res.StatusCode != http.StatusOK {
-		if res.StatusCode == http.StatusForbidden && res.Header.Get("Content-Type") == "application/json" {
-			// Rediscover leader.
-			config, err := decodeJson[server.NotLeaderResponse](res)
-			if err != nil {
-				return *new(T), err
-			}
-
-			if config.LeaderId != graft.UnknownLeader && len(config.LeaderId) > 0 {
-				d.leaderId = config.LeaderId
-				d.url = "http://" + d.serviceConfig[config.LeaderId] + "/"
-			}
-
-			goto retry // Retry with new leader
-		}
-
-		return *new(T), fmt.Errorf("invalid response from server: %v", res.StatusCode)
-	}
-
-	return decodeJson[T](res)
-}
-
-func decodeJson[T any](response *http.Response) (T, error) {
-	defer response.Body.Close()
-
-	var result T
-	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
-		return *new(T), err
-	}
-	return result, nil
-}
-
 func NewDlockClient(id string, serviceConfig map[string]string) *DlockClient {
-	var anyId string
-	var anyAddress string
-	for id, address := range serviceConfig {
-		anyAddress = address
-		anyId = id
-		break
-	}
 	return &DlockClient{
-		id:            id,
-		serviceConfig: serviceConfig,
-		url:           "http://" + anyAddress + "/",
-		leaderId:      anyId,
-		http:          &http.Client{},
+		client: client.New(id, serviceConfig),
 	}
 }

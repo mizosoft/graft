@@ -1,4 +1,4 @@
-package service
+package api
 
 type LockRequest struct {
 	ClientId  string `json:"clientId"`

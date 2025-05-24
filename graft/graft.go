@@ -223,9 +223,9 @@ func (g *Graft) Initialize() {
 		g.Persistence.SaveState(state)
 	}
 
+	g.unguardedTransitionToFollower(state.CurrentTerm)
 	g.votedFor = state.VotedFor
 	g.commitIndex = state.CommitIndex
-	g.unguardedTransitionToFollower(state.CurrentTerm)
 
 	// Restore the state-machine.
 	snapshot := g.Persistence.RetrieveSnapshot()
@@ -1006,6 +1006,7 @@ func (g *Graft) installSnapshot(request *pb.SnapshotRequest) (*pb.SnapshotRespon
 	}
 
 	g.applyChan <- snapshot
+
 	return &pb.SnapshotResponse{
 		Term: g.currentTerm,
 	}, nil

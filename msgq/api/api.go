@@ -1,4 +1,4 @@
-package service
+package api
 
 type EnqueueRequest struct {
 	ClientId string `json:"clientId"`

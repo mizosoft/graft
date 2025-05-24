@@ -1,4 +1,4 @@
-package msgq
+package test
 
 import (
 	"fmt"
@@ -50,7 +50,7 @@ func TestMsgqServiceEnqueueMultiple(t *testing.T) {
 	}
 }
 
-func TestKvServiceFailOver(t *testing.T) {
+func TestMsgqServiceFailover(t *testing.T) {
 	cluster, client := NewClusterClient(t, 3)
 	defer cluster.Shutdown()
 
@@ -97,7 +97,7 @@ func NewClusterClient(t *testing.T, nodeCount int) (*testutil.Cluster[*service.M
 			ServiceFactory: func(address string, config graft.Config) (*service.MsgqService, error) {
 				return service.NewMsgqService(address, config)
 			},
-			Logger: zap.NewNop(),
+			Logger: zap.NewExample(),
 		},
 	)
 

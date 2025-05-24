@@ -3,7 +3,9 @@ package service
 import (
 	"encoding/gob"
 	"github.com/mizosoft/graft"
-	"github.com/mizosoft/graft/server"
+	dlock2 "github.com/mizosoft/graft/dlock/api"
+	"github.com/mizosoft/graft/infra/server"
+	"go.uber.org/zap"
 	"net/http"
 	"time"
 )
@@ -36,7 +38,7 @@ func (s *DlockService) Shutdown() {
 }
 
 func (s *DlockService) handleLock(w http.ResponseWriter, r *http.Request) {
-	req, err := server.DecodeJson[LockRequest](r)
+	req, err := server.DecodeJson[dlock2.LockRequest](r)
 	if err != nil {
 		http.Error(w, "Invalid request format: "+err.Error(), http.StatusBadRequest)
 		return
@@ -52,7 +54,7 @@ func (s *DlockService) handleLock(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *DlockService) handleUnlock(w http.ResponseWriter, r *http.Request) {
-	req, err := server.DecodeJson[UnlockRequest](r)
+	req, err := server.DecodeJson[dlock2.UnlockRequest](r)
 	if err != nil {
 		http.Error(w, "Invalid request format: "+err.Error(), http.StatusBadRequest)
 		return
@@ -67,7 +69,7 @@ func (s *DlockService) handleUnlock(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *DlockService) handleRLock(w http.ResponseWriter, r *http.Request) {
-	req, err := server.DecodeJson[LockRequest](r)
+	req, err := server.DecodeJson[dlock2.LockRequest](r)
 	if err != nil {
 		http.Error(w, "Invalid request format: "+err.Error(), http.StatusBadRequest)
 		return
@@ -83,7 +85,7 @@ func (s *DlockService) handleRLock(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *DlockService) handleRUnlock(w http.ResponseWriter, r *http.Request) {
-	req, err := server.DecodeJson[UnlockRequest](r)
+	req, err := server.DecodeJson[dlock2.UnlockRequest](r)
 	if err != nil {
 		http.Error(w, "Invalid request format: "+err.Error(), http.StatusBadRequest)
 		return
@@ -98,7 +100,7 @@ func (s *DlockService) handleRUnlock(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *DlockService) handleRefreshLock(w http.ResponseWriter, r *http.Request) {
-	req, err := server.DecodeJson[RefreshRequest](r)
+	req, err := server.DecodeJson[dlock2.RefreshRequest](r)
 	if err != nil {
 		http.Error(w, "Invalid request format: "+err.Error(), http.StatusBadRequest)
 		return
@@ -114,7 +116,7 @@ func (s *DlockService) handleRefreshLock(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *DlockService) handleRefreshRLock(w http.ResponseWriter, r *http.Request) {
-	req, err := server.DecodeJson[RefreshRequest](r)
+	req, err := server.DecodeJson[dlock2.RefreshRequest](r)
 	if err != nil {
 		http.Error(w, "Invalid request format: "+err.Error(), http.StatusBadRequest)
 		return
@@ -144,7 +146,7 @@ func SystemClock() Clock {
 }
 
 func NewDlockService(address string, clock Clock, config graft.Config) (*DlockService, error) {
-	lock := newDlock(config.Logger)
+	lock := newDlock(config.Logger.With(zap.String("id", config.Id)))
 	srv, err := server.NewServer("DlockService", address, lock, config)
 	if err != nil {
 		return nil, err

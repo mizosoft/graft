@@ -1,27 +1,20 @@
 package client
 
 import (
-	"bytes"
-	"context"
-	"encoding/json"
-	"errors"
-	"fmt"
-	"github.com/mizosoft/graft"
-	"github.com/mizosoft/graft/kvstore2/service"
-	"github.com/mizosoft/graft/server"
-	"net/http"
-	"net/url"
-	"sync"
-	"time"
+	"github.com/mizosoft/graft/infra/client"
+	"github.com/mizosoft/graft/kvstore2/api"
 )
 
 type KvClient struct {
-	id            string
-	leaderId      string
-	url           string
-	http          *http.Client
-	serviceConfig map[string]string
-	mut           sync.Mutex
+	client *client.Client
+}
+
+func (c *KvClient) CheckHealthy() error {
+	return c.client.CheckHealthy()
+}
+
+func (c *KvClient) LeaderId() string {
+	return c.client.LeaderId()
 }
 
 func (c *KvClient) Get(key string) (string, bool, error) {
@@ -33,8 +26,8 @@ func (c *KvClient) FastGet(key string) (string, bool, error) {
 }
 
 func (c *KvClient) get(key string, linearizable bool) (string, bool, error) {
-	res, err := Post[service.GetResponse](c, "get", service.GetRequest{
-		ClientId:     c.id,
+	res, err := client.Post[api.GetResponse](c.client, "get", api.GetRequest{
+		ClientId:     c.client.Id(),
 		Key:          key,
 		Linearizable: linearizable,
 	})
@@ -45,8 +38,8 @@ func (c *KvClient) get(key string, linearizable bool) (string, bool, error) {
 }
 
 func (c *KvClient) Put(key string, value string) (string, bool, error) {
-	res, err := Post[service.PutResponse](c, "put", service.PutRequest{
-		ClientId: c.id,
+	res, err := client.Post[api.PutResponse](c.client, "put", api.PutRequest{
+		ClientId: c.client.Id(),
 		Key:      key,
 		Value:    value,
 	})
@@ -57,8 +50,8 @@ func (c *KvClient) Put(key string, value string) (string, bool, error) {
 }
 
 func (c *KvClient) PutIfAbsent(key string, value string) (bool, error) {
-	res, err := Post[service.PutIfAbsentResponse](c, "putIfAbsent", service.PutRequest{
-		ClientId: c.id,
+	res, err := client.Post[api.PutIfAbsentResponse](c.client, "putIfAbsent", api.PutRequest{
+		ClientId: c.client.Id(),
 		Key:      key,
 		Value:    value,
 	})
@@ -69,8 +62,8 @@ func (c *KvClient) PutIfAbsent(key string, value string) (bool, error) {
 }
 
 func (c *KvClient) Delete(key string) (string, bool, error) {
-	res, err := Post[service.DeleteResponse](c, "delete", service.DeleteRequest{
-		ClientId: c.id,
+	res, err := client.Post[api.DeleteResponse](c.client, "delete", api.DeleteRequest{
+		ClientId: c.client.Id(),
 		Key:      key,
 	})
 	if err != nil {
@@ -80,8 +73,8 @@ func (c *KvClient) Delete(key string) (string, bool, error) {
 }
 
 func (c *KvClient) Append(key string, value string) (int, error) {
-	res, err := Post[service.AppendResponse](c, "append", service.AppendRequest{
-		ClientId: c.id,
+	res, err := client.Post[api.AppendResponse](c.client, "append", api.AppendRequest{
+		ClientId: c.client.Id(),
 		Key:      key,
 		Value:    value,
 	})
@@ -92,8 +85,8 @@ func (c *KvClient) Append(key string, value string) (int, error) {
 }
 
 func (c *KvClient) Cas(key string, expectedValue string, value string) (bool, string, error) {
-	res, err := Post[service.CasResponse](c, "cas", service.CasRequest{
-		ClientId:      c.id,
+	res, err := client.Post[api.CasResponse](c.client, "cas", api.CasRequest{
+		ClientId:      c.client.Id(),
 		Key:           key,
 		ExpectedValue: expectedValue,
 		Value:         value,
@@ -112,112 +105,8 @@ func (c *KvClient) Cas(key string, expectedValue string, value string) (bool, st
 	return res.Success, currValue, nil
 }
 
-func (c *KvClient) CheckHealthy() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
-	defer cancel()
-
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.url+"/config", nil)
-	if err != nil {
-		return err
-	}
-
-retry:
-	res, err := c.http.Do(request)
-	if err != nil {
-		select {
-		case <-ctx.Done():
-			return err
-		case <-time.After(50 * time.Millisecond): // backoff
-			goto retry
-		}
-	}
-
-	if res.StatusCode != 200 {
-		return errors.New(res.Status)
-	}
-	return nil
-}
-
-func (c *KvClient) LeaderId() string {
-	return c.leaderId
-}
-
-func Post[T any](c *KvClient, path string, body interface{}) (T, error) {
-	bodyJson, err := json.Marshal(body)
-	if err != nil {
-		return *new(T), err
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-retry:
-	u, err := url.JoinPath(c.url, path)
-	if err != nil {
-		return *new(T), err
-	}
-
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(bodyJson))
-	if err != nil {
-		return *new(T), err
-	}
-	request.Header.Set("Content-Type", "application/json")
-
-	res, err := c.http.Do(request)
-	if err != nil {
-		select {
-		case <-ctx.Done():
-			return *new(T), err
-		case <-time.After(50 * time.Millisecond): // backoff
-			goto retry
-		}
-	}
-
-	if res.StatusCode != http.StatusOK {
-		if res.StatusCode == http.StatusForbidden && res.Header.Get("Content-Type") == "application/json" {
-			// Rediscover leader.
-			config, err := decodeJson[server.NotLeaderResponse](res)
-			if err != nil {
-				return *new(T), err
-			}
-
-			if config.LeaderId != graft.UnknownLeader && len(config.LeaderId) > 0 {
-				c.leaderId = config.LeaderId
-				c.url = "http://" + c.serviceConfig[config.LeaderId] + "/"
-			}
-
-			goto retry // Retry with new leader
-		}
-
-		return *new(T), fmt.Errorf("invalid response from server: %v", res.StatusCode)
-	}
-
-	return decodeJson[T](res)
-}
-
-func decodeJson[T any](response *http.Response) (T, error) {
-	defer response.Body.Close()
-
-	var result T
-	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
-		return *new(T), err
-	}
-	return result, nil
-}
-
 func NewKvClient(id string, serviceConfig map[string]string) *KvClient {
-	var anyId string
-	var anyAddress string
-	for id, address := range serviceConfig {
-		anyAddress = address
-		anyId = id
-		break
-	}
 	return &KvClient{
-		id:            id,
-		serviceConfig: serviceConfig,
-		url:           "http://" + anyAddress + "/",
-		leaderId:      anyId,
-		http:          &http.Client{},
+		client: client.New(id, serviceConfig),
 	}
 }

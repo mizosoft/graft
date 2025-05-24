@@ -3,7 +3,8 @@ package service
 import (
 	"bytes"
 	"encoding/gob"
-	"github.com/mizosoft/graft/server"
+	dlock2 "github.com/mizosoft/graft/dlock/api"
+	"github.com/mizosoft/graft/infra/server"
 	"go.uber.org/zap"
 	"sync"
 	"sync/atomic"
@@ -274,7 +275,7 @@ func (d *dlock) deleteLock(now time.Time, resource string) {
 	d.advanceFairQ(resource, now)
 }
 
-func (d *dlock) lock(now time.Time, clientId string, resource string, ttl time.Duration, fair bool) LockResponse {
+func (d *dlock) lock(now time.Time, clientId string, resource string, ttl time.Duration, fair bool) dlock2.LockResponse {
 	d.logger.Info("Lock", zap.String("clientId", clientId), zap.String("resource", resource), zap.Duration("ttl", ttl))
 
 	if clientId == "" {
@@ -290,7 +291,7 @@ func (d *dlock) lock(now time.Time, clientId string, resource string, ttl time.D
 		if lock.Owner == clientId {
 			// Refresh ttl.
 			lock.ExpiresAt = now.Add(ttl)
-			return LockResponse{
+			return dlock2.LockResponse{
 				Success: true,
 				Token:   lock.Token,
 			}
@@ -302,7 +303,7 @@ func (d *dlock) lock(now time.Time, clientId string, resource string, ttl time.D
 					Reader:    false,
 				})
 			}
-			return LockResponse{
+			return dlock2.LockResponse{
 				Success: false,
 			}
 		}
@@ -313,14 +314,14 @@ func (d *dlock) lock(now time.Time, clientId string, resource string, ttl time.D
 			Token:     d.nextToken(),
 		}
 		d.locks[resource] = lock
-		return LockResponse{
+		return dlock2.LockResponse{
 			Success: true,
 			Token:   lock.Token,
 		}
 	}
 }
 
-func (d *dlock) unlock(now time.Time, clientId string, resource string, token uint64) LockResponse {
+func (d *dlock) unlock(now time.Time, clientId string, resource string, token uint64) dlock2.LockResponse {
 	d.logger.Info("Unlock", zap.String("clientId", clientId), zap.String("resource", resource), zap.Uint64("token", token))
 
 	if clientId == "" {
@@ -334,17 +335,17 @@ func (d *dlock) unlock(now time.Time, clientId string, resource string, token ui
 
 	if ok && lock.Token == token && lock.Owner == clientId {
 		d.deleteLock(now, resource)
-		return LockResponse{
+		return dlock2.LockResponse{
 			Success: true,
 		}
 	}
 
-	return LockResponse{
+	return dlock2.LockResponse{
 		Success: false,
 	}
 }
 
-func (d *dlock) rlock(now time.Time, clientId string, resource string, ttl time.Duration, fair bool) LockResponse {
+func (d *dlock) rlock(now time.Time, clientId string, resource string, ttl time.Duration, fair bool) dlock2.LockResponse {
 	d.logger.Info("RLock", zap.String("clientId", clientId), zap.String("resource", resource), zap.Duration("ttl", ttl))
 
 	if clientId == "" {
@@ -365,7 +366,7 @@ func (d *dlock) rlock(now time.Time, clientId string, resource string, ttl time.
 					Reader:    true,
 				})
 			}
-			return LockResponse{
+			return dlock2.LockResponse{
 				Success: false,
 			}
 		} else {
@@ -378,7 +379,7 @@ func (d *dlock) rlock(now time.Time, clientId string, resource string, ttl time.
 						if t.Reader {
 							d.logger.Panic("Head of fairQ is a reader while the lock is available for readers")
 						}
-						return LockResponse{
+						return dlock2.LockResponse{
 							Success: false,
 						}
 					}
@@ -390,7 +391,7 @@ func (d *dlock) rlock(now time.Time, clientId string, resource string, ttl time.
 			if lock.ExpiresAt.Before(expiresAt) {
 				lock.ExpiresAt = expiresAt
 			}
-			return LockResponse{
+			return dlock2.LockResponse{
 				Success: true,
 				Token:   lock.Token,
 			}
@@ -403,14 +404,14 @@ func (d *dlock) rlock(now time.Time, clientId string, resource string, ttl time.
 		}
 		lock.ROwners[clientId] = lock.ExpiresAt
 		d.locks[resource] = lock
-		return LockResponse{
+		return dlock2.LockResponse{
 			Success: true,
 			Token:   lock.Token,
 		}
 	}
 }
 
-func (d *dlock) runlock(now time.Time, clientId string, resource string, token uint64) UnlockResponse {
+func (d *dlock) runlock(now time.Time, clientId string, resource string, token uint64) dlock2.UnlockResponse {
 	d.logger.Info("RUnlock", zap.String("clientId", clientId), zap.String("resource", resource), zap.Uint64("token", token))
 
 	if clientId == "" {
@@ -429,17 +430,17 @@ func (d *dlock) runlock(now time.Time, clientId string, resource string, token u
 			if len(lock.ROwners) == 0 {
 				d.deleteLock(now, resource)
 			}
-			return UnlockResponse{
+			return dlock2.UnlockResponse{
 				Success: expiresAt.After(now),
 			}
 		}
 	}
-	return UnlockResponse{
+	return dlock2.UnlockResponse{
 		Success: false,
 	}
 }
 
-func (d *dlock) refreshLock(now time.Time, clientId string, resource string, token uint64, ttl time.Duration) RefreshResponse {
+func (d *dlock) refreshLock(now time.Time, clientId string, resource string, token uint64, ttl time.Duration) dlock2.RefreshResponse {
 	d.logger.Info("RefreshLock", zap.String("clientId", clientId), zap.String("resource", resource), zap.Uint64("token", token), zap.Duration("ttl", ttl))
 
 	if clientId == "" {
@@ -453,17 +454,17 @@ func (d *dlock) refreshLock(now time.Time, clientId string, resource string, tok
 
 	if ok && lock.Token == token && lock.Owner == clientId {
 		lock.ExpiresAt = now.Add(ttl)
-		return RefreshResponse{
+		return dlock2.RefreshResponse{
 			Success: true,
 		}
 	}
 
-	return RefreshResponse{
+	return dlock2.RefreshResponse{
 		Success: false,
 	}
 }
 
-func (d *dlock) refreshRlock(now time.Time, clientId string, resource string, token uint64, ttl time.Duration) RefreshResponse {
+func (d *dlock) refreshRlock(now time.Time, clientId string, resource string, token uint64, ttl time.Duration) dlock2.RefreshResponse {
 	d.logger.Info("RefreshLock", zap.String("clientId", clientId), zap.String("resource", resource), zap.Uint64("token", token), zap.Duration("ttl", ttl))
 
 	if clientId == "" {
@@ -482,7 +483,7 @@ func (d *dlock) refreshRlock(now time.Time, clientId string, resource string, to
 			if lock.ExpiresAt.Before(newExpiresAt) {
 				lock.ExpiresAt = newExpiresAt
 			}
-			return RefreshResponse{
+			return dlock2.RefreshResponse{
 				Success: true,
 			}
 		} else if ok {
@@ -490,7 +491,7 @@ func (d *dlock) refreshRlock(now time.Time, clientId string, resource string, to
 			delete(lock.ROwners, clientId)
 		}
 	}
-	return RefreshResponse{
+	return dlock2.RefreshResponse{
 		Success: false,
 	}
 }

@@ -3,7 +3,8 @@ package service
 import (
 	"bytes"
 	"encoding/gob"
-	"github.com/mizosoft/graft/server"
+	"github.com/mizosoft/graft/infra/server"
+	kvstore2 "github.com/mizosoft/graft/kvstore2/api"
 	"go.uber.org/zap"
 	"sync"
 	"sync/atomic"
@@ -86,7 +87,7 @@ func (s *kvstore) MaybeSnapshot() []byte {
 	return buf.Bytes()
 }
 
-func (s *kvstore) get(key string) *GetResponse {
+func (s *kvstore) get(key string) *kvstore2.GetResponse {
 	s.logger.Info("Get", zap.String("key", key))
 
 	s.mut.RLock()
@@ -94,13 +95,13 @@ func (s *kvstore) get(key string) *GetResponse {
 
 	atomic.AddInt32(&s.redundantOperations, 1)
 	value, ok := s.data[key]
-	return &GetResponse{
+	return &kvstore2.GetResponse{
 		Exists: ok,
 		Value:  value,
 	}
 }
 
-func (s *kvstore) put(key string, value string) *PutResponse {
+func (s *kvstore) put(key string, value string) *kvstore2.PutResponse {
 	s.logger.Info("Put", zap.String("key", key), zap.String("value", value))
 
 	s.mut.Lock()
@@ -111,13 +112,13 @@ func (s *kvstore) put(key string, value string) *PutResponse {
 	if ok {
 		atomic.AddInt32(&s.redundantOperations, 1)
 	}
-	return &PutResponse{
+	return &kvstore2.PutResponse{
 		Exists:        ok,
 		PreviousValue: prevValue,
 	}
 }
 
-func (s *kvstore) putIfAbsent(key string, value string) *PutIfAbsentResponse {
+func (s *kvstore) putIfAbsent(key string, value string) *kvstore2.PutIfAbsentResponse {
 	s.logger.Info("PutIfAbsent", zap.String("key", key), zap.String("value", value))
 
 	s.mut.Lock()
@@ -129,12 +130,12 @@ func (s *kvstore) putIfAbsent(key string, value string) *PutIfAbsentResponse {
 	} else {
 		s.data[key] = value
 	}
-	return &PutIfAbsentResponse{
+	return &kvstore2.PutIfAbsentResponse{
 		Success: !ok,
 	}
 }
 
-func (s *kvstore) del(key string) *DeleteResponse {
+func (s *kvstore) del(key string) *kvstore2.DeleteResponse {
 	s.logger.Info("Del", zap.String("key", key))
 
 	s.mut.Lock()
@@ -146,13 +147,13 @@ func (s *kvstore) del(key string) *DeleteResponse {
 		delete(s.data, key)
 	}
 	s.logger.Info("Delddfdf", zap.String("key", key))
-	return &DeleteResponse{
+	return &kvstore2.DeleteResponse{
 		Exists: ok,
 		Value:  value,
 	}
 }
 
-func (s *kvstore) cas(key string, expectedValue string, value string) *CasResponse {
+func (s *kvstore) cas(key string, expectedValue string, value string) *kvstore2.CasResponse {
 	s.logger.Info("Cas", zap.String("key", key), zap.String("expectedValue", expectedValue), zap.String("value", value))
 
 	s.mut.Lock()
@@ -167,14 +168,14 @@ func (s *kvstore) cas(key string, expectedValue string, value string) *CasRespon
 		ok = true
 		success = true
 	}
-	return &CasResponse{
+	return &kvstore2.CasResponse{
 		Success: success,
 		Exists:  ok,
 		Value:   currValue,
 	}
 }
 
-func (s *kvstore) append(key string, value string) *AppendResponse {
+func (s *kvstore) append(key string, value string) *kvstore2.AppendResponse {
 	s.logger.Info("Append", zap.String("key", key), zap.String("value", value))
 
 	s.mut.Lock()
@@ -187,7 +188,7 @@ func (s *kvstore) append(key string, value string) *AppendResponse {
 	} else {
 		s.data[key] = value
 	}
-	return &AppendResponse{
+	return &kvstore2.AppendResponse{
 		Length: length,
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"github.com/google/uuid"
 	"github.com/mizosoft/graft"
+	"github.com/mizosoft/graft/infra"
 	"github.com/mizosoft/graft/pb"
 	"go.uber.org/zap"
 	"net/http"
@@ -26,6 +27,7 @@ type Server struct {
 	initialized atomic.Bool
 	publisher   *publisher
 	srv         *http.Server
+	batcher     *batcher
 	G           *graft.Graft
 	Mux         *http.ServeMux
 	Logger      *zap.SugaredLogger
@@ -83,17 +85,17 @@ func (s *Server) apply(entries []*pb.LogEntry) {
 
 func (s *Server) Execute(clientId string, smCommand any, w http.ResponseWriter) {
 	command := &Command{
-		Id:        clientId,
+		Id:        uuid.New().String(),
 		ServerId:  s.G.Id,
 		ClientId:  clientId,
 		SmCommand: smCommand,
 	}
 
 	notify := s.publisher.subscribe(command.Id)
-	_, err := s.G.Append([][]byte{serializeCommand(command)})
-	if err != nil {
+	if _, err := s.G.Append([][]byte{serializeCommand(command)}); err != nil {
+		s.publisher.unsubscribe(command.Id)
 		if errors.Is(err, graft.ErrNotLeader) {
-			s.Respond(w, NotLeaderResponse{
+			s.Respond(w, infra.NotLeaderResponse{
 				LeaderId: s.G.LeaderId(),
 			}, http.StatusForbidden)
 		} else {
@@ -103,7 +105,12 @@ func (s *Server) Execute(clientId string, smCommand any, w http.ResponseWriter) 
 		return
 	}
 
-	s.RespondOk(w, <-notify)
+	result, ok := <-notify
+	if !ok {
+		s.Respond(w, "Command channel closed", http.StatusServiceUnavailable)
+	} else {
+		s.RespondOk(w, result)
+	}
 }
 
 func DecodeJson[T any](r *http.Request) (T, error) {
@@ -139,7 +146,7 @@ func deserializeCommands(entries []*pb.LogEntry) []*Command {
 }
 
 func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
-	req, err := DecodeJson[ConfigUpdateRequest](r)
+	req, err := DecodeJson[infra.ConfigUpdateRequest](r)
 	if err != nil {
 		http.Error(w, "Invalid request format: "+err.Error(), http.StatusBadRequest)
 		return
@@ -149,7 +156,7 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 	ch := s.publisher.subscribe(id)
 	if err := s.G.ConfigUpdate(id, req.Add, req.Remove); err != nil {
 		if errors.Is(err, graft.ErrNotLeader) {
-			s.Respond(w, NotLeaderResponse{
+			s.Respond(w, infra.NotLeaderResponse{
 				LeaderId: s.G.LeaderId(),
 			}, http.StatusForbidden)
 		} else {
@@ -167,7 +174,7 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 			for _, c := range u.New {
 				config[c.Id] = c.Address
 			}
-			s.RespondOk(w, ConfigResponse{
+			s.RespondOk(w, infra.ConfigResponse{
 				Config: config,
 			})
 			return
@@ -179,7 +186,7 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetConfig(w http.ResponseWriter, _ *http.Request) {
-	s.RespondOk(w, ConfigResponse{
+	s.RespondOk(w, infra.ConfigResponse{
 		Config: s.G.Config(),
 	})
 }
@@ -222,9 +229,10 @@ func NewServer(serviceName string, address string, sm StateMachine, config graft
 			Addr:    address,
 			Handler: mux,
 		},
-		G:      g,
-		Mux:    mux,
-		Logger: config.LoggerOrNoop().With(zap.String("name", serviceName), zap.String("id", config.Id)).Sugar(),
+		batcher: newBatcher(g, 0), // TODO allow to set with argument.
+		G:       g,
+		Mux:     mux,
+		Logger:  config.LoggerOrNoop().With(zap.String("name", serviceName), zap.String("id", config.Id)).Sugar(),
 	}
 	return server, nil
 }

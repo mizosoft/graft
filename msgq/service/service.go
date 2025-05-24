@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"github.com/google/uuid"
 	"github.com/mizosoft/graft"
-	"github.com/mizosoft/graft/server"
+	"github.com/mizosoft/graft/infra/server"
+	"github.com/mizosoft/graft/msgq/api"
+	"go.uber.org/zap"
 	"net/http"
 )
 
@@ -35,7 +37,7 @@ func (m *MsgqService) Shutdown() {
 }
 
 func (m *MsgqService) handleEnqueue(w http.ResponseWriter, r *http.Request) {
-	req, err := server.DecodeJson[EnqueueRequest](r)
+	req, err := server.DecodeJson[api.EnqueueRequest](r)
 	if err != nil {
 		http.Error(w, "Invalid request format: "+err.Error(), http.StatusBadRequest)
 		return
@@ -44,7 +46,7 @@ func (m *MsgqService) handleEnqueue(w http.ResponseWriter, r *http.Request) {
 	m.server.Execute(req.ClientId, &MsgqCommand{
 		Type:  commandTypeEnqueue,
 		Topic: req.Topic,
-		Message: Message{
+		Message: api.Message{
 			Id:   fmt.Sprintf("%s/%s", req.Topic, uuid.New().String()),
 			Data: req.Data,
 		},
@@ -52,7 +54,7 @@ func (m *MsgqService) handleEnqueue(w http.ResponseWriter, r *http.Request) {
 }
 
 func (m *MsgqService) handleDeque(w http.ResponseWriter, r *http.Request) {
-	req, err := server.DecodeJson[DequeRequest](r)
+	req, err := server.DecodeJson[api.DequeRequest](r)
 	if err != nil {
 		http.Error(w, "Invalid request format: "+err.Error(), http.StatusBadRequest)
 		return
@@ -65,7 +67,7 @@ func (m *MsgqService) handleDeque(w http.ResponseWriter, r *http.Request) {
 }
 
 func NewMsgqService(address string, config graft.Config) (*MsgqService, error) {
-	q := newMsgq(config.Logger)
+	q := newMsgq(config.Logger.With(zap.String("id", config.Id)))
 	srv, err := server.NewServer("MsgqService", address, q, config)
 	if err != nil {
 		return nil, err

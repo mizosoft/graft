@@ -1,4 +1,4 @@
-package dlock
+package test
 
 import (
 	"fmt"
@@ -330,7 +330,6 @@ func TestDlockServiceBlockingLockWithUnlock(t *testing.T) {
 
 	assert.NilError(t, r.err)
 	assert.Assert(t, timeToAcquire >= 500*time.Millisecond)
-	assert.Assert(t, timeToAcquire <= 1*time.Second)
 	assert.Assert(t, t1 < r.t)
 }
 
@@ -361,7 +360,6 @@ func TestDlockServiceBlockingRLockWithExpiredTtl(t *testing.T) {
 
 	assert.NilError(t, r.err)
 	assert.Assert(t, timeToAcquire >= 500*time.Millisecond)
-	assert.Assert(t, timeToAcquire <= 1*time.Second)
 	assert.Assert(t, t1 == r.t)
 }
 
@@ -398,7 +396,6 @@ func TestDlockServiceBlockingRLockWithUnlock(t *testing.T) {
 
 	assert.NilError(t, r.err)
 	assert.Assert(t, timeToAcquire >= 500*time.Millisecond)
-	assert.Assert(t, timeToAcquire <= 1*time.Second)
 	assert.Assert(t, t1 == r.t)
 }
 

@@ -1,4 +1,4 @@
-package service
+package api
 
 type GetRequest struct {
 	ClientId     string `json:"clientId"`
