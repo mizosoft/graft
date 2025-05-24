@@ -657,7 +657,7 @@ func NewClusterClient(t *testing.T, nodeCount int, clock service.Clock) (*testut
 			ServiceFactory: func(address string, config graft.Config) (*service.DlockService, error) {
 				return service.NewDlockService(address, clock, config)
 			},
-			Logger: zap.NewNop(),
+			Logger: zap.NewExample(),
 		},
 	)
 

@@ -192,7 +192,7 @@ func NewClusterClient(t *testing.T, nodeCount int) (*testutil.Cluster[*service.K
 			ServiceFactory: func(address string, config graft.Config) (*service.KvService, error) {
 				return service.NewKvService(address, config)
 			},
-			Logger: zap.NewNop(),
+			Logger: zap.NewExample(),
 		},
 	)
 
