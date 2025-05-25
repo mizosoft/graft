@@ -95,7 +95,7 @@ func NewClusterClient(t *testing.T, nodeCount int) (*testutil.Cluster[*service.M
 			ElectionTimeoutLowMillis:  150,
 			ElectionTimeoutHighMillis: 300,
 			ServiceFactory: func(address string, config graft.Config) (*service.MsgqService, error) {
-				return service.NewMsgqService(address, config)
+				return service.NewMsgqService(address, 0, config)
 			},
 			Logger: zap.NewExample(),
 		},

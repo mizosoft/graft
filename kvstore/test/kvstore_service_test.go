@@ -190,7 +190,7 @@ func NewClusterClient(t *testing.T, nodeCount int) (*testutil.Cluster[*service.K
 			ElectionTimeoutLowMillis:  150,
 			ElectionTimeoutHighMillis: 300,
 			ServiceFactory: func(address string, config graft.Config) (*service.KvService, error) {
-				return service.NewKvService(address, config)
+				return service.NewKvService(address, 0, config)
 			},
 			Logger: zap.NewExample(),
 		},

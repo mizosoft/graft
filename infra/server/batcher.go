@@ -66,14 +66,16 @@ func (b *batcher) batchWorker() {
 				b.listeners = nil
 			}()
 
-			_, err := b.g.Append(commands)
-			if err != nil {
-				for _, listener := range listeners {
-					listener <- err
-				}
-			} else {
-				for _, listener := range listeners {
-					close(listener)
+			if len(commands) > 0 {
+				_, err := b.g.Append(commands)
+				if err != nil {
+					for _, listener := range listeners {
+						listener <- err
+					}
+				} else {
+					for _, listener := range listeners {
+						close(listener)
+					}
 				}
 			}
 		case <-b.closeCh:
@@ -88,10 +90,8 @@ func newBatcher(g *graft.Graft, batchInterval time.Duration) *batcher {
 		ticker = time.NewTicker(batchInterval)
 	}
 	return &batcher{
-		entries:   make([][]byte, 0),
-		listeners: make([]chan error, 0),
-		closeCh:   make(chan struct{}),
-		ticker:    ticker,
-		g:         g,
+		closeCh: make(chan struct{}),
+		ticker:  ticker,
+		g:       g,
 	}
 }

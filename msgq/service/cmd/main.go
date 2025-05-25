@@ -53,7 +53,7 @@ func main() {
 
 	logger := zap.NewExample()
 
-	q, err := service.NewMsgqService(*address, graft.Config{
+	q, err := service.NewMsgqService(*address, 0, graft.Config{
 		Id:                        *id,
 		Addresses:                 addresses,
 		ElectionTimeoutLowMillis:  1500,

@@ -53,7 +53,7 @@ func main() {
 
 	logger := zap.NewExample()
 
-	kvs, err := service.NewKvService(*address, graft.Config{
+	kvs, err := service.NewKvService(*address, 0, graft.Config{
 		Id:                        *id,
 		Addresses:                 addresses,
 		ElectionTimeoutLowMillis:  1500,

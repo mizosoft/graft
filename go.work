@@ -7,4 +7,5 @@ use (
 	./infra
 	./kvstore
 	./dlock
+	./benchmarks
 )

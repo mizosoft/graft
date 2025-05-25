@@ -9,6 +9,7 @@ import (
 	"github.com/mizosoft/graft/msgq/api"
 	"go.uber.org/zap"
 	"net/http"
+	"time"
 )
 
 type MsgqService struct {
@@ -66,9 +67,9 @@ func (m *MsgqService) handleDeque(w http.ResponseWriter, r *http.Request) {
 	}, w)
 }
 
-func NewMsgqService(address string, config graft.Config) (*MsgqService, error) {
+func NewMsgqService(address string, batchInterval time.Duration, config graft.Config) (*MsgqService, error) {
 	q := newMsgq(config.Logger.With(zap.String("id", config.Id)))
-	srv, err := server.NewServer("MsgqService", address, q, config)
+	srv, err := server.NewServer("MsgqService", address, batchInterval, q, config)
 	if err != nil {
 		return nil, err
 	}

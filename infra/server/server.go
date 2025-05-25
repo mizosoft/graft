@@ -13,6 +13,7 @@ import (
 	"go.uber.org/zap"
 	"net/http"
 	"sync/atomic"
+	"time"
 )
 
 type Command struct {
@@ -92,7 +93,7 @@ func (s *Server) Execute(clientId string, smCommand any, w http.ResponseWriter) 
 	}
 
 	notify := s.publisher.subscribe(command.Id)
-	if _, err := s.G.Append([][]byte{serializeCommand(command)}); err != nil {
+	if err := s.batcher.append(serializeCommand(command)); err != nil {
 		s.publisher.unsubscribe(command.Id)
 		if errors.Is(err, graft.ErrNotLeader) {
 			s.Respond(w, infra.NotLeaderResponse{
@@ -210,10 +211,12 @@ func (s *Server) Initialize() {
 	s.Mux.HandleFunc("POST /config", s.handlePostConfig)
 	s.Mux.HandleFunc("GET /config", s.handleGetConfig)
 
+	s.batcher.init()
+
 	s.Init()
 }
 
-func NewServer(serviceName string, address string, sm StateMachine, config graft.Config) (*Server, error) {
+func NewServer(serviceName string, address string, batchInterval time.Duration, sm StateMachine, config graft.Config) (*Server, error) {
 	g, err := graft.New(config)
 	if err != nil {
 		return nil, err
@@ -229,7 +232,7 @@ func NewServer(serviceName string, address string, sm StateMachine, config graft
 			Addr:    address,
 			Handler: mux,
 		},
-		batcher: newBatcher(g, 0), // TODO allow to set with argument.
+		batcher: newBatcher(g, batchInterval),
 		G:       g,
 		Mux:     mux,
 		Logger:  config.LoggerOrNoop().With(zap.String("name", serviceName), zap.String("id", config.Id)).Sugar(),

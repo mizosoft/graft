@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"github.com/mizosoft/graft"
 	"github.com/mizosoft/graft/infra"
+	"io"
 	"net/http"
 	"net/url"
 	"sync"
@@ -57,8 +58,8 @@ retry:
 	return errors.New(res.Status)
 }
 
-func Post[T any](d *Client, path string, body interface{}) (T, error) {
-	bodyJson, err := json.Marshal(body)
+func Post[T any](d *Client, path string, payload any) (T, error) {
+	bodyJson, err := json.Marshal(payload)
 	if err != nil {
 		return *new(T), err
 	}
@@ -106,13 +107,23 @@ retry:
 
 		select {
 		case <-ctx.Done():
-			// Don't retry.
+			return *new(T), errors.New("timeout while looking up leader")
 		case <-time.After(50 * time.Millisecond): // backoff
 			goto retry
 		}
 	}
 
-	return *new(T), fmt.Errorf("invalid response from server: %v", res.StatusCode)
+	defer res.Body.Close()
+	data, err := io.ReadAll(res.Body)
+
+	var body string
+	if err != nil {
+		body = err.Error()
+	} else {
+		body = string(data)
+	}
+
+	return *new(T), fmt.Errorf("invalid response from server: %v, %s", res.StatusCode, body)
 }
 
 func decodeJson[T any](response *http.Response) (T, error) {

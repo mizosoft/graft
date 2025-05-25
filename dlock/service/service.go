@@ -145,9 +145,9 @@ func SystemClock() Clock {
 	return &systemClock{}
 }
 
-func NewDlockService(address string, clock Clock, config graft.Config) (*DlockService, error) {
+func NewDlockService(address string, batchInterval time.Duration, clock Clock, config graft.Config) (*DlockService, error) {
 	lock := newDlock(config.Logger.With(zap.String("id", config.Id)))
-	srv, err := server.NewServer("DlockService", address, lock, config)
+	srv, err := server.NewServer("DlockService", address, batchInterval, lock, config)
 	if err != nil {
 		return nil, err
 	}
