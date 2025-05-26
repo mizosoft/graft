@@ -284,7 +284,7 @@ func TestWalErrorCases(t *testing.T) {
 	func() {
 		defer func() {
 			r := recover()
-			assert.ErrorType(t, r.(error), indexOutOfRangeError{})
+			assert.ErrorType(t, r.(error), IndexOutOfRangeError{})
 		}()
 
 		w.GetEntry(100)
@@ -757,7 +757,7 @@ func TestWalGetEntriesFromTo(t *testing.T) {
 
 	// Put a bunch of states to make segments with not entries.
 	segCount := len(w.segments)
-	_, lastTerm := w.LastLogIndexAndTerm()
+	lastTerm := w.GetEntryTerm(w.LastEntryIndex())
 	for segCount == len(w.segments) {
 		w.SaveState(&pb.PersistedState{CurrentTerm: lastTerm, VotedFor: "s1"})
 		lastTerm++
@@ -780,7 +780,7 @@ func TestWalGetEntriesFromTo(t *testing.T) {
 		checkEntries(retrieved, entries[:i+1])
 	}
 
-	lastIndex, _ := w.LastLogIndexAndTerm()
+	lastIndex := w.LastEntryIndex()
 	for i := range entries {
 		retrieved := w.GetEntries(int64(i), lastIndex)
 		checkEntries(retrieved, entries[i:])
@@ -895,7 +895,7 @@ func TestWalTruncateEntriesTo(t *testing.T) {
 	for i := int64(0); i < entryCount; i++ {
 		w.TruncateEntriesTo(i)
 
-		firstIndex, _ := w.FirstLogIndexAndTerm()
+		firstIndex := w.FirstEntryIndex()
 		if i < entryCount-1 {
 			assert.Equal(t, firstIndex, i+1)
 
@@ -907,4 +907,40 @@ func TestWalTruncateEntriesTo(t *testing.T) {
 			assert.Equal(t, firstIndex, int64(-1))
 		}
 	}
+}
+
+func TestWalFirstAndLastEntryIndex(t *testing.T) {
+	dir := t.TempDir()
+	w, err := openWal(dir, 1024, zap.NewNop())
+	assert.NilError(t, err)
+	defer w.Close()
+
+	assert.Equal(t, int64(-1), w.FirstEntryIndex())
+	assert.Equal(t, int64(-1), w.LastEntryIndex())
+
+	w.Append(nil, []*pb.LogEntry{
+		{
+			Term: 2,
+			Data: []byte("foo"),
+		},
+		{
+			Term: 3,
+			Data: []byte("bar"),
+		},
+	})
+
+	assert.Equal(t, int64(0), w.FirstEntryIndex())
+	assert.Equal(t, int64(1), w.LastEntryIndex())
+
+	w.TruncateEntriesTo(0)
+
+	w.Append(nil, []*pb.LogEntry{
+		{
+			Term: 4,
+			Data: []byte("bar"),
+		},
+	})
+
+	assert.Equal(t, int64(1), w.FirstEntryIndex())
+	assert.Equal(t, int64(2), w.LastEntryIndex())
 }

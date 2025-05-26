@@ -3,9 +3,9 @@ package test
 import (
 	"fmt"
 	"github.com/mizosoft/graft"
+	"github.com/mizosoft/graft/infra/server"
 	"github.com/mizosoft/graft/msgq/client"
 	"github.com/mizosoft/graft/msgq/service"
-	"github.com/mizosoft/graft/testutil"
 	"go.uber.org/zap"
 	"gotest.tools/v3/assert"
 	"strconv"
@@ -86,9 +86,9 @@ func TestMsgqServiceFailover(t *testing.T) {
 	}
 }
 
-func NewClusterClient(t *testing.T, nodeCount int) (*testutil.Cluster[*service.MsgqService], *client.MsgqClient) {
-	cluster, err := testutil.StartLocalCluster[*service.MsgqService](
-		testutil.ClusterConfig[*service.MsgqService]{
+func NewClusterClient(t *testing.T, nodeCount int) (*server.Cluster[*service.MsgqService], *client.MsgqClient) {
+	cluster, err := server.StartLocalCluster[*service.MsgqService](
+		server.ClusterConfig[*service.MsgqService]{
 			Dir:                       t.TempDir(),
 			NodeCount:                 nodeCount,
 			HeartbeatMillis:           50,

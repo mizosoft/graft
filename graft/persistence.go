@@ -12,12 +12,12 @@ var (
 	ErrClosed = errors.New("closed")
 )
 
-type indexOutOfRangeError struct {
+type IndexOutOfRangeError struct {
 	Index int64
 	Count int64
 }
 
-func (e indexOutOfRangeError) Error() string {
+func (e IndexOutOfRangeError) Error() string {
 	s := fmt.Sprintf("index out of range: [%d]", e.Index)
 	if e.Count >= 0 {
 		s += fmt.Sprintf(" %d", e.Count)
@@ -25,12 +25,12 @@ func (e indexOutOfRangeError) Error() string {
 	return s
 }
 
-func indexOutOfRange(index int64) error {
-	return indexOutOfRangeError{index, -1}
+func IndexOutOfRange(index int64) error {
+	return IndexOutOfRangeError{index, -1}
 }
 
-func indexOutOfRangeWithCount(index int64, count int64) error {
-	return indexOutOfRangeError{index, count}
+func IndexOutOfRangeWithCount(index int64, count int64) error {
+	return IndexOutOfRangeError{index, count}
 }
 
 type Persistence interface {
@@ -54,9 +54,9 @@ type Persistence interface {
 
 	GetEntries(from, to int64) []*pb.LogEntry
 
-	FirstLogIndexAndTerm() (int64, int64)
+	FirstEntryIndex() int64
 
-	LastLogIndexAndTerm() (int64, int64)
+	LastEntryIndex() int64
 
 	SaveSnapshot(snapshot Snapshot)
 
@@ -90,8 +90,8 @@ func MemoryPersistence() Persistence {
 	return &memoryPersistence{}
 }
 
-func OpenWal(dir string, softSegmentSize int64, logger *zap.Logger) (Persistence, error) {
-	return openWal(dir, softSegmentSize, logger)
+func OpenWal(dir string, softSegmentSize int64, suffixCacheSize int64, logger *zap.Logger) (Persistence, error) {
+	return openCachedWal(dir, softSegmentSize, suffixCacheSize, logger)
 }
 
 func NewSnapshot(metadata *pb.SnapshotMetadata, data []byte) Snapshot {
@@ -137,7 +137,7 @@ func (p *memoryPersistence) EntryCount() int64 {
 
 func (p *memoryPersistence) GetEntry(index int64) *pb.LogEntry {
 	if index >= p.EntryCount() {
-		panic(indexOutOfRangeWithCount(index, p.EntryCount()))
+		panic(IndexOutOfRangeWithCount(index, p.EntryCount()))
 	}
 	return p.log[index]
 }
@@ -148,20 +148,20 @@ func (p *memoryPersistence) GetEntryTerm(index int64) int64 {
 
 func (p *memoryPersistence) GetEntriesFrom(index int64) []*pb.LogEntry {
 	if index >= p.EntryCount() {
-		panic(indexOutOfRangeWithCount(index, p.EntryCount()))
+		panic(IndexOutOfRangeWithCount(index, p.EntryCount()))
 	}
 	return p.log[index:]
 }
 
 func (p *memoryPersistence) GetEntries(from, to int64) []*pb.LogEntry {
-	firstIndex, _ := p.FirstLogIndexAndTerm()
+	firstIndex := p.FirstEntryIndex()
 	if from < firstIndex {
-		panic(indexOutOfRange(firstIndex))
+		panic(IndexOutOfRange(firstIndex))
 	}
 
-	lastIndex, _ := p.LastLogIndexAndTerm()
+	lastIndex := p.LastEntryIndex()
 	if to > lastIndex {
-		panic(indexOutOfRange(firstIndex))
+		panic(IndexOutOfRange(firstIndex))
 	}
 
 	return p.log[from:to]
@@ -182,20 +182,20 @@ func (p *memoryPersistence) tailEntry() *pb.LogEntry {
 	return p.log[lastIndex]
 }
 
-func (p *memoryPersistence) FirstLogIndexAndTerm() (int64, int64) {
+func (p *memoryPersistence) FirstEntryIndex() int64 {
 	entry := p.headEntry()
 	if entry == nil {
-		return -1, -1
+		return -1
 	}
-	return entry.Index, entry.Term
+	return entry.Index
 }
 
-func (p *memoryPersistence) LastLogIndexAndTerm() (int64, int64) {
+func (p *memoryPersistence) LastEntryIndex() int64 {
 	entry := p.tailEntry()
 	if entry == nil {
-		return -1, -1
+		return -1
 	}
-	return entry.Index, entry.Term
+	return entry.Index
 }
 
 func (p *memoryPersistence) SaveSnapshot(snap Snapshot) {

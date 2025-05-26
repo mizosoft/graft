@@ -1,4 +1,4 @@
-package testutil
+package server
 
 import (
 	"errors"
@@ -78,10 +78,11 @@ type NodeConfig[T Service] struct {
 	ElectionTimeoutLowMillis  int
 	ElectionTimeoutHighMillis int
 	ServiceFactory            func(address string, config graft.Config) (T, error)
+	PersistenceFactory        func(dir string) (graft.Persistence, error)
 }
 
 func newNode[T Service](config NodeConfig[T]) (*node[T], error) {
-	persistence, err := graft.OpenWal(config.Dir, 1024*1024, config.Logger)
+	persistence, err := config.PersistenceFactory(config.Dir)
 	if err != nil {
 		return nil, err
 	}
@@ -158,6 +159,7 @@ type ClusterConfig[T Service] struct {
 	ElectionTimeoutLowMillis  int
 	ElectionTimeoutHighMillis int
 	ServiceFactory            func(address string, config graft.Config) (T, error)
+	PersistenceFactory        func(dir string) (graft.Persistence, error)
 	Logger                    *zap.Logger
 }
 
@@ -170,6 +172,12 @@ func StartLocalCluster[T Service](config ClusterConfig[T]) (*Cluster[T], error) 
 	graftAddresses := make(map[string]string)
 	for i := range config.NodeCount {
 		graftAddresses[strconv.Itoa(i)] = "127.0.0.1:" + strconv.Itoa(5555+i)
+	}
+
+	if config.PersistenceFactory == nil {
+		config.PersistenceFactory = func(dir string) (graft.Persistence, error) {
+			return graft.OpenWal(dir, 64*1024*1024, 1*1024*1024, config.Logger)
+		}
 	}
 
 	for i := range config.NodeCount {
@@ -189,6 +197,7 @@ func StartLocalCluster[T Service](config ClusterConfig[T]) (*Cluster[T], error) 
 			ElectionTimeoutLowMillis:  config.ElectionTimeoutLowMillis,
 			ElectionTimeoutHighMillis: config.ElectionTimeoutHighMillis,
 			ServiceFactory:            config.ServiceFactory,
+			PersistenceFactory:        config.PersistenceFactory,
 		})
 		if err != nil {
 			return nil, err

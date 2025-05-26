@@ -81,10 +81,9 @@ func newTimer(duration time.Duration) *periodicTimer {
 }
 
 func newRandomizedTimer(low time.Duration, high time.Duration) *periodicTimer {
-	rnd := rand.New(rand.NewSource(69))
 	return &periodicTimer{
 		duration: func() time.Duration {
-			return low + time.Duration(rnd.Int63n(int64(high)-int64(low)+1))
+			return low + time.Duration(rand.Int63n(int64(high)-int64(low)+1))
 		},
 		c: make(chan struct{}),
 	}

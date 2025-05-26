@@ -1,11 +1,6 @@
 package benchmarks
 
 import (
-	"github.com/mizosoft/graft"
-	"github.com/mizosoft/graft/kvstore2/client"
-	"github.com/mizosoft/graft/kvstore2/service"
-	"github.com/mizosoft/graft/testutil"
-	"go.uber.org/zap"
 	"testing"
 	"time"
 )
@@ -58,33 +53,4 @@ func BenchmarkKvStorePutMultithreadedWithBatching(b *testing.B) {
 			store.Put("k", "v")
 		}
 	})
-}
-
-func newClusterClient(b *testing.B, nodeCount int, batchInterval time.Duration) (*testutil.Cluster[*service.KvService], *client.KvClient) {
-	cluster, err := testutil.StartLocalCluster[*service.KvService](
-		testutil.ClusterConfig[*service.KvService]{
-			Dir:                       b.TempDir(),
-			NodeCount:                 nodeCount,
-			HeartbeatMillis:           50,
-			ElectionTimeoutLowMillis:  150,
-			ElectionTimeoutHighMillis: 300,
-			ServiceFactory: func(address string, config graft.Config) (*service.KvService, error) {
-				return service.NewKvService(address, batchInterval, config)
-			},
-			Logger: zap.NewNop(),
-		},
-	)
-
-	if err != nil {
-		b.Fatalf("Couldn't start cluster: %v", err)
-	}
-
-	kvClient := client.NewKvClient("client-"+b.Name(), cluster.ServiceConfig())
-
-	err = kvClient.CheckHealthy()
-	if err != nil {
-		b.Fatalf("Couldn't connect to cluster: %v", err)
-	}
-
-	return cluster, kvClient
 }

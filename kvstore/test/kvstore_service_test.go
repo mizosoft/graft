@@ -3,6 +3,7 @@ package test
 import (
 	"fmt"
 	"github.com/mizosoft/graft"
+	"github.com/mizosoft/graft/infra/server"
 	"github.com/mizosoft/graft/kvstore2/client"
 	"github.com/mizosoft/graft/kvstore2/service"
 	"github.com/mizosoft/graft/testutil"
@@ -181,9 +182,9 @@ func TestKvServiceFailOver(t *testing.T) {
 	}
 }
 
-func NewClusterClient(t *testing.T, nodeCount int) (*testutil.Cluster[*service.KvService], *client.KvClient) {
-	cluster, err := testutil.StartLocalCluster[*service.KvService](
-		testutil.ClusterConfig[*service.KvService]{
+func NewClusterClient(t *testing.T, nodeCount int) (*server.Cluster[*service.KvService], *client.KvClient) {
+	cluster, err := server.StartLocalCluster[*service.KvService](
+		server.ClusterConfig[*service.KvService]{
 			Dir:                       t.TempDir(),
 			NodeCount:                 nodeCount,
 			HeartbeatMillis:           50,
