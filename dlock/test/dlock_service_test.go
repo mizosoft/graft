@@ -5,6 +5,7 @@ import (
 	"github.com/mizosoft/graft"
 	"github.com/mizosoft/graft/dlock/client"
 	"github.com/mizosoft/graft/dlock/service"
+	"github.com/mizosoft/graft/infra"
 	"github.com/mizosoft/graft/infra/server"
 	"go.uber.org/zap"
 	"gotest.tools/v3/assert"
@@ -92,7 +93,7 @@ func TestDlockServiceRLockWithExpiry(t *testing.T) {
 }
 
 func TestDlockServiceLockUnlock(t *testing.T) {
-	cluster, client1 := NewClusterClient(t, 3, service.SystemClock())
+	cluster, client1 := NewClusterClient(t, 3, infra.SystemClock())
 	defer cluster.Shutdown()
 
 	client2 := client.NewDlockClient("client2-"+t.Name(), cluster.ServiceConfig())
@@ -137,7 +138,7 @@ func TestDlockServiceLockUnlock(t *testing.T) {
 }
 
 func TestDlockServiceRLockUnlock(t *testing.T) {
-	cluster, client1 := NewClusterClient(t, 3, service.SystemClock())
+	cluster, client1 := NewClusterClient(t, 3, infra.SystemClock())
 	defer cluster.Shutdown()
 
 	client2 := client.NewDlockClient("client2-"+t.Name(), cluster.ServiceConfig())
@@ -268,7 +269,7 @@ func TestDlockServiceRefreshRLock(t *testing.T) {
 }
 
 func TestDlockServiceBlockingLockWithExpiredTtl(t *testing.T) {
-	cluster, client1 := NewClusterClient(t, 3, service.SystemClock())
+	cluster, client1 := NewClusterClient(t, 3, infra.SystemClock())
 	defer cluster.Shutdown()
 
 	client2 := client.NewDlockClient("client2-"+t.Name(), cluster.ServiceConfig())
@@ -298,7 +299,7 @@ func TestDlockServiceBlockingLockWithExpiredTtl(t *testing.T) {
 }
 
 func TestDlockServiceBlockingLockWithUnlock(t *testing.T) {
-	cluster, client1 := NewClusterClient(t, 3, service.SystemClock())
+	cluster, client1 := NewClusterClient(t, 3, infra.SystemClock())
 	defer cluster.Shutdown()
 
 	client2 := client.NewDlockClient("client2-"+t.Name(), cluster.ServiceConfig())
@@ -334,7 +335,7 @@ func TestDlockServiceBlockingLockWithUnlock(t *testing.T) {
 }
 
 func TestDlockServiceBlockingRLockWithExpiredTtl(t *testing.T) {
-	cluster, client1 := NewClusterClient(t, 3, service.SystemClock())
+	cluster, client1 := NewClusterClient(t, 3, infra.SystemClock())
 	defer cluster.Shutdown()
 
 	client2 := client.NewDlockClient("client2-"+t.Name(), cluster.ServiceConfig())
@@ -364,7 +365,7 @@ func TestDlockServiceBlockingRLockWithExpiredTtl(t *testing.T) {
 }
 
 func TestDlockServiceBlockingRLockWithUnlock(t *testing.T) {
-	cluster, client1 := NewClusterClient(t, 3, service.SystemClock())
+	cluster, client1 := NewClusterClient(t, 3, infra.SystemClock())
 	defer cluster.Shutdown()
 
 	client2 := client.NewDlockClient("client2-"+t.Name(), cluster.ServiceConfig())
@@ -400,7 +401,7 @@ func TestDlockServiceBlockingRLockWithUnlock(t *testing.T) {
 }
 
 func TestDlockServiceContention(t *testing.T) {
-	cluster, _ := NewClusterClient(t, 3, service.SystemClock())
+	cluster, _ := NewClusterClient(t, 3, infra.SystemClock())
 	defer cluster.Shutdown()
 
 	clients := make([]*client.DlockClient, 0)
@@ -456,7 +457,7 @@ func TestDlockServiceContention(t *testing.T) {
 }
 
 func TestDlockServiceFairLock(t *testing.T) {
-	cluster, client1 := NewClusterClient(t, 3, service.SystemClock())
+	cluster, client1 := NewClusterClient(t, 3, infra.SystemClock())
 	defer cluster.Shutdown()
 
 	tok, ok, err := client1.TryLock("r1", 1*time.Minute)
@@ -503,7 +504,7 @@ func TestDlockServiceFairLock(t *testing.T) {
 
 // If you're reading this, brace yourself! This is a long-ass test.
 func TestDlockServiceFairLockWithRLock(t *testing.T) {
-	cluster, client1 := NewClusterClient(t, 3, service.SystemClock())
+	cluster, client1 := NewClusterClient(t, 3, infra.SystemClock())
 	defer cluster.Shutdown()
 
 	readers1 := make([]*client.DlockClient, 0)
@@ -644,7 +645,7 @@ func mockClock() *MockClock {
 	}
 }
 
-func NewClusterClient(t *testing.T, nodeCount int, clock service.Clock) (*server.Cluster[*service.DlockService], *client.DlockClient) {
+func NewClusterClient(t *testing.T, nodeCount int, clock infra.Clock) (*server.Cluster[*service.DlockService], *client.DlockClient) {
 	_, err := zap.NewDevelopment()
 	assert.NilError(t, err)
 	cluster, err := server.StartLocalCluster[*service.DlockService](

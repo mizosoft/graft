@@ -7,8 +7,7 @@ type EnqueueRequest struct {
 }
 
 type EnqueueResponse struct {
-	Index int    `json:"index"`
-	Id    string `json:"id"`
+	Id string `json:"id"`
 }
 
 type DequeRequest struct {

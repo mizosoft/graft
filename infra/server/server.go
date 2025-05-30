@@ -8,7 +8,7 @@ import (
 	"errors"
 	"github.com/google/uuid"
 	"github.com/mizosoft/graft"
-	"github.com/mizosoft/graft/infra"
+	"github.com/mizosoft/graft/infra/api"
 	"github.com/mizosoft/graft/pb"
 	"go.uber.org/zap"
 	"net/http"
@@ -85,18 +85,17 @@ func (s *Server) apply(entries []*pb.LogEntry) {
 }
 
 func (s *Server) Execute(clientId string, smCommand any, w http.ResponseWriter) {
-	command := &Command{
+	command := Command{
 		Id:        uuid.New().String(),
 		ServerId:  s.G.Id,
 		ClientId:  clientId,
 		SmCommand: smCommand,
 	}
-
 	notify := s.publisher.subscribe(command.Id)
 	if err := s.batcher.append(serializeCommand(command)); err != nil {
 		s.publisher.unsubscribe(command.Id)
 		if errors.Is(err, graft.ErrNotLeader) {
-			s.Respond(w, infra.NotLeaderResponse{
+			s.Respond(w, api.NotLeaderResponse{
 				LeaderId: s.G.LeaderId(),
 			}, http.StatusForbidden)
 		} else {
@@ -122,7 +121,7 @@ func DecodeJson[T any](r *http.Request) (T, error) {
 	return req, err
 }
 
-func serializeCommand(command *Command) []byte {
+func serializeCommand(command Command) []byte {
 	buf := new(bytes.Buffer)
 	encoder := gob.NewEncoder(buf)
 	err := encoder.Encode(command)
@@ -147,7 +146,7 @@ func deserializeCommands(entries []*pb.LogEntry) []*Command {
 }
 
 func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
-	req, err := DecodeJson[infra.ConfigUpdateRequest](r)
+	req, err := DecodeJson[api.ConfigUpdateRequest](r)
 	if err != nil {
 		http.Error(w, "Invalid request format: "+err.Error(), http.StatusBadRequest)
 		return
@@ -157,7 +156,7 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 	ch := s.publisher.subscribe(id)
 	if err := s.G.ConfigUpdate(id, req.Add, req.Remove); err != nil {
 		if errors.Is(err, graft.ErrNotLeader) {
-			s.Respond(w, infra.NotLeaderResponse{
+			s.Respond(w, api.NotLeaderResponse{
 				LeaderId: s.G.LeaderId(),
 			}, http.StatusForbidden)
 		} else {
@@ -175,7 +174,7 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 			for _, c := range u.New {
 				config[c.Id] = c.Address
 			}
-			s.RespondOk(w, infra.ConfigResponse{
+			s.RespondOk(w, api.ConfigResponse{
 				Config: config,
 			})
 			return
@@ -187,7 +186,7 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetConfig(w http.ResponseWriter, _ *http.Request) {
-	s.RespondOk(w, infra.ConfigResponse{
+	s.RespondOk(w, api.ConfigResponse{
 		Config: s.G.Config(),
 	})
 }

@@ -7,7 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/mizosoft/graft"
-	"github.com/mizosoft/graft/infra"
+	"github.com/mizosoft/graft/infra/api"
 	"io"
 	"net/http"
 	"net/url"
@@ -95,7 +95,7 @@ retry:
 
 	if res.StatusCode == http.StatusForbidden && res.Header.Get("Content-Type") == "application/json" {
 		// Rediscover leader.
-		config, err := decodeJson[infra.NotLeaderResponse](res)
+		config, err := decodeJson[api.NotLeaderResponse](res)
 		if err != nil {
 			return *new(T), err
 		}

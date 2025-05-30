@@ -4,6 +4,7 @@ import (
 	"encoding/gob"
 	"github.com/mizosoft/graft"
 	dlock2 "github.com/mizosoft/graft/dlock/api"
+	"github.com/mizosoft/graft/infra"
 	"github.com/mizosoft/graft/infra/server"
 	"go.uber.org/zap"
 	"net/http"
@@ -13,7 +14,7 @@ import (
 type DlockService struct {
 	lock   *dlock
 	server *server.Server
-	clock  Clock
+	clock  infra.Clock
 }
 
 func (s *DlockService) Id() string {
@@ -131,21 +132,7 @@ func (s *DlockService) handleRefreshRLock(w http.ResponseWriter, r *http.Request
 	}, w)
 }
 
-type Clock interface {
-	Now() time.Time
-}
-
-type systemClock struct{}
-
-func (s *systemClock) Now() time.Time {
-	return time.Now()
-}
-
-func SystemClock() Clock {
-	return &systemClock{}
-}
-
-func NewDlockService(address string, batchInterval time.Duration, clock Clock, config graft.Config) (*DlockService, error) {
+func NewDlockService(address string, batchInterval time.Duration, clock infra.Clock, config graft.Config) (*DlockService, error) {
 	lock := newDlock(config.Logger.With(zap.String("id", config.Id)))
 	srv, err := server.NewServer("DlockService", address, batchInterval, lock, config)
 	if err != nil {

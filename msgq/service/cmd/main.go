@@ -46,7 +46,7 @@ func main() {
 		panic(err)
 	}
 
-	wal, err := graft.OpenWal(walDir, 1*1024*1024, zap.NewExample()) // 1MB
+	wal, err := graft.OpenWal(walDir, 64*1024*1024, 1*1024*1024, zap.NewExample()) // 1MB
 	if err != nil {
 		panic(err)
 	}

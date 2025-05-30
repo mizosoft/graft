@@ -1,4 +1,4 @@
-package infra
+package api
 
 type ConfigUpdateRequest struct {
 	Add    map[string]string `json:"add"`

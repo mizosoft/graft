@@ -90,8 +90,7 @@ func (m *msgq) enqueue(topic string, msg msgq2.Message) msgq2.EnqueueResponse {
 	}
 	m.queues[topic] = append(q, msg)
 	return msgq2.EnqueueResponse{
-		Index: len(q) - 1,
-		Id:    msg.Id,
+		Id: msg.Id,
 	}
 }
 
