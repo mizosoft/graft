@@ -25,6 +25,17 @@ func (r *offsetFileReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
+type offsetFileWriter struct {
+	f      *os.File
+	offset int64
+}
+
+func (w *offsetFileWriter) Write(p []byte) (int, error) {
+	n, err := w.f.WriteAt(p, w.offset)
+	w.offset += int64(n)
+	return n, err
+}
+
 type bufferedReader struct {
 	_ uncopyable
 
@@ -39,6 +50,10 @@ const bufferSize = 8096
 
 func newReaderAt(f *os.File, offset int64) io.Reader {
 	return &offsetFileReader{f: f, offset: offset}
+}
+
+func newWriterAt(f *os.File, offset int64) io.Writer {
+	return &offsetFileWriter{f: f, offset: offset}
 }
 
 func newBufferedReader(reader io.Reader) io.Reader {

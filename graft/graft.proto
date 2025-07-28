@@ -82,6 +82,10 @@ message WalSegmentHeader {
   int64 firstIndex = 5;
 }
 
+message WalSegmentTrailer {
+  uint64 magic = 1;
+}
+
 message SnapshotMetadata {
   int64 lastAppliedIndex = 1;
   int64 lastAppliedTerm = 2;

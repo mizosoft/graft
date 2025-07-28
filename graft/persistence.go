@@ -9,7 +9,8 @@ import (
 )
 
 var (
-	ErrClosed = errors.New("closed")
+	ErrClosed      = errors.New("closed")
+	ErrLargeRecord = errors.New("record is too large")
 )
 
 type IndexOutOfRangeError struct {

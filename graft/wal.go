@@ -5,15 +5,15 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"github.com/edsrzf/mmap-go"
+	"github.com/mizosoft/graft/pb"
 	"go.uber.org/zap"
+	"google.golang.org/protobuf/proto"
 	"hash/crc32"
 	"io"
 	"os"
 	"path"
 	"sort"
-
-	"github.com/mizosoft/graft/pb"
-	"google.golang.org/protobuf/proto"
 )
 
 const (
@@ -21,11 +21,16 @@ const (
 	stateRecordType
 	entryRecordType
 	snapshotMetadataRecordType
+	trailerRecordType
 )
 
 const (
 	walMagic   uint64 = 0x6420655767271765
 	walVersion int32  = 1
+)
+
+const (
+	recordLengthSize = 4
 )
 
 type entryCache struct {
@@ -103,17 +108,21 @@ func (c *entryCache) lastIndex() int64 {
 	return c.data[len(c.data)-1].Index
 }
 
+// TODO make sure we handle cases where recordLen is corrupted and is too large.
+
 type wal struct {
-	dir             string
-	softSegmentSize int64
-	segments        []*segment
-	tail            *segment
-	crcTable        *crc32.Table
-	closed          bool
-	lastState       *pb.PersistedState
-	lastSnapshot    *pb.SnapshotMetadata // TODO we might want to make sure this is appended on truncation.
-	cache           *entryCache
-	logger          *zap.SugaredLogger
+	dir               string
+	segmentSize       int64
+	usableSegmentSize int64
+	segments          []*segment
+	tail              *segment
+	crcTable          *crc32.Table
+	closed            bool
+	trailerRecord     []byte
+	lastState         *pb.PersistedState
+	lastSnapshot      *pb.SnapshotMetadata // TODO we might want to make sure this is appended on truncation.
+	cache             *entryCache
+	logger            *zap.SugaredLogger
 }
 
 type segment struct {
@@ -122,6 +131,7 @@ type segment struct {
 	firstIndex, nextIndex int64 // First & next entry indices.
 	fpath                 string
 	f                     *os.File
+	m                     mmap.MMap
 	entryOffsets          []int64
 	lastOffset            int64
 }
@@ -134,19 +144,31 @@ func snapFileName(metadata *pb.SnapshotMetadata) string {
 	return fmt.Sprintf("snap_%d_%d.dat", metadata.LastAppliedIndex, metadata.LastAppliedTerm)
 }
 
-func appendRecord(f *os.File, record *pb.WalRecord) (int, error) {
-	recordBytes := protoMarshal(record)
-	byteCount := 4 + len(recordBytes)
-	chunk := make([]byte, byteCount)
-	binary.BigEndian.PutUint32(chunk, uint32(len(recordBytes)))
-	copy(chunk[4:], recordBytes)
-	if _, err := f.Write(chunk); err != nil {
-		return 0, err
-	}
-	if err := f.Sync(); err != nil {
-		return 0, err
-	}
-	return byteCount, nil
+func (s *segment) boundedReaderFrom(offset int64) io.Reader {
+	return bytes.NewReader(s.m[offset:s.lastOffset])
+}
+
+func (s *segment) readerFrom(offset int64) io.Reader {
+	return bytes.NewReader(s.m[offset:])
+}
+
+func (s *segment) reader() io.Reader {
+	return bytes.NewReader(s.m)
+}
+
+func (s *segment) readBytes(offset int64, count int64) ([]byte, error) {
+	data := make([]byte, count)
+	copy(data, s.m[offset:])
+	return data, nil
+}
+
+func (s *segment) appendBytes(data []byte) error {
+	copy(s.m[s.lastOffset:], data)
+	return nil
+}
+
+func (s *segment) sync() error {
+	return s.m.Flush()
 }
 
 func (s *segment) entryCount() int {
@@ -184,13 +206,14 @@ func (s *segment) getEntryAtOffset(offsetIndex int) (*pb.LogEntry, error) {
 		limit = s.lastOffset
 	}
 
-	chunk := make([]byte, limit-offset)
-	if n, err := s.f.ReadAt(chunk, offset); err != nil && n < len(chunk) {
+	// Note that this chunk might contain multiple (e.g. saved states between entries).
+	chunk, err := s.readBytes(offset, limit-offset)
+	if err != nil {
 		return nil, err
 	}
 
 	recordLen := int(binary.BigEndian.Uint32(chunk))
-	record, err := s.w.decodeRecord(chunk[4 : 4+recordLen])
+	record, err := s.w.decodeRecord(chunk[recordLengthSize : recordLengthSize+recordLen])
 	if err != nil {
 		return nil, err
 	}
@@ -199,9 +222,7 @@ func (s *segment) getEntryAtOffset(offsetIndex int) (*pb.LogEntry, error) {
 	}
 
 	var entry pb.LogEntry
-	if err := proto.Unmarshal(record.Data, &entry); err != nil {
-		return nil, err
-	}
+	protoUnmarshal(record.Data, &entry)
 	return &entry, nil
 }
 
@@ -211,12 +232,13 @@ func (s *segment) getEntriesFrom(from int64) ([]*pb.LogEntry, error) {
 		return []*pb.LogEntry{}, nil
 	}
 
-	reader := newBufferedReader(newReaderAt(s.f, s.entryOffsets[localFrom]))
-	for entries := []*pb.LogEntry{}; ; {
+	reader := s.readerFrom(s.entryOffsets[localFrom])
+	var entries []*pb.LogEntry
+	for {
 		var recordLen int32
 		if err := binary.Read(reader, binary.BigEndian, &recordLen); err != nil {
 			if errors.Is(err, io.EOF) {
-				return entries, nil
+				return nil, io.ErrUnexpectedEOF
 			}
 			return nil, err
 		}
@@ -230,15 +252,19 @@ func (s *segment) getEntriesFrom(from int64) ([]*pb.LogEntry, error) {
 		if err != nil {
 			return nil, err
 		}
-		if record.Type != entryRecordType {
-			continue // Might have some non-entry records.
-		}
 
-		var entry pb.LogEntry
-		if err := proto.Unmarshal(record.Data, &entry); err != nil {
-			return nil, err
+		switch record.Type {
+		case trailerRecordType: // EOF.
+			return entries, nil
+		case entryRecordType:
+			var entry pb.LogEntry
+			if err := proto.Unmarshal(record.Data, &entry); err != nil {
+				return nil, err
+			}
+			entries = append(entries, &entry)
+		default:
+			// skip
 		}
-		entries = append(entries, &entry)
 	}
 }
 
@@ -248,7 +274,7 @@ func (s *segment) getEntriesTo(to int64) ([]*pb.LogEntry, error) {
 		return []*pb.LogEntry{}, nil
 	}
 
-	reader := newBufferedReader(newReaderAt(s.f, s.entryOffsets[0]))
+	reader := s.boundedReaderFrom(s.entryOffsets[0])
 	var entries []*pb.LogEntry
 	for index := s.firstIndex; index <= to; {
 		var recordLen int32
@@ -288,21 +314,9 @@ func (s *segment) truncateEntriesFrom(index int64) error {
 		return nil // Ignore.
 	}
 
-	offset := s.entryOffsets[localIndex]
-	if err := s.f.Truncate(offset); err != nil {
-		return err
-	}
-	if _, err := s.f.Seek(offset, io.SeekStart); err != nil {
-		return err
-	}
-
 	s.nextIndex = index
+	s.lastOffset = s.entryOffsets[localIndex]
 	s.entryOffsets = s.entryOffsets[:localIndex]
-	s.lastOffset = offset
-
-	if err := s.f.Sync(); err != nil {
-		return err
-	}
 	return nil
 }
 
@@ -317,7 +331,7 @@ func (s *segment) truncateEntriesTo(index int64) (removeHead bool, err error) {
 		return true, s.delete()
 	}
 
-	// Create a new segment file with the remaining entries.
+	// Write the new segment into a temp file and do an atomic replace.
 
 	newFirstIndex := index + 1
 	newFpath := path.Join(s.w.dir, segFileName(s.number, newFirstIndex))
@@ -330,69 +344,81 @@ func (s *segment) truncateEntriesTo(index int64) (removeHead bool, err error) {
 	var newLastOffset int64
 	var offsetDiff int64
 	err = func() error {
-		// Append new header record.
-		nHeader, err := appendRecord(tempF, s.w.recordOf(headerRecordType, &pb.WalSegmentHeader{
+		// Append a new header record.
+		buf := s.w.appendRecordTo(nil, headerRecordType, &pb.WalSegmentHeader{
 			Magic:         walMagic,
 			Version:       walVersion,
 			Flags:         0,
 			SegmentNumber: int32(s.number),
 			FirstIndex:    newFirstIndex,
-		}))
+		})
+		nHeader, err := tempF.WriteAt(buf, 0)
 		if err != nil {
 			return err
 		}
 
 		// Copy remaining records.
-		copyOffset := s.entryOffsets[localIndex+1]
-		if _, err := s.f.Seek(copyOffset, io.SeekStart); err != nil {
+		copyFromOffset := s.entryOffsets[localIndex+1]
+		nCopied, err := io.Copy(newWriterAt(tempF, int64(nHeader)), newReaderAt(s.f, copyFromOffset))
+		if err != nil {
 			return err
 		}
-
-		nCopied, err := io.Copy(tempF, s.f)
-		if err != nil {
+		if err := tempF.Sync(); err != nil {
+			return err
+		}
+		if err := tempF.Close(); err != nil {
 			return err
 		}
 
 		// We want oldOffset + offsetDiff = newOffset.
-		offsetDiff = int64(nHeader) - copyOffset
-		newLastOffset = int64(nHeader) + nCopied
+		offsetDiff = int64(len(buf)) - copyFromOffset
+		newLastOffset = int64(len(buf)) + nCopied
 		return nil
 	}()
 	if err != nil {
 		return false, removeOnErr(tempNewFpath, closeOnErr(tempF, err))
 	}
 
-	// Do atomic replace.
-	if err := tempF.Close(); err != nil {
-		return false, err
+	if err := s.m.Unmap(); err != nil {
+		return false, removeOnErr(tempNewFpath, closeOnErr(tempF, err))
 	}
-	if err := os.Rename(tempNewFpath, newFpath); err != nil {
-		return false, err
+	if err := s.f.Close(); err != nil {
+		return false, removeOnErr(tempNewFpath, closeOnErr(tempF, err))
 	}
 
-	newF, err := os.OpenFile(newFpath, os.O_APPEND|os.O_RDWR, 0644)
-	if err != nil {
-		return false, err
+	if err := os.Rename(tempNewFpath, newFpath); err != nil {
+		return false, removeOnErr(tempNewFpath, closeOnErr(tempF, err))
 	}
-	if _, err := newF.Seek(newLastOffset, io.SeekStart); err != nil {
-		return false, closeOnErr(newF, err)
-	}
+
+	// TODO here we assume that s.m will see changes to the file. Seems to be what to expect, and works on testing, but
+	//     are we certain that's the spec?
 
 	s.entryOffsets = s.entryOffsets[localIndex+1:]
+
+	// Shift the offsets by the amount we deleted.
 	for i := range s.entryOffsets {
 		s.entryOffsets[i] += offsetDiff
 	}
 
-	// Shift the offsets by the amount we deleted.
+	newF, err := os.OpenFile(newFpath, os.O_RDWR, 0644)
+	if err != nil {
+		return false, err
+	}
+
+	newM, err := mmap.Map(newF, mmap.RDWR, 0)
+	if err != nil {
+		return false, closeOnErr(newF, err)
+	}
 
 	s.firstIndex = newFirstIndex
-	s.fpath, s.f = newFpath, newF
+	s.m = newM
+	s.f, s.fpath = newF, newFpath
 	s.lastOffset = newLastOffset
 	return false, nil
 }
 
 func (s *segment) delete() error {
-	if err := s.f.Close(); err != nil {
+	if err := s.close(); err != nil {
 		return err
 	}
 	if err := os.Remove(s.fpath); err != nil {
@@ -401,77 +427,30 @@ func (s *segment) delete() error {
 	return nil
 }
 
-func (s *segment) appendRecord(recordType uint32, msg proto.Message) error {
-	n, err := appendRecord(s.f, s.w.recordOf(recordType, msg))
-	if err != nil {
-		return err
+func (s *segment) close() error {
+	var err error
+	if s.m != nil {
+		err = s.m.Unmap()
 	}
-	s.lastOffset += int64(n)
-	return nil
-}
-
-func (s *segment) appendState(state *pb.PersistedState) error {
-	return s.appendRecord(stateRecordType, state)
-}
-
-func (s *segment) append(state *pb.PersistedState, entries []*pb.LogEntry) (int64, error) {
-	if state == nil && len(entries) == 0 {
-		return s.nextIndex, nil
-	}
-
-	if len(entries) == 0 {
-		return s.nextIndex, s.appendState(state)
-	} else if entries[0].Index != s.nextIndex {
-		return -1, fmt.Errorf(
-			"appending entries with mismatching index continuity, expected %d, got %d", s.nextIndex, entries[0].Term)
-	}
-
-	records := make([]*pb.WalRecord, 0, 1+len(entries))
-	for _, entry := range entries {
-		records = append(records, s.w.recordOf(entryRecordType, entry))
-	}
-
-	if state != nil {
-		records = append(records, s.w.recordOf(stateRecordType, state))
-	}
-
-	lastOffset := s.lastOffset
-	var offsets []int64
-	var buf bytes.Buffer
-	for _, record := range records {
-		recordBytes := protoMarshal(record)
-		binary.Write(&buf, binary.BigEndian, int32(len(recordBytes)))
-		buf.Write(recordBytes)
-		if record.Type == entryRecordType {
-			offsets = append(offsets, lastOffset)
+	if s.f != nil {
+		if err2 := s.f.Close(); err2 != nil {
+			err = errors.Join(err, err2)
 		}
-		lastOffset += int64(4 + len(recordBytes))
 	}
-
-	if _, err := buf.WriteTo(s.f); err != nil {
-		return -1, err
-	}
-	if err := s.f.Sync(); err != nil {
-		return -1, err
-	}
-
-	s.entryOffsets = append(s.entryOffsets, offsets...)
-	s.nextIndex += int64(len(offsets))
-	s.lastOffset = lastOffset
-	return s.nextIndex, nil
+	return err
 }
 
-func openCachedWal(dir string, softSegmentSize int64, cacheSize int64, logger *zap.Logger) (*wal, error) {
+func openCachedWal(dir string, segmentSize int64, cacheSize int64, logger *zap.Logger) (*wal, error) {
 	files, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, err
 	}
 
 	w := &wal{
-		dir:             dir,
-		softSegmentSize: softSegmentSize,
-		segments:        make([]*segment, 0),
-		crcTable:        crc32.MakeTable(crc32.Castagnoli),
+		dir:         dir,
+		segmentSize: segmentSize,
+		segments:    make([]*segment, 0),
+		crcTable:    crc32.MakeTable(crc32.Castagnoli),
 		cache: &entryCache{
 			data:    make([]*pb.LogEntry, 0),
 			maxSize: cacheSize,
@@ -479,8 +458,22 @@ func openCachedWal(dir string, softSegmentSize int64, cacheSize int64, logger *z
 		logger: logger.With(zap.String("name", "WAL")).Sugar(),
 	}
 
+	w.trailerRecord = w.appendRecordTo(nil, trailerRecordType, &pb.WalSegmentTrailer{Magic: walMagic})
+
 	// Find segments.
 	var segments []*segment
+
+	allGood := false
+	defer func() {
+		if !allGood {
+			for _, s := range segments {
+				if err := s.close(); err != nil {
+					w.logger.Warnf("Error closing segment %s: %v", s.fpath, err)
+				}
+			}
+		}
+	}()
+
 	for _, file := range files {
 		if file.IsDir() {
 			w.logger.Warnf("Warning: unexpected directory found in WAL directory: %s", file.Name())
@@ -494,7 +487,7 @@ func openCachedWal(dir string, softSegmentSize int64, cacheSize int64, logger *z
 			continue
 		}
 
-		seg := &segment{
+		s := &segment{
 			w:            w,
 			number:       segNum,
 			firstIndex:   firstIndex,
@@ -502,14 +495,19 @@ func openCachedWal(dir string, softSegmentSize int64, cacheSize int64, logger *z
 			fpath:        path.Join(dir, file.Name()),
 			entryOffsets: []int64{},
 		}
+		w.segments = append(w.segments, s)
 
-		// TODO don't forget to close uneeded open files when errors happen.
-		seg.f, err = os.OpenFile(seg.fpath, os.O_APPEND|os.O_RDWR, 0644)
+		s.f, err = os.OpenFile(s.fpath, os.O_APPEND|os.O_RDWR, 0644)
 		if err != nil {
 			return nil, err
 		}
 
-		reader := newBufferedReader(newReaderAt(seg.f, 0))
+		s.m, err = mmap.Map(s.f, mmap.RDWR, 0)
+		if err != nil {
+			return nil, err
+		}
+
+		reader := s.reader()
 
 		// Expect header record at the beginning.
 		var recordLen int32
@@ -535,58 +533,45 @@ func openCachedWal(dir string, softSegmentSize int64, cacheSize int64, logger *z
 			return nil, err
 		}
 		if header.Magic != walMagic {
-			return nil, fmt.Errorf("invalid WAL magic number in %s", seg.fpath)
+			return nil, fmt.Errorf("invalid WAL header magic number in %s", s.fpath)
 		}
 		if header.Version != walVersion {
-			return nil, fmt.Errorf("unsupported WAL version in %s", seg.fpath)
+			return nil, fmt.Errorf("unsupported WAL version in %s", s.fpath)
 		}
 
-		correctedSegmentNumber := seg.number
-		correctedFirstIndex := seg.firstIndex
-		if int(header.SegmentNumber) != seg.number {
+		correctedSegmentNumber := s.number
+		correctedFirstIndex := s.firstIndex
+		if int(header.SegmentNumber) != s.number {
 			w.logger.Warnf(
 				"Warning: segment number from file name (%s) disagrees with header's (%d), believing the latter",
-				seg.fpath, header.SegmentNumber)
+				s.fpath, header.SegmentNumber)
 			correctedSegmentNumber = int(header.SegmentNumber)
 		}
-		if header.FirstIndex != seg.firstIndex {
+		if header.FirstIndex != s.firstIndex {
 			w.logger.Warnf(
 				"Warning: first index from file name (%s) disagrees with header's (%d), believing the latter",
-				seg.fpath, header.FirstIndex)
+				s.fpath, header.FirstIndex)
 			correctedFirstIndex = header.FirstIndex
 		}
 
-		seg.lastOffset = int64(4 + recordLen)
+		s.lastOffset = int64(recordLengthSize + recordLen)
 
-		if correctedSegmentNumber != seg.number || correctedFirstIndex != seg.firstIndex {
-			err := seg.f.Close()
-			if err != nil {
-				return nil, err
-			}
-
+		if correctedSegmentNumber != s.number || correctedFirstIndex != s.firstIndex {
 			correctedFpath := path.Join(w.dir, segFileName(correctedSegmentNumber, correctedFirstIndex))
-			if err := os.Rename(seg.fpath, correctedFpath); err != nil {
+			if err := os.Rename(s.fpath, correctedFpath); err != nil {
 				return nil, err
 			}
 
-			f, err := os.OpenFile(correctedFpath, os.O_APPEND|os.O_RDWR, 0644)
-			if err != nil {
-				return nil, err
-			}
-			if _, err := f.Seek(seg.lastOffset, io.SeekStart); err != nil {
-				return nil, err
-			}
-			seg.number, seg.firstIndex = correctedSegmentNumber, correctedFirstIndex
-			seg.fpath, seg.f = correctedFpath, f
-
-			reader = newBufferedReader(newReaderAt(seg.f, seg.lastOffset))
+			s.number, s.firstIndex = correctedSegmentNumber, correctedFirstIndex
+			s.fpath = correctedFpath
 		}
 
+	outerLoop:
 		for {
 			var recordLen int32
 			if err := binary.Read(reader, binary.BigEndian, &recordLen); err != nil {
-				if err == io.EOF {
-					break
+				if errors.Is(err, io.EOF) {
+					return nil, io.ErrUnexpectedEOF
 				}
 				return nil, err
 			}
@@ -603,8 +588,8 @@ func openCachedWal(dir string, softSegmentSize int64, cacheSize int64, logger *z
 
 			switch record.Type {
 			case entryRecordType:
-				seg.entryOffsets = append(seg.entryOffsets, seg.lastOffset)
-				seg.nextIndex++
+				s.entryOffsets = append(s.entryOffsets, s.lastOffset)
+				s.nextIndex++
 
 				var entry pb.LogEntry
 				protoUnmarshal(record.Data, &entry)
@@ -617,18 +602,22 @@ func openCachedWal(dir string, softSegmentSize int64, cacheSize int64, logger *z
 				w.lastState = &state
 			case snapshotMetadataRecordType:
 				var snapshot pb.SnapshotMetadata
-				if err := proto.Unmarshal(record.Data, &snapshot); err != nil {
-					return nil, err
-				}
+				protoUnmarshal(record.Data, &snapshot)
 				w.lastSnapshot = &snapshot
+			case trailerRecordType:
+				var trailer pb.WalSegmentTrailer
+				protoUnmarshal(record.Data, &trailer)
+				if trailer.Magic != walMagic {
+					return nil, fmt.Errorf("invalid WAL trailer magic number in %s", s.fpath)
+				}
+				break outerLoop
 			case headerRecordType:
-				return nil, fmt.Errorf("unexpected header record found in segment %s", seg.fpath)
+				return nil, fmt.Errorf("unexpected header record found in segment %s", s.fpath)
 			default:
 				return nil, fmt.Errorf("unexpected record type: %d", record.Type)
 			}
-			seg.lastOffset += int64(4 + recordLen)
+			s.lastOffset += int64(recordLengthSize + recordLen)
 		}
-		w.segments = append(w.segments, seg)
 	}
 
 	// Sort segment files.
@@ -656,6 +645,7 @@ func openCachedWal(dir string, softSegmentSize int64, cacheSize int64, logger *z
 	} else if err := w.appendSegment(); err != nil {
 		return nil, err
 	}
+	allGood = true
 	return w, nil
 }
 
@@ -686,6 +676,14 @@ func (w *wal) RetrieveState() *pb.PersistedState {
 	return w.lastState
 }
 
+func (w *wal) saveState(state *pb.PersistedState) error {
+	if err := w.appendRecord(stateRecordType, state); err != nil {
+		return err
+	}
+	w.lastState = state
+	return nil
+}
+
 func (w *wal) SaveState(state *pb.PersistedState) {
 	if w.closed {
 		panic(ErrClosed)
@@ -695,13 +693,9 @@ func (w *wal) SaveState(state *pb.PersistedState) {
 		return
 	}
 
-	if err := w.tail.appendState(state); err != nil {
+	if err := w.saveState(state); err != nil {
 		panic(err)
 	}
-	if err := w.appendSegmentIfNeeded(); err != nil {
-		panic(err)
-	}
-	w.lastState = state
 }
 
 func (w *wal) Append(state *pb.PersistedState, entries []*pb.LogEntry) int64 {
@@ -714,46 +708,93 @@ func (w *wal) Append(state *pb.PersistedState, entries []*pb.LogEntry) int64 {
 	}
 
 	nextIndex := w.tail.nextIndex
+
+	if state == nil && len(entries) == 0 {
+		return nextIndex
+	}
+
+	if len(entries) == 0 {
+		w.SaveState(state)
+		return nextIndex
+	}
+
 	for _, entry := range entries {
 		entry.Index = nextIndex
 		nextIndex++
 	}
-	nextIndex, err := w.tail.append(state, entries)
-	if err != nil {
-		panic(err)
+
+	// Append as many entries as possible to each segment.
+	var buf bytes.Buffer
+	var offsets []int
+	for _, entry := range entries {
+		offsets = append(offsets, buf.Len())
+		w.appendRecordToBuffer(&buf, entryRecordType, entry)
+
+		if w.tail.lastOffset+int64(buf.Len()) > w.segmentSize-int64(len(w.trailerRecord)) {
+			// We'll exceed the current segment's capacity by appending up to this entry. Append prior entries to current segment
+			// then create a new one.
+			if len(offsets) > 1 {
+				toWriteCount := offsets[len(offsets)-1]
+				data := append([]byte(nil), buf.Next(toWriteCount)...) // Do a copy.
+				if err := w.tail.appendBytes(append(data, w.trailerRecord...)); err != nil {
+					panic(err)
+				}
+				for _, offset := range offsets[:len(offsets)-1] {
+					w.tail.entryOffsets = append(w.tail.entryOffsets, w.tail.lastOffset+int64(offset))
+				}
+				w.tail.lastOffset += int64(toWriteCount)
+				w.tail.nextIndex += int64(len(offsets) - 1)
+				offsets[0] = 0
+				offsets = offsets[:1]
+			}
+
+			if err := w.tail.sync(); err != nil {
+				panic(err)
+			}
+			if err := w.appendSegment(); err != nil {
+				panic(err)
+			}
+		}
+		if w.tail.lastOffset+int64(buf.Len()) > w.segmentSize-int64(len(w.trailerRecord)) {
+			panic(ErrLargeRecord)
+		}
+	}
+
+	// Here, we write whatever is in the buffer since we're sure the last segment's capacity suffices (according the prev
+	// loop's invariant).
+	if len(offsets) > 0 {
+		toWriteCount := buf.Len()
+		if err := w.tail.appendBytes(append(buf.Bytes(), w.trailerRecord...)); err != nil {
+			panic(err)
+		}
+		for _, offset := range offsets {
+			w.tail.entryOffsets = append(w.tail.entryOffsets, w.tail.lastOffset+int64(offset))
+		}
+		w.tail.lastOffset += int64(toWriteCount)
+		w.tail.nextIndex += int64(len(offsets))
 	}
 
 	if state != nil {
-		w.lastState = state
-	}
-
-	if err := w.appendSegmentIfNeeded(); err != nil {
+		if err := w.saveState(state); err != nil { // This will do a sync.
+			panic(err)
+		}
+	} else if err := w.tail.sync(); err != nil {
 		panic(err)
 	}
 
-	w.cache.append(entries)
-
+	w.cache.append(cloneMsgs(entries)) // Defensively copy before caching.
 	return nextIndex
-}
-
-func (w *wal) appendSegmentIfNeeded() error {
-	if w.tail == nil || w.tail.lastOffset >= w.softSegmentSize {
-		return w.appendSegment()
-	}
-	return nil
 }
 
 func (w *wal) appendSegment() error {
 	firstIndex := int64(0)
 	segNumber := 0
-	var lastState *pb.PersistedState
 	if len(w.segments) > 0 {
 		firstIndex = w.tail.nextIndex
 		segNumber = w.tail.number + 1
-		lastState = w.lastState
 	}
 
-	seg := &segment{
+	s := &segment{
 		w:            w,
 		number:       segNumber,
 		firstIndex:   firstIndex,
@@ -763,31 +804,36 @@ func (w *wal) appendSegment() error {
 	}
 
 	var buf bytes.Buffer
-	recordBytes := protoMarshal(
-		w.recordOf(headerRecordType, &pb.WalSegmentHeader{
-			Magic:         walMagic,
-			Version:       walVersion,
-			Flags:         0,
-			SegmentNumber: int32(seg.number),
-			FirstIndex:    firstIndex,
-		}))
-	binary.Write(&buf, binary.BigEndian, int32(len(recordBytes)))
-	buf.Write(recordBytes)
+	w.appendRecordToBuffer(&buf, headerRecordType, &pb.WalSegmentHeader{
+		Magic:         walMagic,
+		Version:       walVersion,
+		Flags:         0,
+		SegmentNumber: int32(s.number),
+		FirstIndex:    firstIndex,
+	})
 
-	// Append lastState to the new segment if available.
-	if lastState != nil {
-		recordBytes := protoMarshal(w.recordOf(stateRecordType, lastState))
-		binary.Write(&buf, binary.BigEndian, int32(len(recordBytes)))
-		buf.Write(recordBytes)
+	// Make sure each segment knows the last state & snapshot.
+	if w.lastState != nil {
+		w.appendRecordToBuffer(&buf, stateRecordType, w.lastState)
+	}
+	if w.lastSnapshot != nil {
+		w.appendRecordToBuffer(&buf, snapshotMetadataRecordType, w.lastSnapshot)
 	}
 
-	tempFpath := seg.fpath + ".tmp"
+	// TODO there's an assumption here that whatever is written will not exceed segmentSize.
+
+	tempFpath := s.fpath + ".tmp"
 	tempF, err := os.Create(tempFpath)
 	if err != nil {
 		return err
 	}
 	writtenCount := buf.Len()
 	err = func() error {
+		if err := tempF.Truncate(w.segmentSize); err != nil {
+			return err
+		}
+
+		buf.Write(w.trailerRecord)
 		if _, err := buf.WriteTo(tempF); err != nil {
 			return err
 		}
@@ -803,20 +849,30 @@ func (w *wal) appendSegment() error {
 		return removeOnErr(tempFpath, closeOnErr(tempF, err))
 	}
 
-	if err := os.Rename(tempFpath, seg.fpath); err != nil {
+	if err := os.Rename(tempFpath, s.fpath); err != nil {
 		return err
 	}
 
-	// TODO correct fileMode?
-	f, err := os.OpenFile(seg.fpath, os.O_APPEND|os.O_RDWR, 0644)
+	f, err := os.OpenFile(s.fpath, os.O_APPEND|os.O_RDWR, 0644)
 	if err != nil {
 		return err
 	}
 
-	seg.f = f
-	seg.lastOffset = int64(writtenCount)
-	w.segments = append(w.segments, seg)
-	w.tail = seg
+	// Make sure file metadata is synced.
+	if err := f.Sync(); err != nil {
+		return closeOnErr(f, err)
+	}
+
+	m, err := mmap.Map(f, mmap.RDWR, 0)
+	if err != nil {
+		return closeOnErr(f, err)
+	}
+
+	s.m = m
+	s.f = f
+	s.lastOffset = int64(writtenCount)
+	w.segments = append(w.segments, s)
+	w.tail = s
 	return nil
 }
 
@@ -842,14 +898,10 @@ func (w *wal) TruncateEntriesFrom(index int64) {
 	if err := w.tail.truncateEntriesFrom(index); err != nil {
 		panic(err)
 	}
-	if err := w.appendSegmentIfNeeded(); err != nil {
-		panic(err)
-	}
 
 	// Make sure we have lastState appended since it might have been truncated.
 	if w.lastState != nil {
-		err := w.tail.appendState(w.lastState)
-		if err != nil {
+		if err := w.saveState(w.lastState); err != nil {
 			panic(err)
 		}
 	}
@@ -886,14 +938,9 @@ func (w *wal) TruncateEntriesTo(index int64) {
 		w.segments = w.segments[1:]
 	}
 
-	if err := w.appendSegmentIfNeeded(); err != nil {
-		panic(err)
-	}
-
 	// Make sure we have lastState appended since it might have been truncated.
 	if w.lastState != nil {
-		err := w.tail.appendState(w.lastState)
-		if err != nil {
+		if err := w.saveState(w.lastState); err != nil {
 			panic(err)
 		}
 	}
@@ -1082,29 +1129,25 @@ func (w *wal) SaveSnapshot(snapshot Snapshot) {
 
 	metadata := snapshot.Metadata()
 	fpath := path.Join(w.dir, snapFileName(metadata))
-	tempFpath := fpath + ".tmp"
-	tempF, err := os.Create(tempFpath)
+	f, err := os.Create(fpath)
 	if err != nil {
 		panic(err)
 	}
-	defer tempF.Close()
+	err = func() error {
+		defer f.Close()
 
-	if _, err := tempF.Write(snapshot.Data()); err != nil {
+		if _, err := f.Write(snapshot.Data()); err != nil {
+			return err
+		}
+		if err := f.Sync(); err != nil {
+			return err
+		}
+		return nil
+	}()
+	if err != nil {
 		panic(err)
 	}
-	if err := tempF.Sync(); err != nil {
-		panic(err)
-	}
-	if err := tempF.Close(); err != nil {
-		panic(err)
-	}
-	if err := os.Rename(tempFpath, fpath); err != nil {
-		panic(err)
-	}
-	if err := w.tail.appendRecord(snapshotMetadataRecordType, metadata); err != nil {
-		panic(err)
-	}
-	if err := w.appendSegmentIfNeeded(); err != nil {
+	if err := w.appendRecord(snapshotMetadataRecordType, metadata); err != nil {
 		panic(err)
 	}
 	w.lastSnapshot = metadata
@@ -1156,8 +1199,8 @@ func (w *wal) Close() {
 	}
 
 	var errs []error
-	for _, seg := range w.segments {
-		if err := seg.f.Close(); err != nil {
+	for _, s := range w.segments {
+		if err := s.close(); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -1183,13 +1226,43 @@ func (w *wal) findSegment(entryIndex int64) (int, error) {
 	return -1, IndexOutOfRange(entryIndex)
 }
 
-func (w *wal) recordOf(recordType uint32, msg proto.Message) *pb.WalRecord {
-	data := protoMarshal(msg)
-	return &pb.WalRecord{Type: recordType, Crc32: w.crc32Of(data), Data: data}
-}
-
 func (w *wal) crc32Of(data []byte) uint32 {
 	hash := crc32.New(w.crcTable)
 	hash.Write(data)
 	return hash.Sum32()
+}
+
+func (w *wal) appendRecordTo(buf []byte, recordType uint32, msg proto.Message) []byte {
+	encodedMsg := protoMarshal(msg)
+	recordBytes := protoMarshal(&pb.WalRecord{Type: recordType, Crc32: w.crc32Of(encodedMsg), Data: encodedMsg})
+	buf = binary.BigEndian.AppendUint32(buf, uint32(len(recordBytes)))
+	buf = append(buf, recordBytes...)
+	return buf
+}
+
+func (w *wal) appendRecordToBuffer(buf *bytes.Buffer, recordType uint32, msg proto.Message) {
+	encodedMsg := protoMarshal(msg)
+	recordBytes := protoMarshal(&pb.WalRecord{Type: recordType, Crc32: w.crc32Of(encodedMsg), Data: encodedMsg})
+	binary.Write(buf, binary.BigEndian, uint32(len(recordBytes)))
+	buf.Write(recordBytes)
+}
+
+func (w *wal) appendRecord(recordType uint32, msg proto.Message) error {
+	recordBytes := w.appendRecordTo(nil, recordType, msg)
+	if w.tail.lastOffset+int64(len(recordBytes)) > w.segmentSize-int64(len(w.trailerRecord)) {
+		if err := w.appendSegment(); err != nil {
+			return err
+		}
+	}
+	if w.tail.lastOffset+int64(len(recordBytes)) > w.segmentSize-int64(len(w.trailerRecord)) {
+		return ErrLargeRecord
+	}
+	if err := w.tail.appendBytes(append(recordBytes, w.trailerRecord...)); err != nil {
+		return err
+	}
+	if err := w.tail.sync(); err != nil {
+		return err
+	}
+	w.tail.lastOffset += int64(len(recordBytes))
+	return nil
 }

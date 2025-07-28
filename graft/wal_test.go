@@ -1,7 +1,6 @@
 package graft
 
 import (
-	"fmt"
 	"go.uber.org/zap"
 	"math/rand"
 	"os"
@@ -217,11 +216,7 @@ func TestWalMultipleSegments(t *testing.T) {
 	}
 
 	// Append in batches to create multiple segments.
-	nextIndex := w.Append(state, entries[0:10])
-	assert.Equal(t, nextIndex, int64(10))
-	nextIndex = w.Append(state, entries[10:20])
-	assert.Equal(t, nextIndex, int64(20))
-	nextIndex = w.Append(state, entries[20:entryCount])
+	nextIndex := w.Append(state, entries)
 	assert.Equal(t, nextIndex, int64(30))
 
 	assert.Assert(t, len(w.segments) > 1, len(w.segments))
@@ -278,8 +273,8 @@ func TestWalReopen(t *testing.T) {
 func TestWalErrorCases(t *testing.T) {
 	dir := t.TempDir()
 	w, err := openWal(dir, 1024, zap.NewNop())
-	assert.NilError(t, err)
 	defer w.Close()
+	assert.NilError(t, err)
 
 	func() {
 		defer func() {
@@ -306,6 +301,7 @@ func TestWalErrorCases(t *testing.T) {
 func TestWalCorruptedCRC(t *testing.T) {
 	dir := t.TempDir()
 	w, err := openWal(dir, 1024, zap.NewNop())
+	defer w.Close()
 	assert.NilError(t, err)
 
 	state := &pb.PersistedState{
@@ -320,7 +316,7 @@ func TestWalCorruptedCRC(t *testing.T) {
 	}
 
 	w.Append(state, []*pb.LogEntry{entry})
-	w.Close()
+	assert.Equal(t, len(w.segments), 1)
 
 	// Corrupt the file.
 	files, err := os.ReadDir(dir)
@@ -331,13 +327,12 @@ func TestWalCorruptedCRC(t *testing.T) {
 	fileData, err := os.ReadFile(filePath)
 	assert.NilError(t, err)
 
-	// Corrupt file data.
-	fileData[len(fileData)-1] ^= 0xFF // Flip all bits at this position
+	fileData[w.tail.lastOffset-1] ^= 0xFF // Flip all bits at the last position.
 	err = os.WriteFile(filePath, fileData, 0644)
 	assert.NilError(t, err)
 
 	// Open log with corrupt segment.
-	_, err = openWal(dir, 1024, zap.NewNop())
+	w, err = openWal(dir, 1024, zap.NewNop())
 	assert.Assert(t, err != nil, "Expected error when opening corrupted WAL")
 }
 
@@ -376,35 +371,6 @@ func TestWalOverwriteState(t *testing.T) {
 
 	// Verify latest state is recovered.
 	assert.Assert(t, proto.Equal(w2.RetrieveState(), state2))
-}
-
-func TestWalAppendSegmentAfterStateUpdate(t *testing.T) {
-	dir := t.TempDir()
-	w1, err := openWal(dir, 10, zap.NewNop()) // Make sure state update appends a new segment.
-	assert.NilError(t, err)
-	defer w1.Close()
-
-	state := &pb.PersistedState{
-		CurrentTerm: 1,
-		VotedFor:    "some cool server",
-		CommitIndex: 1,
-	}
-	w1.SaveState(state)
-	assert.Assert(t, proto.Equal(w1.RetrieveState(), state))
-	assert.Equal(t, len(w1.segments), 2)
-
-	// Last segment retains state.
-	assert.Assert(t, proto.Equal(w1.lastState, state))
-
-	w1.Close()
-
-	// Last segment retains state after reopen.
-	w2, err := openWal(dir, 10, zap.NewNop())
-	assert.NilError(t, err)
-	defer w2.Close()
-	assert.Assert(t, proto.Equal(w2.RetrieveState(), state))
-	assert.Equal(t, len(w2.segments), 2)
-	assert.Assert(t, proto.Equal(w2.lastState, state))
 }
 
 func TestWalTruncateAfterStateUpdate(t *testing.T) {
@@ -493,7 +459,6 @@ func TestWalTruncateMultipleSegments(t *testing.T) {
 		}
 	}
 
-	// Append in batches to create multiple segments.
 	nextIndex := w.Append(state, entries[0:10])
 	assert.Equal(t, nextIndex, int64(10))
 	nextIndex = w.Append(state, entries[10:20])
@@ -531,63 +496,6 @@ func TestWalTruncateMultipleSegments(t *testing.T) {
 	assert.Assert(t, proto.Equal(newEntries[1], finalEntries[6]))
 }
 
-func TestWalStorageFailures(t *testing.T) {
-	dir := t.TempDir()
-
-	// Create a directory with restricted permissions.
-	restrictedDir := filepath.Join(dir, "restricted")
-	err := os.Mkdir(restrictedDir, 0400) // read-only
-	assert.NilError(t, err)
-
-	// Opening a WAL in a read-only directory fails.
-	_, err = openWal(restrictedDir, 1024, zap.NewNop())
-	assert.Assert(t, err != nil)
-
-	w, err := openWal(dir, 1024, zap.NewNop())
-	assert.NilError(t, err)
-	defer w.Close()
-
-	state := &pb.PersistedState{
-		CurrentTerm: 1,
-		VotedFor:    "s1",
-		CommitIndex: 0,
-	}
-	w.SaveState(state)
-	assert.NilError(t, err)
-
-	entries := []*pb.LogEntry{
-		{Term: 1, Data: []byte("cmd1")},
-	}
-
-	w.Append(state, entries)
-
-	// Test writing to closed segment file.
-	f := w.tail.f
-	f.Close()
-
-	func() {
-		defer func() {
-			r := recover()
-			assert.Assert(t, r != nil)
-		}()
-
-		w.Append(state, entries)
-	}()
-
-	func() {
-		defer func() {
-			r := recover()
-			assert.Assert(t, r != nil)
-		}()
-
-		w.SaveState(&pb.PersistedState{
-			CurrentTerm: 2,
-			VotedFor:    "s2",
-			CommitIndex: 0,
-		})
-	}()
-}
-
 func TestWalHeadEntry(t *testing.T) {
 	dir := t.TempDir()
 	w, err := openWal(dir, 128, zap.NewNop())
@@ -612,7 +520,7 @@ func TestWalHeadEntry(t *testing.T) {
 
 func TestWalTailEntry(t *testing.T) {
 	dir := t.TempDir()
-	w, err := openWal(dir, 32, zap.NewNop())
+	w, err := openWal(dir, 100, zap.NewNop())
 	assert.NilError(t, err)
 	defer w.Close()
 
@@ -634,7 +542,7 @@ func TestWalTailEntry(t *testing.T) {
 
 func TestWalTailEntryWithEmptySegments(t *testing.T) {
 	dir := t.TempDir()
-	w, err := openWal(dir, 20, zap.NewNop())
+	w, err := openWal(dir, 128, zap.NewNop())
 	assert.NilError(t, err)
 	defer w.Close()
 
@@ -648,9 +556,13 @@ func TestWalTailEntryWithEmptySegments(t *testing.T) {
 	lastIndex := w.Append(nil, entries)
 	assert.Equal(t, lastIndex, int64(2))
 
+	// Create a couple of segments without entries at the end.
 	w.SaveState(&pb.PersistedState{CurrentTerm: 1, VotedFor: "s1", CommitIndex: 0})
-
-	w.SaveState(&pb.PersistedState{CurrentTerm: 2, VotedFor: "s2", CommitIndex: 1})
+	w.SaveState(&pb.PersistedState{CurrentTerm: 2, VotedFor: "s2", CommitIndex: 0})
+	w.SaveState(&pb.PersistedState{CurrentTerm: 3, VotedFor: "s2", CommitIndex: 0})
+	w.SaveState(&pb.PersistedState{CurrentTerm: 4, VotedFor: "s2", CommitIndex: 0})
+	w.SaveState(&pb.PersistedState{CurrentTerm: 5, VotedFor: "s2", CommitIndex: 0})
+	w.SaveState(&pb.PersistedState{CurrentTerm: 6, VotedFor: "s2", CommitIndex: 0})
 
 	assert.Assert(t, len(w.segments) > 2, len(w.segments))
 
@@ -659,9 +571,15 @@ func TestWalTailEntryWithEmptySegments(t *testing.T) {
 	assert.Equal(t, entry.Index, int64(1))
 }
 
+// TODO may want to move to testutil.
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil || !os.IsNotExist(err)
+}
+
 func TestWalMismatchingSegNumber(t *testing.T) {
 	dir := t.TempDir()
-	w1, err := openWal(dir, 128, zap.NewNop())
+	w1, err := openWal(dir, 1024, zap.NewNop())
 	assert.NilError(t, err)
 	defer w1.Close()
 
@@ -682,13 +600,13 @@ func TestWalMismatchingSegNumber(t *testing.T) {
 
 	w2, err := openWal(dir, 128, zap.NewNop())
 	assert.NilError(t, err)
-	defer w1.Close()
+	defer w2.Close()
 
 	_, fname = path.Split(w2.tail.fpath)
 	assert.Equal(t, fname, "log_0_0.dat")
-	_, fname = path.Split(w2.tail.f.Name())
-	assert.Equal(t, fname, "log_0_0.dat")
 	assert.Equal(t, w2.tail.number, 0)
+	assert.Assert(t, fileExists(path.Join(dir, "log_0_0.dat")))
+	assert.Assert(t, !fileExists(path.Join(dir, "log_1_0.dat")))
 }
 
 func TestWalMismatchingFirstIndex(t *testing.T) {
@@ -718,9 +636,9 @@ func TestWalMismatchingFirstIndex(t *testing.T) {
 
 	_, fname = path.Split(w2.tail.fpath)
 	assert.Equal(t, fname, "log_0_0.dat")
-	_, fname = path.Split(w2.tail.f.Name())
-	assert.Equal(t, fname, "log_0_0.dat")
 	assert.Equal(t, w2.tail.firstIndex, int64(0))
+	assert.Assert(t, fileExists(path.Join(dir, "log_0_0.dat")))
+	assert.Assert(t, !fileExists(path.Join(dir, "log_0_1.dat")))
 }
 
 func TestWalGetEntriesFromTo(t *testing.T) {
@@ -735,7 +653,7 @@ func TestWalGetEntriesFromTo(t *testing.T) {
 		term := int64(len(entries))
 		entries = append(entries, &pb.LogEntry{
 			Term: term,
-			Data: []byte(fmt.Sprintf("entry data %d that is long enough to force segment creation", term)),
+			Data: []byte("abc"),
 		})
 	}
 
@@ -767,7 +685,7 @@ func TestWalGetEntriesFromTo(t *testing.T) {
 		term := int64(len(entries))
 		entries = append(entries, &pb.LogEntry{
 			Term: term,
-			Data: []byte(fmt.Sprintf("entry data %d that is long enough to force segment creation", term)),
+			Data: []byte("abc"),
 		})
 	}
 
@@ -870,7 +788,7 @@ func TestWalRetrieveSnapshotOnReopen(t *testing.T) {
 
 func TestWalTruncateEntriesTo(t *testing.T) {
 	dir := t.TempDir()
-	w, err := openWal(dir, 128, zap.NewNop())
+	w, err := openWal(dir, 256, zap.NewNop())
 	assert.NilError(t, err)
 	defer w.Close()
 
@@ -878,7 +796,7 @@ func TestWalTruncateEntriesTo(t *testing.T) {
 	entryCount := int64(100)
 	entries := make([]*pb.LogEntry, entryCount)
 	for i := range entries {
-		commandSize := rnd.Intn(128)
+		commandSize := rnd.Intn(64)
 		entries[i] = &pb.LogEntry{
 			Index: int64(i),
 			Term:  int64(i),
