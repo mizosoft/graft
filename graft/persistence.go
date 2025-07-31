@@ -3,9 +3,8 @@ package graft
 import (
 	"errors"
 	"fmt"
-	"go.uber.org/zap"
-
 	"github.com/mizosoft/graft/pb"
+	"go.uber.org/zap"
 )
 
 var (
@@ -35,37 +34,37 @@ func IndexOutOfRangeWithCount(index int64, count int64) error {
 }
 
 type Persistence interface {
-	RetrieveState() *pb.PersistedState
+	RetrieveState() (*pb.PersistedState, error)
 
-	SaveState(state *pb.PersistedState)
+	SaveState(state *pb.PersistedState) error
 
-	Append(state *pb.PersistedState, entries []*pb.LogEntry) int64
+	Append(state *pb.PersistedState, entries []*pb.LogEntry) (int64, error)
 
-	TruncateEntriesFrom(index int64)
+	TruncateEntriesFrom(index int64) error
 
-	TruncateEntriesTo(index int64)
+	TruncateEntriesTo(index int64) error
 
 	EntryCount() int64
 
-	GetEntry(index int64) *pb.LogEntry
+	GetEntry(index int64) (*pb.LogEntry, error)
 
-	GetEntryTerm(index int64) int64
+	GetEntryTerm(index int64) (int64, error)
 
-	GetEntriesFrom(index int64) []*pb.LogEntry
+	GetEntriesFrom(index int64) ([]*pb.LogEntry, error)
 
-	GetEntries(from, to int64) []*pb.LogEntry
+	GetEntries(from, to int64) ([]*pb.LogEntry, error)
 
-	FirstEntryIndex() int64
+	FirstEntryIndex() (int64, error)
 
-	LastEntryIndex() int64
+	LastEntryIndex() (int64, error)
 
-	SaveSnapshot(snapshot Snapshot)
+	SaveSnapshot(snapshot Snapshot) error
 
-	RetrieveSnapshot() Snapshot
+	RetrieveSnapshot() (Snapshot, error)
 
-	SnapshotMetadata() *pb.SnapshotMetadata
+	SnapshotMetadata() (*pb.SnapshotMetadata, error)
 
-	Close()
+	Close() error
 }
 
 type Snapshot interface {
@@ -105,15 +104,16 @@ type memoryPersistence struct {
 	snapshot Snapshot
 }
 
-func (p *memoryPersistence) RetrieveState() *pb.PersistedState {
-	return p.state
+func (p *memoryPersistence) RetrieveState() (*pb.PersistedState, error) {
+	return p.state, nil
 }
 
-func (p *memoryPersistence) SaveState(state *pb.PersistedState) {
+func (p *memoryPersistence) SaveState(state *pb.PersistedState) error {
 	p.state = state
+	return nil
 }
 
-func (p *memoryPersistence) Append(state *pb.PersistedState, entries []*pb.LogEntry) int64 {
+func (p *memoryPersistence) Append(state *pb.PersistedState, entries []*pb.LogEntry) (int64, error) {
 	p.state = state
 	nextIndex := len(p.log)
 	for _, entry := range entries {
@@ -121,51 +121,57 @@ func (p *memoryPersistence) Append(state *pb.PersistedState, entries []*pb.LogEn
 		nextIndex++
 	}
 	p.log = append(p.log, entries...)
-	return int64(nextIndex)
+	return int64(nextIndex), nil
 }
 
-func (p *memoryPersistence) TruncateEntriesFrom(index int64) {
+func (p *memoryPersistence) TruncateEntriesFrom(index int64) error {
 	p.log = p.log[:index]
+	return nil
 }
 
-func (p *memoryPersistence) TruncateEntriesTo(index int64) {
+func (p *memoryPersistence) TruncateEntriesTo(index int64) error {
 	p.log = p.log[index+1:]
+	return nil
 }
 
 func (p *memoryPersistence) EntryCount() int64 {
 	return int64(len(p.log))
 }
 
-func (p *memoryPersistence) GetEntry(index int64) *pb.LogEntry {
+func (p *memoryPersistence) GetEntry(index int64) (*pb.LogEntry, error) {
+	if index >= p.EntryCount() {
+		return nil, IndexOutOfRangeWithCount(index, p.EntryCount())
+	}
+	return p.log[index], nil
+}
+
+func (p *memoryPersistence) GetEntryTerm(index int64) (int64, error) {
+	e, err := p.GetEntry(index)
+	if err != nil {
+		return 0, err
+	}
+	return e.Term, nil
+}
+
+func (p *memoryPersistence) GetEntriesFrom(index int64) ([]*pb.LogEntry, error) {
 	if index >= p.EntryCount() {
 		panic(IndexOutOfRangeWithCount(index, p.EntryCount()))
 	}
-	return p.log[index]
+	return p.log[index:], nil
 }
 
-func (p *memoryPersistence) GetEntryTerm(index int64) int64 {
-	return p.GetEntry(index).Term
-}
-
-func (p *memoryPersistence) GetEntriesFrom(index int64) []*pb.LogEntry {
-	if index >= p.EntryCount() {
-		panic(IndexOutOfRangeWithCount(index, p.EntryCount()))
-	}
-	return p.log[index:]
-}
-
-func (p *memoryPersistence) GetEntries(from, to int64) []*pb.LogEntry {
-	firstIndex := p.FirstEntryIndex()
+func (p *memoryPersistence) GetEntries(from, to int64) ([]*pb.LogEntry, error) {
+	firstIndex, _ := p.FirstEntryIndex()
 	if from < firstIndex {
-		panic(IndexOutOfRange(firstIndex))
+		return nil, IndexOutOfRange(firstIndex)
 	}
 
-	lastIndex := p.LastEntryIndex()
+	lastIndex, _ := p.LastEntryIndex()
 	if to > lastIndex {
-		panic(IndexOutOfRange(firstIndex))
+		return nil, IndexOutOfRange(firstIndex)
 	}
 
-	return p.log[from:to]
+	return p.log[from:to], nil
 }
 
 func (p *memoryPersistence) headEntry() *pb.LogEntry {
@@ -183,33 +189,35 @@ func (p *memoryPersistence) tailEntry() *pb.LogEntry {
 	return p.log[lastIndex]
 }
 
-func (p *memoryPersistence) FirstEntryIndex() int64 {
+func (p *memoryPersistence) FirstEntryIndex() (int64, error) {
 	entry := p.headEntry()
 	if entry == nil {
-		return -1
+		return -1, nil
 	}
-	return entry.Index
+	return entry.Index, nil
 }
 
-func (p *memoryPersistence) LastEntryIndex() int64 {
+func (p *memoryPersistence) LastEntryIndex() (int64, error) {
 	entry := p.tailEntry()
 	if entry == nil {
-		return -1
+		return -1, nil
 	}
-	return entry.Index
+	return entry.Index, nil
 }
 
-func (p *memoryPersistence) SaveSnapshot(snap Snapshot) {
+func (p *memoryPersistence) SaveSnapshot(snap Snapshot) error {
 	p.snapshot = snap
+	return nil
 }
 
-func (p *memoryPersistence) RetrieveSnapshot() Snapshot {
-	return p.snapshot
+func (p *memoryPersistence) RetrieveSnapshot() (Snapshot, error) {
+	return p.snapshot, nil
 }
 
-func (p *memoryPersistence) SnapshotMetadata() *pb.SnapshotMetadata {
-	return p.snapshot.Metadata()
+func (p *memoryPersistence) SnapshotMetadata() (*pb.SnapshotMetadata, error) {
+	return p.snapshot.Metadata(), nil
 }
 
-func (p *memoryPersistence) Close() {
+func (p *memoryPersistence) Close() error {
+	return nil
 }

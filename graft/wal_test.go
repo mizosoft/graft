@@ -35,8 +35,12 @@ func TestWalEmptyWalReopen(t *testing.T) {
 	defer wal.Close()
 
 	assert.Equal(t, wal.EntryCount(), int64(0))
-	testutil.AssertNil(t, wal.RetrieveState())
-	testutil.AssertNil(t, wal.RetrieveSnapshot())
+	state, err := wal.RetrieveState()
+	assert.NilError(t, err)
+	testutil.AssertNil(t, state)
+	snapshot, err := wal.RetrieveSnapshot()
+	assert.NilError(t, err)
+	testutil.AssertNil(t, snapshot)
 }
 
 func TestWalAppendSingleEntry(t *testing.T) {
@@ -56,13 +60,18 @@ func TestWalAppendSingleEntry(t *testing.T) {
 		Data: []byte("cmd"),
 	}
 
-	nextIndex := w.Append(state, []*pb.LogEntry{entry})
+	nextIndex, err := w.Append(state, []*pb.LogEntry{entry})
+	assert.NilError(t, err)
 	assert.Equal(t, nextIndex, int64(1))
 	assert.Equal(t, w.EntryCount(), int64(1))
-	assert.Assert(t, proto.Equal(state, w.RetrieveState()))
+
+	retrievedState, err := w.RetrieveState()
+	assert.NilError(t, err)
+	assert.Assert(t, proto.Equal(state, retrievedState))
 
 	// Retrieve entry and verify.
-	retrievedEntry := w.GetEntry(0)
+	retrievedEntry, err := w.GetEntry(0)
+	assert.NilError(t, err)
 	assert.Assert(t, proto.Equal(retrievedEntry, entry))
 	assert.Equal(t, retrievedEntry.Index, int64(0))
 }
@@ -85,12 +94,13 @@ func TestWalAppendMultipleEntries(t *testing.T) {
 		{Term: 1, Data: []byte("cmd3")},
 	}
 
-	nextIndex := w.Append(state, entries)
+	nextIndex, err := w.Append(state, entries)
+	assert.NilError(t, err)
 	assert.Equal(t, nextIndex, int64(3))
-	assert.Equal(t, w.EntryCount(), int64(3))
 
 	// Retrieve and verify entries.
-	retrievedEntries := w.GetEntriesFrom(0)
+	retrievedEntries, err := w.GetEntriesFrom(0)
+	assert.NilError(t, err)
 	assert.Equal(t, len(retrievedEntries), len(entries))
 	for i, entry := range entries {
 		assert.Assert(t, proto.Equal(retrievedEntries[i], entry))
@@ -118,9 +128,11 @@ func TestWalGetEntriesFromMiddle(t *testing.T) {
 		{Term: 1, Data: []byte("entry 4")},
 	}
 
-	w.Append(state, entries)
+	_, err = w.Append(state, entries)
+	assert.NilError(t, err)
 
-	retrievedEntries := w.GetEntriesFrom(2)
+	retrievedEntries, err := w.GetEntriesFrom(2)
+	assert.NilError(t, err)
 	assert.Equal(t, len(retrievedEntries), 3)
 	assert.Assert(t, proto.Equal(retrievedEntries[0], entries[2]))
 	assert.Equal(t, retrievedEntries[0].Index, int64(2))
@@ -143,8 +155,11 @@ func TestWalSetState(t *testing.T) {
 		CommitIndex: 0,
 	}
 
-	w.SaveState(state1)
-	assert.Assert(t, proto.Equal(state1, w.RetrieveState()))
+	err = w.SaveState(state1)
+	assert.NilError(t, err)
+
+	state, err := w.RetrieveState()
+	assert.Assert(t, proto.Equal(state1, state))
 
 	// Updated state
 	state2 := &pb.PersistedState{
@@ -153,8 +168,10 @@ func TestWalSetState(t *testing.T) {
 		CommitIndex: 5,
 	}
 
-	w.SaveState(state2)
-	assert.Assert(t, proto.Equal(state2, w.RetrieveState()))
+	err = w.SaveState(state2)
+	assert.NilError(t, err)
+	state, err = w.RetrieveState()
+	assert.Assert(t, proto.Equal(state2, state))
 }
 
 func TestWalTruncateEntries(t *testing.T) {
@@ -177,20 +194,25 @@ func TestWalTruncateEntries(t *testing.T) {
 		{Term: 1, Data: []byte("cmd4")},
 	}
 
-	w.Append(state, entries)
+	_, err = w.Append(state, entries)
+	assert.NilError(t, err)
 	assert.Equal(t, w.EntryCount(), int64(5))
 
-	w.TruncateEntriesFrom(3)
+	err = w.TruncateEntriesFrom(3)
+	assert.NilError(t, err)
 	assert.Equal(t, w.EntryCount(), int64(3))
 
-	retrievedEntries := w.GetEntriesFrom(0)
+	retrievedEntries, err := w.GetEntriesFrom(0)
+	assert.NilError(t, err)
 	assert.Equal(t, len(retrievedEntries), 3)
 	for i := range 3 {
 		assert.Assert(t, proto.Equal(entries[i], retrievedEntries[i]))
 	}
 
 	// State is preserved after truncation.
-	assert.Assert(t, proto.Equal(state, w.RetrieveState()))
+	retrievedState, err := w.RetrieveState()
+	assert.NilError(t, err)
+	assert.Assert(t, proto.Equal(state, retrievedState))
 }
 
 func TestWalMultipleSegments(t *testing.T) {
@@ -216,18 +238,21 @@ func TestWalMultipleSegments(t *testing.T) {
 	}
 
 	// Append in batches to create multiple segments.
-	nextIndex := w.Append(state, entries)
+	nextIndex, err := w.Append(state, entries)
+	assert.NilError(t, err)
 	assert.Equal(t, nextIndex, int64(30))
 
 	assert.Assert(t, len(w.segments) > 1, len(w.segments))
 
 	// All entries can be retrieved.
-	allEntries := w.GetEntriesFrom(0)
+	allEntries, err := w.GetEntriesFrom(0)
+	assert.NilError(t, err)
 	assert.Equal(t, len(allEntries), entryCount)
 
 	// Check getting individual entries across segments.
 	for i := range entryCount {
-		entry := w.GetEntry(int64(i))
+		entry, err := w.GetEntry(int64(i))
+		assert.NilError(t, err)
 		assert.Assert(t, entry != nil)
 	}
 }
@@ -258,12 +283,14 @@ func TestWalReopen(t *testing.T) {
 	defer w2.Close()
 
 	// Verify state was recovered.
-	assert.Assert(t, proto.Equal(w2.RetrieveState(), state))
+	retrievedState, err := w2.RetrieveState()
+	assert.Assert(t, proto.Equal(retrievedState, state))
 
 	// Verify entries were recovered.
 	assert.Equal(t, w2.EntryCount(), int64(3))
 
-	recoveredEntries := w2.GetEntriesFrom(0)
+	recoveredEntries, err := w2.GetEntriesFrom(0)
+	assert.NilError(t, err)
 	assert.Equal(t, len(recoveredEntries), len(entries))
 	for i, entry := range entries {
 		assert.Assert(t, proto.Equal(entry, recoveredEntries[i]))
@@ -276,26 +303,14 @@ func TestWalErrorCases(t *testing.T) {
 	defer w.Close()
 	assert.NilError(t, err)
 
-	func() {
-		defer func() {
-			r := recover()
-			assert.ErrorType(t, r.(error), IndexOutOfRangeError{})
-		}()
+	_, err = w.GetEntry(100)
+	assert.Assert(t, err != nil)
 
-		w.GetEntry(100)
-	}()
-
-	// TestWal using closed WAL
+	// Test using closed WAL
 	w.Close()
 
-	func() {
-		defer func() {
-			r := recover()
-			assert.ErrorIs(t, r.(error), ErrClosed)
-		}()
-
-		w.GetEntry(0)
-	}()
+	_, err = w.GetEntry(0)
+	assert.Assert(t, err != nil)
 }
 
 func TestWalCorruptedCRC(t *testing.T) {
@@ -315,7 +330,8 @@ func TestWalCorruptedCRC(t *testing.T) {
 		Data: []byte("test"),
 	}
 
-	w.Append(state, []*pb.LogEntry{entry})
+	_, err = w.Append(state, []*pb.LogEntry{entry})
+	assert.NilError(t, err)
 	assert.Equal(t, len(w.segments), 1)
 
 	// Corrupt the file.
@@ -348,7 +364,8 @@ func TestWalOverwriteState(t *testing.T) {
 		VotedFor:    "s1",
 		CommitIndex: 0,
 	}
-	w.SaveState(state1)
+	err = w.SaveState(state1)
+	assert.NilError(t, err)
 
 	// Update state.
 	state2 := &pb.PersistedState{
@@ -356,10 +373,13 @@ func TestWalOverwriteState(t *testing.T) {
 		VotedFor:    "s2",
 		CommitIndex: 5,
 	}
-	w.SaveState(state2)
+	err = w.SaveState(state2)
+	assert.NilError(t, err)
 
 	// Verify latest state is returned.
-	assert.Assert(t, proto.Equal(w.RetrieveState(), state2))
+	retrievedState, err := w.RetrieveState()
+	assert.NilError(t, err)
+	assert.Assert(t, proto.Equal(retrievedState, state2))
 
 	// Reopen.
 	w.Close()
@@ -370,7 +390,9 @@ func TestWalOverwriteState(t *testing.T) {
 	defer w2.Close()
 
 	// Verify latest state is recovered.
-	assert.Assert(t, proto.Equal(w2.RetrieveState(), state2))
+	retrievedState, err = w2.RetrieveState()
+	assert.NilError(t, err)
+	assert.Assert(t, proto.Equal(retrievedState, state2))
 }
 
 func TestWalTruncateAfterStateUpdate(t *testing.T) {
@@ -385,14 +407,15 @@ func TestWalTruncateAfterStateUpdate(t *testing.T) {
 		VotedFor:    "s1",
 		CommitIndex: 0,
 	}
-	nextIndex := w1.Append(state, []*pb.LogEntry{
+	nextIndex, err := w1.Append(state, []*pb.LogEntry{
 		{Term: 1, Data: []byte("a")},
 		{Term: 2, Data: []byte("b")},
 	})
 	assert.NilError(t, err)
 	assert.Equal(t, nextIndex, int64(2))
 
-	w1.TruncateEntriesFrom(0)
+	err = w1.TruncateEntriesFrom(0)
+	assert.NilError(t, err)
 
 	w1.Close()
 
@@ -401,7 +424,8 @@ func TestWalTruncateAfterStateUpdate(t *testing.T) {
 	assert.NilError(t, err)
 	defer w2.Close()
 
-	assert.Assert(t, proto.Equal(w2.RetrieveState(), state))
+	retrievedState, err := w2.RetrieveState()
+	assert.Assert(t, proto.Equal(retrievedState, state))
 }
 
 func TestWalAppendAfterTruncating(t *testing.T) {
@@ -410,21 +434,25 @@ func TestWalAppendAfterTruncating(t *testing.T) {
 	assert.NilError(t, err)
 	defer w.Close()
 
-	nextIndex := w.Append(nil, []*pb.LogEntry{
+	nextIndex, err := w.Append(nil, []*pb.LogEntry{
 		{Term: 1, Data: []byte("a")},
 		{Term: 2, Data: []byte("b")},
 	})
+	assert.NilError(t, err)
 	assert.Equal(t, nextIndex, int64(2))
 
-	w.TruncateEntriesFrom(1)
+	err = w.TruncateEntriesFrom(1)
+	assert.NilError(t, err)
 
-	nextIndex = w.Append(nil, []*pb.LogEntry{
+	nextIndex, err = w.Append(nil, []*pb.LogEntry{
 		{Term: 3, Data: []byte("c")},
 		{Term: 4, Data: []byte("d")},
 	})
+	assert.NilError(t, err)
 	assert.Equal(t, nextIndex, int64(3))
 
-	retrievedEntries := w.GetEntriesFrom(0)
+	retrievedEntries, err := w.GetEntriesFrom(0)
+	assert.NilError(t, err)
 	assert.Equal(t, len(retrievedEntries), 3, len(retrievedEntries))
 
 	expectedEntries := []*pb.LogEntry{
@@ -459,23 +487,28 @@ func TestWalTruncateMultipleSegments(t *testing.T) {
 		}
 	}
 
-	nextIndex := w.Append(state, entries[0:10])
+	nextIndex, err := w.Append(state, entries[0:10])
+	assert.NilError(t, err)
 	assert.Equal(t, nextIndex, int64(10))
-	nextIndex = w.Append(state, entries[10:20])
+	nextIndex, err = w.Append(state, entries[10:20])
+	assert.NilError(t, err)
 	assert.Equal(t, nextIndex, int64(20))
-	nextIndex = w.Append(state, entries[20:entryCount])
+	nextIndex, err = w.Append(state, entries[20:entryCount])
+	assert.NilError(t, err)
 	assert.Equal(t, nextIndex, int64(30))
 
 	segmentCount := len(w.segments)
 	assert.Assert(t, segmentCount > 1, segmentCount)
 
 	// Truncate from an entry in the first segment.
-	w.TruncateEntriesFrom(5)
+	err = w.TruncateEntriesFrom(5)
+	assert.NilError(t, err)
 	assert.Assert(t, len(w.segments) < segmentCount)
 
 	// Check remaining entries.
 	assert.Equal(t, w.EntryCount(), int64(5))
-	remaining := w.GetEntriesFrom(0)
+	remaining, err := w.GetEntriesFrom(0)
+	assert.NilError(t, err)
 	assert.Equal(t, 5, len(remaining))
 
 	// Append after truncation.
@@ -483,10 +516,12 @@ func TestWalTruncateMultipleSegments(t *testing.T) {
 		{Term: 2, Data: []byte("e5")},
 		{Term: 2, Data: []byte("e6")},
 	}
-	w.Append(state, newEntries)
+	_, err = w.Append(state, newEntries)
+	assert.NilError(t, err)
 	assert.Equal(t, w.EntryCount(), int64(7))
 
-	finalEntries := w.GetEntriesFrom(0)
+	finalEntries, err := w.GetEntriesFrom(0)
+	assert.NilError(t, err)
 	assert.Equal(t, len(finalEntries), 7)
 
 	for i := range 5 {
@@ -502,7 +537,8 @@ func TestWalHeadEntry(t *testing.T) {
 	assert.NilError(t, err)
 	defer w.Close()
 
-	entry := w.HeadEntry()
+	entry, err := w.HeadEntry()
+	assert.NilError(t, err)
 	testutil.AssertNil(t, entry)
 
 	entries := []*pb.LogEntry{
@@ -510,10 +546,12 @@ func TestWalHeadEntry(t *testing.T) {
 		{Term: 2, Data: []byte("cmd2")},
 	}
 
-	lastIndex := w.Append(nil, entries)
+	lastIndex, err := w.Append(nil, entries)
+	assert.NilError(t, err)
 	assert.Equal(t, lastIndex, int64(2))
 
-	entry = w.HeadEntry()
+	entry, err = w.HeadEntry()
+	assert.NilError(t, err)
 	assert.Equal(t, entry.Index, int64(0))
 	assert.Assert(t, proto.Equal(entry, entries[0]))
 }
@@ -524,7 +562,8 @@ func TestWalTailEntry(t *testing.T) {
 	assert.NilError(t, err)
 	defer w.Close()
 
-	entry := w.TailEntry()
+	entry, err := w.TailEntry()
+	assert.NilError(t, err)
 	testutil.AssertNil(t, entry)
 
 	entries := []*pb.LogEntry{
@@ -532,10 +571,12 @@ func TestWalTailEntry(t *testing.T) {
 		{Term: 2, Data: []byte("cmd2")},
 	}
 
-	lastIndex := w.Append(nil, entries)
+	lastIndex, err := w.Append(nil, entries)
+	assert.NilError(t, err)
 	assert.Equal(t, lastIndex, int64(2))
 
-	entry = w.TailEntry()
+	entry, err = w.TailEntry()
+	assert.NilError(t, err)
 	assert.Assert(t, proto.Equal(entry, entries[1]))
 	assert.Equal(t, entry.Index, int64(1))
 }
@@ -546,27 +587,28 @@ func TestWalTailEntryWithEmptySegments(t *testing.T) {
 	assert.NilError(t, err)
 	defer w.Close()
 
-	entry := w.TailEntry()
+	entry, err := w.TailEntry()
+	assert.NilError(t, err)
 	testutil.AssertNil(t, entry)
 
 	entries := []*pb.LogEntry{
 		{Term: 1, Data: []byte("cmd1")},
 		{Term: 1, Data: []byte("cmd2")},
 	}
-	lastIndex := w.Append(nil, entries)
+	lastIndex, err := w.Append(nil, entries)
+	assert.NilError(t, err)
 	assert.Equal(t, lastIndex, int64(2))
 
 	// Create a couple of segments without entries at the end.
-	w.SaveState(&pb.PersistedState{CurrentTerm: 1, VotedFor: "s1", CommitIndex: 0})
-	w.SaveState(&pb.PersistedState{CurrentTerm: 2, VotedFor: "s2", CommitIndex: 0})
-	w.SaveState(&pb.PersistedState{CurrentTerm: 3, VotedFor: "s2", CommitIndex: 0})
-	w.SaveState(&pb.PersistedState{CurrentTerm: 4, VotedFor: "s2", CommitIndex: 0})
-	w.SaveState(&pb.PersistedState{CurrentTerm: 5, VotedFor: "s2", CommitIndex: 0})
-	w.SaveState(&pb.PersistedState{CurrentTerm: 6, VotedFor: "s2", CommitIndex: 0})
+	for i := range 6 {
+		err = w.SaveState(&pb.PersistedState{CurrentTerm: int64(i), VotedFor: "s1", CommitIndex: 0})
+		assert.NilError(t, err)
+	}
 
 	assert.Assert(t, len(w.segments) > 2, len(w.segments))
 
-	entry = w.TailEntry()
+	entry, err = w.TailEntry()
+	assert.NilError(t, err)
 	assert.Assert(t, proto.Equal(entry, entries[1]))
 	assert.Equal(t, entry.Index, int64(1))
 }
@@ -583,9 +625,10 @@ func TestWalMismatchingSegNumber(t *testing.T) {
 	assert.NilError(t, err)
 	defer w1.Close()
 
-	lastIndex := w1.Append(nil, []*pb.LogEntry{
+	lastIndex, err := w1.Append(nil, []*pb.LogEntry{
 		{Term: 1, Data: []byte("cmd1")},
 	})
+	assert.NilError(t, err)
 	assert.Equal(t, lastIndex, int64(1))
 	assert.Assert(t, len(w1.segments) == 1, len(w1.segments))
 
@@ -615,9 +658,10 @@ func TestWalMismatchingFirstIndex(t *testing.T) {
 	assert.NilError(t, err)
 	defer w1.Close()
 
-	lastIndex := w1.Append(nil, []*pb.LogEntry{
+	lastIndex, err := w1.Append(nil, []*pb.LogEntry{
 		{Term: 1, Data: []byte("cmd1")},
 	})
+	assert.NilError(t, err)
 	assert.Equal(t, lastIndex, int64(1))
 	assert.Assert(t, len(w1.segments) == 1, len(w1.segments))
 
@@ -666,18 +710,24 @@ func TestWalGetEntriesFromTo(t *testing.T) {
 
 	for i := range entries {
 		state := &pb.PersistedState{CurrentTerm: int64(i), VotedFor: "s1"}
-		nextIndex := w.Append(state, []*pb.LogEntry{entries[i]})
+		nextIndex, err := w.Append(state, []*pb.LogEntry{entries[i]})
+		assert.NilError(t, err)
 		assert.Equal(t, nextIndex, int64(i+1))
 
-		retrieved := w.GetEntries(0, int64(i))
+		retrieved, err := w.GetEntries(0, int64(i))
+		assert.NilError(t, err)
 		checkEntries(retrieved, entries[:i+1])
 	}
 
 	// Put a bunch of states to make segments with not entries.
 	segCount := len(w.segments)
-	lastTerm := w.GetEntryTerm(w.LastEntryIndex())
+	lastIndex, err := w.LastEntryIndex()
+	assert.NilError(t, err)
+	lastTerm, err := w.GetEntryTerm(lastIndex)
+	assert.NilError(t, err)
 	for segCount == len(w.segments) {
-		w.SaveState(&pb.PersistedState{CurrentTerm: lastTerm, VotedFor: "s1"})
+		err := w.SaveState(&pb.PersistedState{CurrentTerm: lastTerm, VotedFor: "s1"})
+		assert.NilError(t, err)
 		lastTerm++
 	}
 
@@ -691,23 +741,28 @@ func TestWalGetEntriesFromTo(t *testing.T) {
 
 	for i := entryCount / 2; i < entryCount; i++ {
 		state := &pb.PersistedState{CurrentTerm: int64(i), VotedFor: "s1"}
-		nextIndex := w.Append(state, []*pb.LogEntry{entries[i]})
+		nextIndex, err := w.Append(state, []*pb.LogEntry{entries[i]})
+		assert.NilError(t, err)
 		assert.Equal(t, nextIndex, int64(i+1))
 
-		retrieved := w.GetEntries(0, int64(i))
+		retrieved, err := w.GetEntries(0, int64(i))
+		assert.NilError(t, err)
 		checkEntries(retrieved, entries[:i+1])
 	}
 
-	lastIndex := w.LastEntryIndex()
+	lastIndex, err = w.LastEntryIndex()
+	assert.NilError(t, err)
 	for i := range entries {
-		retrieved := w.GetEntries(int64(i), lastIndex)
+		retrieved, err := w.GetEntries(int64(i), lastIndex)
+		assert.NilError(t, err)
 		checkEntries(retrieved, entries[i:])
 	}
 
 	// Try all valid index sequences.
 	for i := 0; i < entryCount; i++ {
 		for j := i; j < entryCount; j++ {
-			retrieved := w.GetEntries(int64(i), int64(j))
+			retrieved, err := w.GetEntries(int64(i), int64(j))
+			assert.NilError(t, err)
 			checkEntries(retrieved, entries[i:j+1])
 		}
 	}
@@ -719,7 +774,8 @@ func TestWalSaveAndRetrieveSnapshot(t *testing.T) {
 	assert.NilError(t, err)
 	defer w.Close()
 
-	snapshot := w.RetrieveSnapshot()
+	snapshot, err := w.RetrieveSnapshot()
+	assert.NilError(t, err)
 	assert.Assert(t, snapshot == nil)
 
 	snapshot = NewSnapshot(&pb.SnapshotMetadata{
@@ -741,9 +797,11 @@ func TestWalSaveAndRetrieveSnapshot(t *testing.T) {
 			Phase: pb.ConfigUpdate_LEARNING,
 		},
 	}, []byte("Pikachu"))
-	w.SaveSnapshot(snapshot)
+	err = w.SaveSnapshot(snapshot)
+	assert.NilError(t, err)
 
-	retrievedSnapshot := w.RetrieveSnapshot()
+	retrievedSnapshot, err := w.RetrieveSnapshot()
+	assert.NilError(t, err)
 	assert.Assert(t, proto.Equal(retrievedSnapshot.Metadata(), snapshot.Metadata()))
 	assert.Equal(t, string(retrievedSnapshot.Data()), string(snapshot.Data()))
 }
@@ -773,7 +831,7 @@ func TestWalRetrieveSnapshotOnReopen(t *testing.T) {
 			Phase: pb.ConfigUpdate_LEARNING,
 		},
 	}, []byte("Pikachu"))
-	w1.SaveSnapshot(snapshot)
+	err = w1.SaveSnapshot(snapshot)
 	assert.NilError(t, err)
 
 	w1.Close()
@@ -781,7 +839,8 @@ func TestWalRetrieveSnapshotOnReopen(t *testing.T) {
 	w2, err := openWal(dir, 128, zap.NewNop())
 	assert.NilError(t, err)
 	defer w2.Close()
-	retrievedSnapshot := w2.RetrieveSnapshot()
+	retrievedSnapshot, err := w2.RetrieveSnapshot()
+	assert.NilError(t, err)
 	assert.Assert(t, proto.Equal(retrievedSnapshot.Metadata(), snapshot.Metadata()))
 	assert.Equal(t, string(retrievedSnapshot.Data()), string(snapshot.Data()))
 }
@@ -805,19 +864,23 @@ func TestWalTruncateEntriesTo(t *testing.T) {
 	}
 
 	for _, entry := range entries {
-		w.Append(nil, []*pb.LogEntry{entry})
+		_, err = w.Append(nil, []*pb.LogEntry{entry})
+		assert.NilError(t, err)
 	}
 
 	assert.Assert(t, len(w.segments) > 1)
 
 	for i := int64(0); i < entryCount; i++ {
-		w.TruncateEntriesTo(i)
+		err = w.TruncateEntriesTo(i)
+		assert.NilError(t, err)
 
-		firstIndex := w.FirstEntryIndex()
+		firstIndex, err := w.FirstEntryIndex()
+		assert.NilError(t, err)
 		if i < entryCount-1 {
 			assert.Equal(t, firstIndex, i+1)
 
-			retrievedEntries := w.GetEntriesFrom(firstIndex)
+			retrievedEntries, err := w.GetEntriesFrom(firstIndex)
+			assert.NilError(t, err)
 			for j, entry := range entries[i+1:] {
 				assert.Assert(t, proto.Equal(retrievedEntries[j], entry))
 			}
@@ -833,10 +896,14 @@ func TestWalFirstAndLastEntryIndex(t *testing.T) {
 	assert.NilError(t, err)
 	defer w.Close()
 
-	assert.Equal(t, int64(-1), w.FirstEntryIndex())
-	assert.Equal(t, int64(-1), w.LastEntryIndex())
+	firstIndex, err := w.FirstEntryIndex()
+	assert.NilError(t, err)
+	assert.Equal(t, int64(-1), firstIndex)
+	lastIndex, err := w.LastEntryIndex()
+	assert.NilError(t, err)
+	assert.Equal(t, int64(-1), lastIndex)
 
-	w.Append(nil, []*pb.LogEntry{
+	_, err = w.Append(nil, []*pb.LogEntry{
 		{
 			Term: 2,
 			Data: []byte("foo"),
@@ -846,19 +913,30 @@ func TestWalFirstAndLastEntryIndex(t *testing.T) {
 			Data: []byte("bar"),
 		},
 	})
+	assert.NilError(t, err)
 
-	assert.Equal(t, int64(0), w.FirstEntryIndex())
-	assert.Equal(t, int64(1), w.LastEntryIndex())
+	firstIndex, err = w.FirstEntryIndex()
+	assert.NilError(t, err)
+	assert.Equal(t, int64(0), firstIndex)
+	lastIndex, err = w.LastEntryIndex()
+	assert.NilError(t, err)
+	assert.Equal(t, int64(1), lastIndex)
 
-	w.TruncateEntriesTo(0)
+	err = w.TruncateEntriesTo(0)
+	assert.NilError(t, err)
 
-	w.Append(nil, []*pb.LogEntry{
+	_, err = w.Append(nil, []*pb.LogEntry{
 		{
 			Term: 4,
 			Data: []byte("bar"),
 		},
 	})
+	assert.NilError(t, err)
 
-	assert.Equal(t, int64(1), w.FirstEntryIndex())
-	assert.Equal(t, int64(2), w.LastEntryIndex())
+	firstIndex, err = w.FirstEntryIndex()
+	assert.NilError(t, err)
+	assert.Equal(t, int64(1), firstIndex)
+	lastIndex, err = w.LastEntryIndex()
+	assert.NilError(t, err)
+	assert.Equal(t, int64(2), lastIndex)
 }

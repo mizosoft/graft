@@ -1,28 +1,30 @@
-package graft
+package badger
 
 import (
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"github.com/dgraph-io/badger/v4"
+	"github.com/mizosoft/graft"
 	"github.com/mizosoft/graft/pb"
 	"google.golang.org/protobuf/proto"
 )
 
 const (
-	logEntryPrefix  = "log:"
-	stateKey        = "state"
-	snapshotMetaKey = "snapshot:meta"
-	snapshotDataKey = "snapshot:data"
-	firstIndexKey   = "firstIndex"
-	lastIndexKey    = "lastIndex"
+	logEntryPrefix  = "graft:log:"
+	stateKey        = "graft:state"
+	snapshotMetaKey = "graft:snapshot:meta"
+	snapshotDataKey = "graft:snapshot:data"
+	firstIndexKey   = "graft:firstIndex"
+	lastIndexKey    = "graft:lastIndex"
 )
 
 type badgerPersistence struct {
-	db *badger.DB
+	db     *badger.DB
+	closed bool
 }
 
-func OpenBadgerPersistence(dir string) (Persistence, error) {
+func OpenBadgerPersistence(dir string) (graft.Persistence, error) {
 	opts := badger.DefaultOptions(dir)
 	opts.Logger = nil
 
@@ -38,7 +40,7 @@ func OpenBadgerPersistence(dir string) (Persistence, error) {
 	}, nil
 }
 
-func (p *badgerPersistence) RetrieveState() *pb.PersistedState {
+func (p *badgerPersistence) RetrieveState() (*pb.PersistedState, error) {
 	var state *pb.PersistedState
 	err := p.db.View(func(txn *badger.Txn) error {
 		item, err := txn.Get([]byte(stateKey))
@@ -54,39 +56,47 @@ func (p *badgerPersistence) RetrieveState() *pb.PersistedState {
 			return proto.Unmarshal(val, state)
 		})
 	})
-
-	if err != nil {
-		panic(err)
-	}
-	return state
+	return state, err
 }
 
-func (p *badgerPersistence) SaveState(state *pb.PersistedState) {
+func (p *badgerPersistence) SaveState(state *pb.PersistedState) error {
 	data, err := proto.Marshal(state)
 	if err != nil {
-		panic(err)
+		return err
 	}
 
-	err = p.db.Update(func(txn *badger.Txn) error {
+	return p.db.Update(func(txn *badger.Txn) error {
 		return txn.Set([]byte(stateKey), data)
 	})
-
-	if err != nil {
-		panic(err)
-	}
 }
 
-func (p *badgerPersistence) Append(state *pb.PersistedState, entries []*pb.LogEntry) int64 {
-	p.SaveState(state)
+func (p *badgerPersistence) Append(state *pb.PersistedState, entries []*pb.LogEntry) (int64, error) {
+	if err := p.SaveState(state); err != nil {
+		return 0, err
+	}
 
 	if len(entries) == 0 {
-		return p.EntryCount()
+		var lastIndex int64 = -1
+		if err := p.db.View(func(txn *badger.Txn) error {
+			localLastIndex, err := p.getLastIndexInTxn(txn)
+			if err != nil {
+				return err
+			}
+			lastIndex = localLastIndex
+			return nil
+		}); err != nil {
+			return 0, err
+		}
+		return lastIndex, nil
 	}
 
 	var nextIndex int64
 	err := p.db.Update(func(txn *badger.Txn) error {
 		// Get current last index.
-		lastIndex := p.getLastIndexInTxn(txn)
+		lastIndex, err := p.getLastIndexInTxn(txn)
+		if err != nil {
+			return err
+		}
 		nextIndex = lastIndex + 1
 
 		// Set first index if this is the first entry.
@@ -114,15 +124,15 @@ func (p *badgerPersistence) Append(state *pb.PersistedState, entries []*pb.LogEn
 		return p.setLastIndexInTxn(txn, nextIndex-1)
 	})
 
-	if err != nil {
-		panic(err)
-	}
-	return nextIndex
+	return nextIndex, err
 }
 
-func (p *badgerPersistence) TruncateEntriesFrom(index int64) {
-	err := p.db.Update(func(txn *badger.Txn) error {
-		lastIndex := p.getLastIndexInTxn(txn)
+func (p *badgerPersistence) TruncateEntriesFrom(index int64) error {
+	return p.db.Update(func(txn *badger.Txn) error {
+		lastIndex, err := p.getLastIndexInTxn(txn)
+		if err != nil {
+			return err
+		}
 		if lastIndex < index {
 			return nil
 		}
@@ -135,8 +145,12 @@ func (p *badgerPersistence) TruncateEntriesFrom(index int64) {
 			}
 		}
 
+		firstIndex, err := p.getFirstIndexInTxn(txn)
+		if err != nil {
+			return err
+		}
 		newLastIndex := index - 1
-		if newLastIndex < p.getFirstIndexInTxn(txn) {
+		if newLastIndex < firstIndex {
 			// No entries left
 			if err := p.setFirstIndexInTxn(txn, -1); err != nil {
 				return err
@@ -145,22 +159,24 @@ func (p *badgerPersistence) TruncateEntriesFrom(index int64) {
 		}
 		return p.setLastIndexInTxn(txn, newLastIndex)
 	})
-
-	if err != nil {
-		panic(err)
-	}
 }
 
-func (p *badgerPersistence) TruncateEntriesTo(index int64) {
-	err := p.db.Update(func(txn *badger.Txn) error {
-		firstIndex := p.getFirstIndexInTxn(txn)
+func (p *badgerPersistence) TruncateEntriesTo(index int64) error {
+	return p.db.Update(func(txn *badger.Txn) error {
+		firstIndex, err := p.getFirstIndexInTxn(txn)
+		if err != nil {
+			return err
+		}
 		if firstIndex > index {
-			return IndexOutOfRange(index)
+			return graft.IndexOutOfRange(index)
 		}
 
-		lastIndex := p.getLastIndexInTxn(txn)
+		lastIndex, err := p.getLastIndexInTxn(txn)
+		if err != nil {
+			return err
+		}
 		if lastIndex < index {
-			return IndexOutOfRange(index)
+			return graft.IndexOutOfRange(index)
 		}
 
 		// Delete entries up to and including index.
@@ -181,17 +197,19 @@ func (p *badgerPersistence) TruncateEntriesTo(index int64) {
 		}
 		return p.setFirstIndexInTxn(txn, newFirstIndex)
 	})
-
-	if err != nil {
-		panic(err)
-	}
 }
 
 func (p *badgerPersistence) EntryCount() int64 {
 	var count int64
-	err := p.db.View(func(txn *badger.Txn) error {
-		firstIndex := p.getFirstIndexInTxn(txn)
-		lastIndex := p.getLastIndexInTxn(txn)
+	if err := p.db.View(func(txn *badger.Txn) error {
+		firstIndex, err := p.getFirstIndexInTxn(txn)
+		if err != nil {
+			return err
+		}
+		lastIndex, err := p.getLastIndexInTxn(txn)
+		if err != nil {
+			return err
+		}
 
 		if firstIndex == -1 || lastIndex == -1 {
 			count = 0
@@ -200,22 +218,20 @@ func (p *badgerPersistence) EntryCount() int64 {
 		}
 
 		return nil
-	})
-
-	if err != nil {
+	}); err != nil {
 		panic(err)
 	}
 	return count
 }
 
-func (p *badgerPersistence) GetEntry(index int64) *pb.LogEntry {
+func (p *badgerPersistence) GetEntry(index int64) (*pb.LogEntry, error) {
 	var entry *pb.LogEntry
 	err := p.db.View(func(txn *badger.Txn) error {
 		key := p.logEntryKey(index)
 		item, err := txn.Get(key)
 		if err != nil {
 			if errors.Is(err, badger.ErrKeyNotFound) {
-				return IndexOutOfRange(index)
+				return graft.IndexOutOfRange(index)
 			}
 			return err
 		}
@@ -225,23 +241,26 @@ func (p *badgerPersistence) GetEntry(index int64) *pb.LogEntry {
 			return proto.Unmarshal(val, entry)
 		})
 	})
+	return entry, err
+}
 
+func (p *badgerPersistence) GetEntryTerm(index int64) (int64, error) {
+	e, err := p.GetEntry(index)
 	if err != nil {
-		panic(err)
+		return 0, err
 	}
-	return entry
+	return e.Term, nil
 }
 
-func (p *badgerPersistence) GetEntryTerm(index int64) int64 {
-	return p.GetEntry(index).Term
-}
-
-func (p *badgerPersistence) GetEntriesFrom(index int64) []*pb.LogEntry {
+func (p *badgerPersistence) GetEntriesFrom(index int64) ([]*pb.LogEntry, error) {
 	var entries []*pb.LogEntry
-	err := p.db.View(func(txn *badger.Txn) error {
-		lastIndex := p.getLastIndexInTxn(txn)
+	if err := p.db.View(func(txn *badger.Txn) error {
+		lastIndex, err := p.getLastIndexInTxn(txn)
+		if err != nil {
+			return err
+		}
 		if index > lastIndex {
-			panic(IndexOutOfRange(index))
+			return graft.IndexOutOfRange(index)
 		}
 
 		for i := index; i <= lastIndex; i++ {
@@ -251,39 +270,42 @@ func (p *badgerPersistence) GetEntriesFrom(index int64) []*pb.LogEntry {
 				return err
 			}
 
-			err = item.Value(func(val []byte) error {
+			if err = item.Value(func(val []byte) error {
 				entry := &pb.LogEntry{}
 				if err := proto.Unmarshal(val, entry); err != nil {
 					return err
 				}
 				entries = append(entries, entry)
 				return nil
-			})
-			if err != nil {
+			}); err != nil {
 				return err
 			}
 		}
-
 		return nil
-	})
-
-	if err != nil {
-		panic(err)
+	}); err != nil {
+		return nil, err
 	}
-	return entries
+	return entries, nil
 }
 
-func (p *badgerPersistence) GetEntries(from, to int64) []*pb.LogEntry {
+func (p *badgerPersistence) GetEntries(from, to int64) ([]*pb.LogEntry, error) {
 	var entries []*pb.LogEntry
-	err := p.db.View(func(txn *badger.Txn) error {
-		firstIndex := p.getFirstIndexInTxn(txn)
-		lastIndex := p.getLastIndexInTxn(txn)
+	if err := p.db.View(func(txn *badger.Txn) error {
+		var err error
+		firstIndex, err := p.getFirstIndexInTxn(txn)
+		if err != nil {
+			return err
+		}
+		lastIndex, err := p.getLastIndexInTxn(txn)
+		if err != nil {
+			return err
+		}
 
 		if from < firstIndex {
-			panic(IndexOutOfRange(from))
+			return graft.IndexOutOfRange(from)
 		}
 		if to > lastIndex {
-			panic(IndexOutOfRange(to))
+			return graft.IndexOutOfRange(to)
 		}
 
 		for i := from; i <= to; i++ {
@@ -293,58 +315,53 @@ func (p *badgerPersistence) GetEntries(from, to int64) []*pb.LogEntry {
 				return err
 			}
 
-			err = item.Value(func(val []byte) error {
+			if err := item.Value(func(val []byte) error {
 				entry := &pb.LogEntry{}
 				if err := proto.Unmarshal(val, entry); err != nil {
 					return err
 				}
 				entries = append(entries, entry)
 				return nil
-			})
-			if err != nil {
+			}); err != nil {
 				return err
 			}
 		}
 		return nil
-	})
-
-	if err != nil {
-		panic(err)
+	}); err != nil {
+		return nil, err
 	}
-	return entries
+	return entries, nil
 }
 
-func (p *badgerPersistence) FirstEntryIndex() int64 {
-	var firstIndex int64 = -1
-	err := p.db.View(func(txn *badger.Txn) error {
-		firstIndex = p.getFirstIndexInTxn(txn)
-		return nil
-	})
-
-	if err != nil {
-		panic(err)
-	}
-	return firstIndex
-}
-
-func (p *badgerPersistence) LastEntryIndex() int64 {
+func (p *badgerPersistence) FirstEntryIndex() (int64, error) {
 	var lastIndex int64 = -1
-	err := p.db.View(func(txn *badger.Txn) error {
-		lastIndex = p.getLastIndexInTxn(txn)
-		return nil
-	})
-
-	if err != nil {
-		panic(err)
+	if err := p.db.View(func(txn *badger.Txn) error {
+		var err error
+		lastIndex, err = p.getFirstIndexInTxn(txn)
+		return err
+	}); err != nil {
+		return -1, err
 	}
-	return lastIndex
+	return lastIndex, nil
 }
 
-func (p *badgerPersistence) SaveSnapshot(snapshot Snapshot) {
-	err := p.db.Update(func(txn *badger.Txn) error {
+func (p *badgerPersistence) LastEntryIndex() (int64, error) {
+	var lastIndex int64 = -1
+	if err := p.db.View(func(txn *badger.Txn) error {
+		var err error
+		lastIndex, err = p.getLastIndexInTxn(txn)
+		return err
+	}); err != nil {
+		return -1, err
+	}
+	return lastIndex, nil
+}
+
+func (p *badgerPersistence) SaveSnapshot(snapshot graft.Snapshot) error {
+	return p.db.Update(func(txn *badger.Txn) error {
 		metaData, err := proto.Marshal(snapshot.Metadata())
 		if err != nil {
-			return fmt.Errorf("failed to marshal snapshot metadata: %w", err)
+			return err
 		}
 
 		if err := txn.Set([]byte(snapshotMetaKey), metaData); err != nil {
@@ -352,16 +369,12 @@ func (p *badgerPersistence) SaveSnapshot(snapshot Snapshot) {
 		}
 		return txn.Set([]byte(snapshotDataKey), snapshot.Data())
 	})
-
-	if err != nil {
-		panic(err)
-	}
 }
 
-func (p *badgerPersistence) RetrieveSnapshot() Snapshot {
+func (p *badgerPersistence) RetrieveSnapshot() (graft.Snapshot, error) {
 	var metadata *pb.SnapshotMetadata
 	var data []byte
-	err := p.db.View(func(txn *badger.Txn) error {
+	if err := p.db.View(func(txn *badger.Txn) error {
 		metaItem, err := txn.Get([]byte(snapshotMetaKey))
 		if err != nil {
 			if errors.Is(err, badger.ErrKeyNotFound) {
@@ -378,41 +391,56 @@ func (p *badgerPersistence) RetrieveSnapshot() Snapshot {
 			return err
 		}
 
+		if metadata == nil {
+			return nil
+		}
+
 		dataItem, err := txn.Get([]byte(snapshotDataKey))
 		if err != nil {
 			return err
 		}
-
 		return dataItem.Value(func(val []byte) error {
 			data = make([]byte, len(val))
 			copy(data, val)
 			return nil
 		})
-	})
-
-	if err != nil {
-		panic(err)
+	}); err != nil {
+		return nil, err
 	}
 
 	if metadata == nil {
-		return nil
+		return nil, nil
 	}
-
-	return NewSnapshot(metadata, data)
+	return graft.NewSnapshot(metadata, data), nil
 }
 
-func (p *badgerPersistence) SnapshotMetadata() *pb.SnapshotMetadata {
-	snapshot := p.RetrieveSnapshot()
-	if snapshot == nil {
+func (p *badgerPersistence) SnapshotMetadata() (*pb.SnapshotMetadata, error) {
+	var metadata *pb.SnapshotMetadata
+	if err := p.db.View(func(txn *badger.Txn) error {
+		metaItem, err := txn.Get([]byte(snapshotMetaKey))
+		if err != nil {
+			if errors.Is(err, badger.ErrKeyNotFound) {
+				return nil
+			}
+			return err
+		}
+
+		err = metaItem.Value(func(val []byte) error {
+			metadata = &pb.SnapshotMetadata{}
+			return proto.Unmarshal(val, metadata)
+		})
+		if err != nil {
+			return err
+		}
 		return nil
+	}); err != nil {
+		return nil, err
 	}
-	return snapshot.Metadata()
+	return metadata, nil
 }
 
-func (p *badgerPersistence) Close() {
-	if err := p.db.Close(); err != nil {
-		fmt.Printf("failed to close badger db: %s\n", err)
-	}
+func (p *badgerPersistence) Close() error {
+	return p.db.Close()
 }
 
 func (p *badgerPersistence) logEntryKey(index int64) []byte {
@@ -422,37 +450,46 @@ func (p *badgerPersistence) logEntryKey(index int64) []byte {
 	return key
 }
 
-func (p *badgerPersistence) getFirstIndexInTxn(txn *badger.Txn) int64 {
+func (p *badgerPersistence) getFirstIndexInTxn(txn *badger.Txn) (int64, error) {
 	item, err := txn.Get([]byte(firstIndexKey))
 	if err != nil {
-		return -1
+		if errors.Is(err, badger.ErrKeyNotFound) {
+			return -1, nil
+		}
+		return -1, err
 	}
 
 	var index int64 = -1
-	item.Value(func(val []byte) error {
+	if err := item.Value(func(val []byte) error {
 		if len(val) == 8 {
 			index = int64(binary.BigEndian.Uint64(val))
 		}
 		return nil
-	})
-
-	return index
+	}); err != nil {
+		return -1, err
+	}
+	return index, nil
 }
 
-func (p *badgerPersistence) getLastIndexInTxn(txn *badger.Txn) int64 {
+func (p *badgerPersistence) getLastIndexInTxn(txn *badger.Txn) (int64, error) {
 	item, err := txn.Get([]byte(lastIndexKey))
 	if err != nil {
-		return -1
+		if errors.Is(err, badger.ErrKeyNotFound) {
+			return -1, nil
+		}
+		return -1, err
 	}
 
 	var index int64 = -1
-	item.Value(func(val []byte) error {
+	if err = item.Value(func(val []byte) error {
 		if len(val) == 8 {
 			index = int64(binary.BigEndian.Uint64(val))
 		}
 		return nil
-	})
-	return index
+	}); err != nil {
+		return -1, err
+	}
+	return index, nil
 }
 
 func (p *badgerPersistence) setFirstIndexInTxn(txn *badger.Txn, index int64) error {

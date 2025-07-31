@@ -213,14 +213,19 @@ func (g *Graft) Initialize() {
 		g.heartbeatChan <- struct{}{}
 	})
 
-	state := g.Persistence.RetrieveState()
+	state, err := g.Persistence.RetrieveState()
+	if err != nil {
+		panic(err)
+	}
 	if state == nil {
 		state = &pb.PersistedState{
 			CurrentTerm: 0,
 			VotedFor:    UnknownLeader,
 			CommitIndex: -1,
 		}
-		g.Persistence.SaveState(state)
+		if err := g.Persistence.SaveState(state); err != nil {
+			panic(err)
+		}
 	}
 
 	g.unguardedTransitionToFollower(state.CurrentTerm)
@@ -228,13 +233,19 @@ func (g *Graft) Initialize() {
 	g.commitIndex = state.CommitIndex
 
 	// Restore the state-machine.
-	snapshot := g.Persistence.RetrieveSnapshot()
+	snapshot, err := g.Persistence.RetrieveSnapshot()
+	if err != nil {
+		panic(err)
+	}
 	if snapshot != nil {
 		g.Restore(snapshot)
 		g.lastApplied = snapshot.Metadata().LastAppliedIndex
 	}
 
-	firstIndex := g.Persistence.FirstEntryIndex()
+	firstIndex, err := g.Persistence.FirstEntryIndex()
+	if err != nil {
+		panic(err)
+	}
 	commitIndex := g.commitIndex // Only apply committed entries.
 	if firstIndex >= 0 && commitIndex >= firstIndex {
 		g.unguardedApply(firstIndex, commitIndex, true)
@@ -350,8 +361,12 @@ func (g *Graft) applyWorker() {
 						metadata.ConfigUpdate = g.lastUpdate
 					}
 
-					g.Persistence.SaveSnapshot(NewSnapshot(metadata, snapshotData))
-					g.Persistence.TruncateEntriesTo(metadata.LastAppliedIndex)
+					if err := g.Persistence.SaveSnapshot(NewSnapshot(metadata, snapshotData)); err != nil {
+						panic(err)
+					}
+					if err := g.Persistence.TruncateEntriesTo(metadata.LastAppliedIndex); err != nil {
+						panic(err)
+					}
 				}()
 			}
 		case Snapshot:
@@ -406,12 +421,20 @@ func (g *Graft) runElection(timeoutTerm int64) {
 						return nil
 					}
 
-					lastLogIndex := g.Persistence.LastEntryIndex()
+					lastLogIndex, err := g.Persistence.LastEntryIndex()
+					if err != nil {
+						panic(err)
+					}
 					var lastLogTerm int64 = -1
 					if lastLogIndex >= 0 {
-						lastLogTerm = g.Persistence.GetEntryTerm(lastLogIndex)
-					} else if metadata := g.Persistence.SnapshotMetadata(); metadata != nil {
+						lastLogTerm, err = g.Persistence.GetEntryTerm(lastLogIndex)
+						if err != nil {
+							panic(err)
+						}
+					} else if metadata, err := g.Persistence.SnapshotMetadata(); err == nil && metadata != nil {
 						lastLogIndex, lastLogTerm = metadata.LastAppliedIndex, metadata.LastAppliedTerm
+					} else if err != nil {
+						panic(err)
 					}
 
 					return &pb.RequestVoteRequest{
@@ -481,10 +504,22 @@ func (g *Graft) broadcastWorker(p *peer, c *broadcastChannel) {
 
 			// Check nextIndex validity.
 			nextIndex := p.nextIndex
-			firstIndex := g.Persistence.FirstEntryIndex()
-			lastIndex := g.Persistence.LastEntryIndex()
+			firstIndex, err := g.Persistence.FirstEntryIndex()
+			if err != nil {
+				panic(err)
+			}
+
+			lastIndex, err := g.Persistence.LastEntryIndex()
+			if err != nil {
+				panic(err)
+			}
+
 			if nextIndex < firstIndex || nextIndex > lastIndex+1 { // Even if lastIndex == -1 we want nextIndex = 0.
-				if metadata := g.Persistence.SnapshotMetadata(); metadata == nil || nextIndex < 0 || nextIndex > metadata.LastAppliedIndex+1 {
+				metadata, err := g.Persistence.SnapshotMetadata()
+				if err != nil {
+					panic(err)
+				}
+				if metadata == nil || nextIndex < 0 || nextIndex > metadata.LastAppliedIndex+1 {
 					g.logger.Panicf(
 						"Invalid nextIndex: nextIndex=%d, firstIndex=%d, lastIndex=%d, snapshotMetadata=%v",
 						nextIndex, firstIndex, metadata.LastAppliedIndex, metadata)
@@ -492,7 +527,11 @@ func (g *Graft) broadcastWorker(p *peer, c *broadcastChannel) {
 			}
 
 			if firstIndex < 0 || nextIndex < firstIndex {
-				if snapshot := g.Persistence.RetrieveSnapshot(); snapshot != nil {
+				snapshot, err := g.Persistence.RetrieveSnapshot()
+				if err != nil {
+					panic(err)
+				}
+				if snapshot != nil {
 					return &pb.SnapshotRequest{
 						Term:     g.currentTerm,
 						LeaderId: g.Id,
@@ -514,9 +553,15 @@ func (g *Graft) broadcastWorker(p *peer, c *broadcastChannel) {
 			if prevLogIndex < 0 {
 				request.PrevLogIndex, request.PrevLogTerm = -1, -1
 			} else if firstIndex >= 0 && prevLogIndex >= firstIndex && prevLogIndex <= lastIndex {
-				request.PrevLogIndex, request.PrevLogTerm = prevLogIndex, g.Persistence.GetEntryTerm(prevLogIndex)
-			} else if metadata := g.Persistence.SnapshotMetadata(); metadata != nil && prevLogIndex == metadata.LastAppliedIndex {
+				prevLogTerm, err := g.Persistence.GetEntryTerm(prevLogIndex)
+				if err != nil {
+					panic(err)
+				}
+				request.PrevLogIndex, request.PrevLogTerm = prevLogIndex, prevLogTerm
+			} else if metadata, err := g.Persistence.SnapshotMetadata(); err == nil && metadata != nil && prevLogIndex == metadata.LastAppliedIndex {
 				request.PrevLogIndex, request.PrevLogTerm = metadata.LastAppliedIndex, metadata.LastAppliedIndex
+			} else if err != nil {
+				panic(err)
 			} else {
 				g.logger.Panicf("Invalid prevLogIndex: %d", prevLogIndex)
 			}
@@ -527,7 +572,11 @@ func (g *Graft) broadcastWorker(p *peer, c *broadcastChannel) {
 				if to > lastIndex {
 					to = lastIndex
 				}
-				request.Entries = g.Persistence.GetEntries(from, to)
+				es, err := g.Persistence.GetEntries(from, to)
+				if err != nil {
+					panic(err)
+				}
+				request.Entries = es
 			}
 
 			return request
@@ -590,7 +639,10 @@ func (g *Graft) broadcastWorker(p *peer, c *broadcastChannel) {
 							p.matchIndex = req.PrevLogIndex
 						}
 
-						lastIndex := g.Persistence.LastEntryIndex()
+						lastIndex, err := g.Persistence.LastEntryIndex()
+						if err != nil {
+							panic(err)
+						}
 
 						if p.learner && p.matchIndex >= lastIndex {
 							p.learner = false
@@ -641,10 +693,17 @@ func (g *Graft) broadcastWorker(p *peer, c *broadcastChannel) {
 
 func (g *Graft) unguardedFlushCommittedEntries() {
 	newCommitIndex := g.commitIndex
-	lastIndex := g.Persistence.LastEntryIndex()
+	lastIndex, err := g.Persistence.LastEntryIndex()
+	if err != nil {
+		panic(err)
+	}
 	for i := g.commitIndex + 1; i <= lastIndex; i++ { // Note that commitIndex is initialized to -1 initially.
 		// We must only commit entries from current term. See paper section 5.4.2.
-		if g.Persistence.GetEntryTerm(i) == g.currentTerm && g.unguardedCountMajority(func(p *peer) bool {
+		term, err := g.Persistence.GetEntryTerm(i)
+		if err != nil {
+			panic(err)
+		}
+		if term == g.currentTerm && g.unguardedCountMajority(func(p *peer) bool {
 			return p.matchIndex >= i
 		}) {
 			newCommitIndex = i
@@ -663,7 +722,10 @@ func (g *Graft) unguardedTransitionToLeader() {
 	g.state = stateLeader
 	g.leaderId = g.Id
 
-	lastIndex := g.Persistence.LastEntryIndex()
+	lastIndex, err := g.Persistence.LastEntryIndex()
+	if err != nil {
+		panic(err)
+	}
 	for _, peer := range g.peers {
 		peer.nextIndex = lastIndex + 1
 		peer.matchIndex = -1
@@ -671,12 +733,15 @@ func (g *Graft) unguardedTransitionToLeader() {
 
 	// Append NOOP entry if we have uncommitted entries from previous terms.
 	if g.commitIndex < lastIndex {
-		g.Persistence.Append(g.unguardedCapturePersistedState(), []*pb.LogEntry{
+		_, err := g.Persistence.Append(g.unguardedCapturePersistedState(), []*pb.LogEntry{
 			{
 				Term: g.currentTerm,
 				Type: pb.LogEntry_NOOP,
 			},
 		})
+		if err != nil {
+			panic(err)
+		}
 	}
 
 	g.electionTimer.pause()
@@ -722,12 +787,16 @@ func (g *Graft) unguardedContinueConfigUpdate() {
 		if !hasLearners {
 			update := cloneMsg(g.lastUpdate)
 			update.Phase = pb.ConfigUpdate_JOINT
-			g.unguardedAppendUpdate(update)
+			if err := g.unguardedAppendUpdate(update); err != nil {
+				panic(err)
+			}
 		}
 	case pb.ConfigUpdate_JOINT:
 		update := cloneMsg(g.lastUpdate)
 		update.Phase = pb.ConfigUpdate_APPLIED
-		g.unguardedAppendUpdate(update)
+		if err := g.unguardedAppendUpdate(update); err != nil {
+			panic(err)
+		}
 	case pb.ConfigUpdate_APPLIED:
 		if g.leaving {
 			g.leaving = false
@@ -748,7 +817,11 @@ func (g *Graft) unguardedCommit(newCommitIndex int64) {
 
 func (g *Graft) unguardedApply(from, to int64, applyConfigUpdates bool) {
 	commandEntries := make([]*pb.LogEntry, 0)
-	for _, entry := range g.Persistence.GetEntries(from, to) {
+	entries, err := g.Persistence.GetEntries(from, to)
+	if err != nil {
+		panic(err)
+	}
+	for _, entry := range entries {
 		switch entry.Type {
 		case pb.LogEntry_COMMAND:
 			commandEntries = append(commandEntries, entry)
@@ -813,12 +886,20 @@ func (g *Graft) unguardedIsUnknownPeer(peerId string) bool {
 }
 
 func (g *Graft) unguardedIsCandidateLogUpToDate(request *pb.RequestVoteRequest) bool {
-	myLastLogIndex := g.Persistence.LastEntryIndex()
+	myLastLogIndex, err := g.Persistence.LastEntryIndex()
+	if err != nil {
+		panic(err)
+	}
 	var myLastLogTerm int64 = -1
 	if myLastLogIndex >= 0 {
-		myLastLogTerm = g.Persistence.GetEntryTerm(myLastLogIndex)
-	} else if metadata := g.Persistence.SnapshotMetadata(); metadata != nil {
+		myLastLogTerm, err = g.Persistence.GetEntryTerm(myLastLogIndex)
+		if err != nil {
+			panic(err)
+		}
+	} else if metadata, err := g.Persistence.SnapshotMetadata(); err == nil && metadata != nil {
 		myLastLogIndex, myLastLogTerm = metadata.LastAppliedIndex, metadata.LastAppliedTerm
+	} else if err != nil {
+		panic(err)
 	}
 
 	// Note that this comparison works with the -1 sentinel values.
@@ -863,7 +944,9 @@ func (g *Graft) requestVote(request *pb.RequestVoteRequest) (*pb.RequestVoteResp
 		g.lastHeartbeatTime = time.Now()
 	}
 
-	g.Persistence.SaveState(g.unguardedCapturePersistedState())
+	if err := g.Persistence.SaveState(g.unguardedCapturePersistedState()); err != nil {
+		panic(err)
+	}
 	return &pb.RequestVoteResponse{
 		Term:        g.currentTerm,
 		VoteGranted: grantVote,
@@ -900,20 +983,33 @@ func (g *Graft) appendEntries(request *pb.AppendEntriesRequest) (*pb.AppendEntri
 		g.leaderId = request.LeaderId
 	}
 
-	lastIndex := g.Persistence.LastEntryIndex()
+	lastIndex, err := g.Persistence.LastEntryIndex()
+	if err != nil {
+		panic(err)
+	}
 	if request.PrevLogIndex > lastIndex {
-		g.Persistence.SaveState(g.unguardedCapturePersistedState())
+		if err := g.Persistence.SaveState(g.unguardedCapturePersistedState()); err != nil {
+			panic(err)
+		}
 		return &pb.AppendEntriesResponse{
 			Term:    request.Term,
 			Success: false,
 		}, nil
 	}
 
-	firstIndex := g.Persistence.FirstEntryIndex()
+	firstIndex, err := g.Persistence.FirstEntryIndex()
+	if err != nil {
+		panic(err)
+	}
 	if request.PrevLogIndex >= firstIndex && firstIndex >= 0 {
-		myPrevLogTerm := g.Persistence.GetEntryTerm(request.PrevLogIndex)
+		myPrevLogTerm, err := g.Persistence.GetEntryTerm(request.PrevLogIndex)
+		if err != nil {
+			panic(err)
+		}
 		if request.PrevLogTerm != myPrevLogTerm {
-			g.Persistence.SaveState(g.unguardedCapturePersistedState())
+			if err := g.Persistence.SaveState(g.unguardedCapturePersistedState()); err != nil {
+				panic(err)
+			}
 			return &pb.AppendEntriesResponse{
 				Term:    request.Term,
 				Success: false,
@@ -922,13 +1018,21 @@ func (g *Graft) appendEntries(request *pb.AppendEntriesRequest) (*pb.AppendEntri
 	}
 
 	if request.PrevLogIndex+1 <= lastIndex {
-		g.Persistence.TruncateEntriesFrom(request.PrevLogIndex + 1)
+		if err := g.Persistence.TruncateEntriesFrom(request.PrevLogIndex + 1); err != nil {
+			panic(err)
+		}
 	}
 
-	g.Persistence.Append(g.unguardedCapturePersistedState(), request.Entries)
+	_, err = g.Persistence.Append(g.unguardedCapturePersistedState(), request.Entries)
+	if err != nil {
+		panic(err)
+	}
 
 	if request.LeaderCommitIndex > g.commitIndex {
-		lastIndex := g.Persistence.LastEntryIndex()
+		lastIndex, err := g.Persistence.LastEntryIndex()
+		if err != nil {
+			panic(err)
+		}
 		newCommitIndex := min(request.LeaderCommitIndex, lastIndex)
 		if newCommitIndex > g.commitIndex {
 			g.unguardedCommit(newCommitIndex)
@@ -979,7 +1083,9 @@ func (g *Graft) installSnapshot(request *pb.SnapshotRequest) (*pb.SnapshotRespon
 		g.leaderId = request.LeaderId
 	}
 
-	g.Persistence.SaveState(g.unguardedCapturePersistedState())
+	if err := g.Persistence.SaveState(g.unguardedCapturePersistedState()); err != nil {
+		panic(err)
+	}
 
 	if !request.Done {
 		return nil, fmt.Errorf("expected snapshot to be done in one call")
@@ -990,14 +1096,26 @@ func (g *Graft) installSnapshot(request *pb.SnapshotRequest) (*pb.SnapshotRespon
 	}
 
 	snapshot := NewSnapshot(request.Metadata, request.Data)
-	g.Persistence.SaveSnapshot(snapshot)
+	if err := g.Persistence.SaveSnapshot(snapshot); err != nil {
+		panic(err)
+	}
 
-	firstIndex := g.Persistence.FirstEntryIndex()
+	firstIndex, err := g.Persistence.FirstEntryIndex()
+	if err != nil {
+		panic(err)
+	}
+
 	if request.Metadata.LastAppliedIndex >= firstIndex && firstIndex >= 0 {
-		lastIndex := g.Persistence.LastEntryIndex()
-		g.Persistence.TruncateEntriesTo(min(request.Metadata.LastAppliedIndex, lastIndex))
+		lastIndex, err := g.Persistence.LastEntryIndex()
+		if err != nil {
+			panic(err)
+		}
+		err = g.Persistence.TruncateEntriesTo(min(request.Metadata.LastAppliedIndex, lastIndex))
+
 	} else if firstIndex >= 0 {
-		g.Persistence.TruncateEntriesFrom(firstIndex) // Truncate entire log.
+		if err := g.Persistence.TruncateEntriesFrom(firstIndex); err != nil { // Truncate entire log.
+			panic(err)
+		}
 	}
 
 	if request.Metadata.ConfigUpdate != nil {
@@ -1033,14 +1151,18 @@ func (f *peerFactory) get(config *pb.NodeConfig) *peer {
 	return p
 }
 
-func (g *Graft) unguardedAppendUpdate(update *pb.ConfigUpdate) {
-	updateIndex := g.Persistence.Append(g.unguardedCapturePersistedState(), []*pb.LogEntry{{
+func (g *Graft) unguardedAppendUpdate(update *pb.ConfigUpdate) error {
+	nextIndex, err := g.Persistence.Append(g.unguardedCapturePersistedState(), []*pb.LogEntry{{
 		Term: g.currentTerm,
 		Type: pb.LogEntry_CONFIG,
 		Data: protoMarshal(update),
-	}}) - 1
-	g.unguardedApplyUpdate(update, updateIndex)
+	}})
+	if err != nil {
+		return err
+	}
+	g.unguardedApplyUpdate(update, nextIndex-1)
 	g.heartbeatTimer.poke() // Broadcast update.
+	return nil
 }
 
 func (g *Graft) unguardedApplyUpdate(update *pb.ConfigUpdate, updateIndex int64) {
@@ -1054,7 +1176,10 @@ func (g *Graft) unguardedApplyUpdate(update *pb.ConfigUpdate, updateIndex int64)
 		g.leaving = true
 	}
 
-	lastIndex := g.Persistence.LastEntryIndex()
+	lastIndex, err := g.Persistence.LastEntryIndex()
+	if err != nil {
+		panic(err)
+	}
 	newPeers := make(map[string]*peer)
 	factory := &peerFactory{
 		existingPeers:        g.peers,
@@ -1150,7 +1275,10 @@ func (g *Graft) Append(commands [][]byte) (int64, error) {
 		}
 	}
 
-	nextIndex := g.Persistence.Append(g.unguardedCapturePersistedState(), entries)
+	nextIndex, err := g.Persistence.Append(g.unguardedCapturePersistedState(), entries)
+	if err != nil {
+		return -1, err
+	}
 	g.heartbeatTimer.poke() // Broadcast new entries.
 	return nextIndex - int64(len(entries)), nil
 }
@@ -1220,8 +1348,7 @@ func (g *Graft) ConfigUpdate(id string, addedNodes map[string]string, removedNod
 	} else {
 		update.Phase = pb.ConfigUpdate_JOINT
 	}
-	g.unguardedAppendUpdate(update)
-	return nil
+	return g.unguardedAppendUpdate(update)
 }
 
 func in(id string, configs []*pb.NodeConfig) bool {

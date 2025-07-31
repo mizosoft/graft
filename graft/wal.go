@@ -672,8 +672,8 @@ func (w *wal) decodeRecord(recordBytes []byte) (*pb.WalRecord, error) {
 	return &record, nil
 }
 
-func (w *wal) RetrieveState() *pb.PersistedState {
-	return w.lastState
+func (w *wal) RetrieveState() (*pb.PersistedState, error) {
+	return w.lastState, nil
 }
 
 func (w *wal) saveState(state *pb.PersistedState) error {
@@ -684,23 +684,21 @@ func (w *wal) saveState(state *pb.PersistedState) error {
 	return nil
 }
 
-func (w *wal) SaveState(state *pb.PersistedState) {
+func (w *wal) SaveState(state *pb.PersistedState) error {
 	if w.closed {
-		panic(ErrClosed)
+		return ErrClosed
 	}
 
 	if proto.Equal(state, w.lastState) {
-		return
+		return nil
 	}
 
-	if err := w.saveState(state); err != nil {
-		panic(err)
-	}
+	return w.saveState(state)
 }
 
-func (w *wal) Append(state *pb.PersistedState, entries []*pb.LogEntry) int64 {
+func (w *wal) Append(state *pb.PersistedState, entries []*pb.LogEntry) (int64, error) {
 	if w.closed {
-		panic(ErrClosed)
+		return 0, ErrClosed
 	}
 
 	if proto.Equal(state, w.lastState) {
@@ -710,12 +708,11 @@ func (w *wal) Append(state *pb.PersistedState, entries []*pb.LogEntry) int64 {
 	nextIndex := w.tail.nextIndex
 
 	if state == nil && len(entries) == 0 {
-		return nextIndex
+		return nextIndex, nil
 	}
 
 	if len(entries) == 0 {
-		w.SaveState(state)
-		return nextIndex
+		return nextIndex, w.SaveState(state)
 	}
 
 	for _, entry := range entries {
@@ -737,7 +734,7 @@ func (w *wal) Append(state *pb.PersistedState, entries []*pb.LogEntry) int64 {
 				toWriteCount := offsets[len(offsets)-1]
 				data := append([]byte(nil), buf.Next(toWriteCount)...) // Do a copy.
 				if err := w.tail.appendBytes(append(data, w.trailerRecord...)); err != nil {
-					panic(err)
+					return 0, err
 				}
 				for _, offset := range offsets[:len(offsets)-1] {
 					w.tail.entryOffsets = append(w.tail.entryOffsets, w.tail.lastOffset+int64(offset))
@@ -749,14 +746,14 @@ func (w *wal) Append(state *pb.PersistedState, entries []*pb.LogEntry) int64 {
 			}
 
 			if err := w.tail.sync(); err != nil {
-				panic(err)
+				return 0, err
 			}
 			if err := w.appendSegment(); err != nil {
-				panic(err)
+				return 0, err
 			}
 		}
 		if w.tail.lastOffset+int64(buf.Len()) > w.segmentSize-int64(len(w.trailerRecord)) {
-			panic(ErrLargeRecord)
+			return 0, ErrLargeRecord
 		}
 	}
 
@@ -765,7 +762,7 @@ func (w *wal) Append(state *pb.PersistedState, entries []*pb.LogEntry) int64 {
 	if len(offsets) > 0 {
 		toWriteCount := buf.Len()
 		if err := w.tail.appendBytes(append(buf.Bytes(), w.trailerRecord...)); err != nil {
-			panic(err)
+			return 0, err
 		}
 		for _, offset := range offsets {
 			w.tail.entryOffsets = append(w.tail.entryOffsets, w.tail.lastOffset+int64(offset))
@@ -776,14 +773,14 @@ func (w *wal) Append(state *pb.PersistedState, entries []*pb.LogEntry) int64 {
 
 	if state != nil {
 		if err := w.saveState(state); err != nil { // This will do a sync.
-			panic(err)
+			return 0, err
 		}
 	} else if err := w.tail.sync(); err != nil {
-		panic(err)
+		return 0, err
 	}
 
 	w.cache.append(cloneMsgs(entries)) // Defensively copy before caching.
-	return nextIndex
+	return nextIndex, nil
 }
 
 func (w *wal) appendSegment() error {
@@ -876,14 +873,14 @@ func (w *wal) appendSegment() error {
 	return nil
 }
 
-func (w *wal) TruncateEntriesFrom(index int64) {
+func (w *wal) TruncateEntriesFrom(index int64) error {
 	if w.closed {
-		panic(ErrClosed)
+		return ErrClosed
 	}
 
 	segIndex, err := w.findSegment(index)
 	if err != nil {
-		panic(err)
+		return err
 	}
 
 	removedSegments := w.segments[segIndex+1:]
@@ -892,33 +889,34 @@ func (w *wal) TruncateEntriesFrom(index int64) {
 
 	for _, seg := range removedSegments {
 		if err := seg.delete(); err != nil {
-			panic(err)
+			return err
 		}
 	}
 	if err := w.tail.truncateEntriesFrom(index); err != nil {
-		panic(err)
+		return err
 	}
 
 	// Make sure we have lastState appended since it might have been truncated.
 	if w.lastState != nil {
 		if err := w.saveState(w.lastState); err != nil {
-			panic(err)
+			return err
 		}
 	}
 
 	if w.cache.firstIndex() >= 0 {
 		w.cache.truncateFrom(max(index, w.cache.firstIndex()))
 	}
+	return nil
 }
 
-func (w *wal) TruncateEntriesTo(index int64) {
+func (w *wal) TruncateEntriesTo(index int64) error {
 	if w.closed {
-		panic(ErrClosed)
+		return ErrClosed
 	}
 
 	segIndex, err := w.findSegment(index)
 	if err != nil {
-		panic(err)
+		return err
 	}
 
 	removedSegments := w.segments[:segIndex]
@@ -926,13 +924,13 @@ func (w *wal) TruncateEntriesTo(index int64) {
 
 	for _, seg := range removedSegments {
 		if err := seg.delete(); err != nil {
-			panic(err)
+			return err
 		}
 	}
 
 	removeHead, err := w.segments[0].truncateEntriesTo(index)
 	if err != nil {
-		panic(err)
+		return err
 	}
 	if removeHead {
 		w.segments = w.segments[1:]
@@ -941,13 +939,14 @@ func (w *wal) TruncateEntriesTo(index int64) {
 	// Make sure we have lastState appended since it might have been truncated.
 	if w.lastState != nil {
 		if err := w.saveState(w.lastState); err != nil {
-			panic(err)
+			return err
 		}
 	}
 
 	if w.cache.firstIndex() >= 0 && index >= w.cache.firstIndex() {
 		w.cache.truncateTo(index)
 	}
+	return nil
 }
 
 func (w *wal) EntryCount() int64 {
@@ -958,97 +957,110 @@ func (w *wal) EntryCount() int64 {
 	return count
 }
 
-func (w *wal) GetEntry(index int64) *pb.LogEntry {
+func (w *wal) GetEntry(index int64) (*pb.LogEntry, error) {
 	if w.closed {
-		panic(ErrClosed)
+		return nil, ErrClosed
 	}
 
 	e := w.cache.get(index)
 	if e != nil {
-		return e
+		return e, nil
 	} else {
 		return w.getEntry(index)
 	}
 }
 
-func (w *wal) getEntry(index int64) *pb.LogEntry {
+func (w *wal) getEntry(index int64) (*pb.LogEntry, error) {
 	segIndex, err := w.findSegment(index)
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
 
 	entry, err := w.segments[segIndex].getEntry(index)
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
-	return entry
+	return entry, nil
 }
 
-func (w *wal) GetEntryTerm(index int64) int64 {
-	return w.GetEntry(index).Term
+func (w *wal) GetEntryTerm(index int64) (int64, error) {
+	e, err := w.GetEntry(index)
+	if err != nil {
+		return 0, err
+	} else {
+		return e.Term, nil
+	}
 }
 
-func (w *wal) GetEntries(from, to int64) []*pb.LogEntry {
+func (w *wal) GetEntries(from, to int64) ([]*pb.LogEntry, error) {
 	if from > to {
-		panic(fmt.Errorf("from (%d) must be smaller than or equal to (%d)", from, to))
+		return nil, fmt.Errorf("from (%d) must be smaller than or equal to (%d)", from, to)
 	}
 
 	if w.cache.firstIndex() >= 0 && to >= w.cache.firstIndex() {
 		entries := w.cache.getEntries(max(w.cache.firstIndex(), from), to)
 		if from < w.cache.firstIndex() {
 			suffix := entries
-			prefix := w.getEntries(from, w.cache.firstIndex()-1)
+			prefix, err := w.getEntries(from, w.cache.firstIndex()-1)
+			if err != nil {
+				return nil, err
+			}
 			entries = append(prefix, suffix...)
 		}
-		return entries
+		return entries, nil
 	} else {
 		return w.getEntries(from, to)
 	}
 }
 
-func (w *wal) getEntries(from, to int64) []*pb.LogEntry {
+func (w *wal) getEntries(from, to int64) ([]*pb.LogEntry, error) {
 	if from == to {
-		return []*pb.LogEntry{w.getEntry(from)}
+		e, err := w.getEntry(from)
+		if err != nil {
+			return nil, err
+		} else {
+			return []*pb.LogEntry{e}, nil
+		}
 	}
 
 	firstSegIndex, err := w.findSegment(from)
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
 
 	lastSegIndex, err := w.findSegment(to)
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
 
 	entries, err := w.segments[firstSegIndex].getEntriesFrom(from)
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
 
 	if firstSegIndex == lastSegIndex {
-		return entries[0 : to-from+1]
+		return entries[0 : to-from+1], nil
 	} else {
 		for i := firstSegIndex + 1; i < lastSegIndex; i++ {
 			seg := w.segments[i]
 			middleEntries, err := seg.getEntriesFrom(seg.firstIndex)
 			if err != nil {
-				panic(err)
+				return nil, err
 			}
 			entries = append(entries, middleEntries...)
 		}
 
 		tailEntries, err := w.segments[lastSegIndex].getEntriesTo(to)
 		if err != nil {
-			panic(err)
+			return nil, err
 		}
-		return append(entries, tailEntries...)
+		return append(entries, tailEntries...), nil
 	}
 }
 
-func (w *wal) HeadEntry() *pb.LogEntry {
+func (w *wal) HeadEntry() (*pb.LogEntry, error) {
 	if w.closed {
-		panic(ErrClosed)
+		return nil, ErrClosed
 	}
 
 	// Search for the first segment from the start that has an entry.
@@ -1056,18 +1068,18 @@ func (w *wal) HeadEntry() *pb.LogEntry {
 		seg := w.segments[i]
 		entry, err := seg.headEntry()
 		if err != nil {
-			panic(err)
+			return nil, err
 		}
 		if entry != nil {
-			return entry
+			return entry, nil
 		}
 	}
-	return nil
+	return nil, nil
 }
 
-func (w *wal) TailEntry() *pb.LogEntry {
+func (w *wal) TailEntry() (*pb.LogEntry, error) {
 	if w.closed {
-		panic(ErrClosed)
+		return nil, ErrClosed
 	}
 
 	// Search for the first segment from the end that has an entry.
@@ -1075,63 +1087,66 @@ func (w *wal) TailEntry() *pb.LogEntry {
 		seg := w.segments[i]
 		entry, err := seg.tailEntry()
 		if err != nil {
-			panic(err)
+			return nil, err
 		}
 		if entry != nil {
-			return entry
+			return entry, err
 		}
 	}
-	return nil
+	return nil, nil
 }
 
-func (w *wal) GetEntriesFrom(from int64) []*pb.LogEntry {
+func (w *wal) GetEntriesFrom(from int64) ([]*pb.LogEntry, error) {
 	if w.closed {
-		panic(ErrClosed)
+		return nil, ErrClosed
 	}
 
 	if w.cache.firstIndex() >= 0 && from >= w.cache.firstIndex() {
-		return w.cache.getEntries(from, w.cache.lastIndex())
+		return w.cache.getEntries(from, w.cache.lastIndex()), nil
 	} else if w.cache.firstIndex() >= 0 {
-		entries := w.getEntries(from, w.cache.firstIndex()-1)
+		entries, err := w.getEntries(from, w.cache.firstIndex()-1)
+		if err != nil {
+			return nil, err
+		}
 		entries = append(entries, w.cache.getAll()...)
-		return entries
+		return entries, nil
 	} else {
 		return w.getEntriesFrom(from)
 	}
 }
 
-func (w *wal) getEntriesFrom(from int64) []*pb.LogEntry {
+func (w *wal) getEntriesFrom(from int64) ([]*pb.LogEntry, error) {
 	segIndex, err := w.findSegment(from)
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
 
 	entries, err := w.segments[segIndex].getEntriesFrom(from)
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
 
 	for i := segIndex + 1; i < len(w.segments); i++ {
 		seg := w.segments[i]
 		segEntries, err := seg.getEntriesFrom(seg.firstIndex)
 		if err != nil {
-			panic(err)
+			return nil, err
 		}
 		entries = append(entries, segEntries...)
 	}
-	return entries
+	return entries, nil
 }
 
-func (w *wal) SaveSnapshot(snapshot Snapshot) {
+func (w *wal) SaveSnapshot(snapshot Snapshot) error {
 	if w.closed {
-		panic(ErrClosed)
+		return ErrClosed
 	}
 
 	metadata := snapshot.Metadata()
 	fpath := path.Join(w.dir, snapFileName(metadata))
 	f, err := os.Create(fpath)
 	if err != nil {
-		panic(err)
+		return err
 	}
 	err = func() error {
 		defer f.Close()
@@ -1145,57 +1160,58 @@ func (w *wal) SaveSnapshot(snapshot Snapshot) {
 		return nil
 	}()
 	if err != nil {
-		panic(err)
+		return err
 	}
 	if err := w.appendRecord(snapshotMetadataRecordType, metadata); err != nil {
-		panic(err)
+		return err
 	}
 	w.lastSnapshot = metadata
+	return nil
 }
 
-func (w *wal) RetrieveSnapshot() Snapshot {
+func (w *wal) RetrieveSnapshot() (Snapshot, error) {
 	if w.closed {
-		panic(ErrClosed)
+		return nil, ErrClosed
 	}
 
 	metadata := w.lastSnapshot
 	if metadata == nil {
-		return nil
+		return nil, nil
 	}
 
 	data, err := os.ReadFile(path.Join(w.dir, snapFileName(metadata)))
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
-	return NewSnapshot(metadata, data)
+	return NewSnapshot(metadata, data), nil
 }
 
-func (w *wal) SnapshotMetadata() *pb.SnapshotMetadata {
-	return w.lastSnapshot
+func (w *wal) SnapshotMetadata() (*pb.SnapshotMetadata, error) {
+	return w.lastSnapshot, nil
 }
 
-func (w *wal) FirstEntryIndex() int64 {
+func (w *wal) FirstEntryIndex() (int64, error) {
 	for _, seg := range w.segments {
 		if seg.entryCount() > 0 {
-			return seg.firstIndex
+			return seg.firstIndex, nil
 		}
 	}
-	return -1
+	return -1, nil
 }
 
-func (w *wal) LastEntryIndex() int64 {
+func (w *wal) LastEntryIndex() (int64, error) {
 	for i := len(w.segments) - 1; i >= 0; i-- {
 		seg := w.segments[i]
 		if seg.entryCount() > 0 {
-			return seg.nextIndex - 1
+			return seg.nextIndex - 1, nil
 		}
 	}
-	return -1
+	return -1, nil
 }
 
-func (w *wal) Close() {
+func (w *wal) Close() error {
 	if w.closed {
-		return
+		return ErrClosed
 	}
 
 	var errs []error
@@ -1209,6 +1225,7 @@ func (w *wal) Close() {
 	if len(errs) > 0 {
 		w.logger.Error("Close errors", zap.Errors("errors", errs))
 	}
+	return nil
 }
 
 func (w *wal) findSegment(entryIndex int64) (int, error) {

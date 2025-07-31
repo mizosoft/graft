@@ -56,7 +56,10 @@ func BenchmarkWalAppend(b *testing.B) {
 	// Benchmark
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		nextIndex := wal.Append(&pb.PersistedState{CurrentTerm: int64(entriesCount + i)}, entries)
+		nextIndex, err := wal.Append(&pb.PersistedState{CurrentTerm: int64(entriesCount + i)}, entries)
+		if err != nil {
+			b.Fatalf("Append error: %v", err)
+		}
 		if nextIndex != int64((i+1)*entriesCount) {
 			b.Fatalf("Append error: nextIndex=%d", nextIndex)
 		}
@@ -84,7 +87,10 @@ func BenchmarkWalSequentialScan(b *testing.B) {
 	// Span multiple segments.
 	appendCount := 32
 	for i := range 32 {
-		wal.Append(&pb.PersistedState{CurrentTerm: int64(i)}, entries)
+		_, err := wal.Append(&pb.PersistedState{CurrentTerm: int64(i)}, entries)
+		if err != nil {
+			b.Fatalf("Append error: %v", err)
+		}
 	}
 
 	totalEntryCount := entriesCount * appendCount
@@ -93,7 +99,10 @@ func BenchmarkWalSequentialScan(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		for i := range totalEntryCount {
-			e := wal.GetEntry(int64(i))
+			e, err := wal.GetEntry(int64(i))
+			if err != nil {
+				b.Fatalf("GetEntry error: %v", err)
+			}
 			if e.Index != int64(i) {
 				b.Fatalf("GetEntry error: index=%d, expected=%d", e.Index, i)
 			}
@@ -122,7 +131,10 @@ func BenchmarkWalBatchedSequentialScan(b *testing.B) {
 	// Span multiple segments.
 	appendCount := 32
 	for i := range 32 {
-		wal.Append(&pb.PersistedState{CurrentTerm: int64(i)}, entries)
+		_, err := wal.Append(&pb.PersistedState{CurrentTerm: int64(i)}, entries)
+		if err != nil {
+			b.Fatalf("Append error: %v", err)
+		}
 	}
 
 	totalEntryCount := entriesCount * appendCount
@@ -133,7 +145,10 @@ func BenchmarkWalBatchedSequentialScan(b *testing.B) {
 		b.Run(fmt.Sprintf("batchSize=%dB", batchSize), func(b *testing.B) {
 			for i := 0; i < b.N; i++ {
 				for i := 0; i < totalEntryCount; i += batchSize {
-					es := wal.GetEntries(int64(i), int64(i+batchSize-1))
+					es, err := wal.GetEntries(int64(i), int64(i+batchSize-1))
+					if err != nil {
+						b.Fatalf("GetEntries error: %v", err)
+					}
 					for ei, e := range es {
 						if e.Index != int64(i+ei) {
 							b.Fatalf("GetEntry error: index=%d, expected=%d", e.Index, i)
@@ -166,7 +181,10 @@ func BenchmarkRandomScan(b *testing.B) {
 	// Span multiple segments.
 	appendCount := 32
 	for i := range 32 {
-		wal.Append(&pb.PersistedState{CurrentTerm: int64(i)}, entries)
+		_, err := wal.Append(&pb.PersistedState{CurrentTerm: int64(i)}, entries)
+		if err != nil {
+			b.Fatalf("Append error: %v", err)
+		}
 	}
 
 	totalEntryCount := entriesCount * appendCount
@@ -177,7 +195,10 @@ func BenchmarkRandomScan(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		for _, i := range access {
-			e := wal.GetEntry(int64(i))
+			e, err := wal.GetEntry(int64(i))
+			if err != nil {
+				b.Fatalf("GetEntries error: %v", err)
+			}
 			if e.Index != int64(i) {
 				b.Fatalf("GetEntry error: index=%d, expected=%d", e.Index, i)
 			}
@@ -206,7 +227,10 @@ func BenchmarkWalSequentialScanWithTailCache(b *testing.B) {
 	// Span multiple segments.
 	appendCount := 32
 	for i := range 32 {
-		wal.Append(&pb.PersistedState{CurrentTerm: int64(i)}, entries)
+		_, err := wal.Append(&pb.PersistedState{CurrentTerm: int64(i)}, entries)
+		if err != nil {
+			b.Fatalf("Append error: %v", err)
+		}
 	}
 
 	totalEntryCount := entriesCount * appendCount
@@ -215,7 +239,10 @@ func BenchmarkWalSequentialScanWithTailCache(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		for i := range totalEntryCount {
-			e := wal.GetEntry(int64(i))
+			e, err := wal.GetEntry(int64(i))
+			if err != nil {
+				b.Fatalf("GetEntries error: %v", err)
+			}
 			if e.Index != int64(i) {
 				b.Fatalf("GetEntry error: index=%d, expected=%d", e.Index, i)
 			}
@@ -244,7 +271,10 @@ func BenchmarkWalBatchedSequentialScanWithTailCache(b *testing.B) {
 	// Span multiple segments.
 	appendCount := 32
 	for i := range 32 {
-		wal.Append(&pb.PersistedState{CurrentTerm: int64(i)}, entries)
+		_, err := wal.Append(&pb.PersistedState{CurrentTerm: int64(i)}, entries)
+		if err != nil {
+			b.Fatalf("Append error: %v", err)
+		}
 	}
 
 	totalEntryCount := entriesCount * appendCount
@@ -255,7 +285,10 @@ func BenchmarkWalBatchedSequentialScanWithTailCache(b *testing.B) {
 		b.Run(fmt.Sprintf("batchSize=%dB", batchSize), func(b *testing.B) {
 			for i := 0; i < b.N; i++ {
 				for i := 0; i < totalEntryCount; i += batchSize {
-					es := wal.GetEntries(int64(i), int64(i+batchSize-1))
+					es, err := wal.GetEntries(int64(i), int64(i+batchSize-1))
+					if err != nil {
+						b.Fatalf("GetEntries error: %v", err)
+					}
 					for ei, e := range es {
 						if e.Index != int64(i+ei) {
 							b.Fatalf("GetEntry error: index=%d, expected=%d", e.Index, i)
@@ -288,7 +321,10 @@ func BenchmarkRandomScanWithTailCache(b *testing.B) {
 	// Span multiple segments.
 	appendCount := 32
 	for i := range 32 {
-		wal.Append(&pb.PersistedState{CurrentTerm: int64(i)}, entries)
+		_, err := wal.Append(&pb.PersistedState{CurrentTerm: int64(i)}, entries)
+		if err != nil {
+			b.Fatalf("Append error: %v", err)
+		}
 	}
 
 	totalEntryCount := entriesCount * appendCount
@@ -299,7 +335,10 @@ func BenchmarkRandomScanWithTailCache(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		for _, i := range access {
-			e := wal.GetEntry(int64(i))
+			e, err := wal.GetEntry(int64(i))
+			if err != nil {
+				b.Fatalf("GetEntry error: %v", err)
+			}
 			if e.Index != int64(i) {
 				b.Fatalf("GetEntry error: index=%d, expected=%d", e.Index, i)
 			}

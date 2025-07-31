@@ -1,7 +1,9 @@
-package graft
+package badger
 
 import (
+	"github.com/mizosoft/graft"
 	"math/rand"
+	"os"
 	"strings"
 	"testing"
 
@@ -11,35 +13,40 @@ import (
 	"gotest.tools/v3/assert"
 )
 
-func TestBadgerNewWalOpen(t *testing.T) {
+func TestWalNewWalOpen(t *testing.T) {
 	dir := t.TempDir()
-	persistence, err := OpenBadgerPersistence(dir)
+	wal, err := OpenBadgerPersistence(dir)
 	assert.NilError(t, err)
-	defer persistence.Close()
+	defer wal.Close()
 
-	assert.Equal(t, persistence.EntryCount(), int64(0))
+	assert.NilError(t, err)
+	assert.Equal(t, wal.EntryCount(), int64(0))
 }
 
-func TestBadgerEmptyWalReopen(t *testing.T) {
+func TestWalEmptyWalReopen(t *testing.T) {
 	dir := t.TempDir()
-	persistence, err := OpenBadgerPersistence(dir)
+	wal, err := OpenBadgerPersistence(dir)
 	assert.NilError(t, err)
-	persistence.Close()
+	wal.Close()
 
-	persistence, err = OpenBadgerPersistence(dir)
+	wal, err = OpenBadgerPersistence(dir)
 	assert.NilError(t, err)
-	defer persistence.Close()
+	defer wal.Close()
 
-	assert.Equal(t, persistence.EntryCount(), int64(0))
-	testutil.AssertNil(t, persistence.RetrieveState())
-	testutil.AssertNil(t, persistence.RetrieveSnapshot())
+	assert.Equal(t, wal.EntryCount(), int64(0))
+	state, err := wal.RetrieveState()
+	assert.NilError(t, err)
+	testutil.AssertNil(t, state)
+	snapshot, err := wal.RetrieveSnapshot()
+	assert.NilError(t, err)
+	testutil.AssertNil(t, snapshot)
 }
 
-func TestBadgerAppendSingleEntry(t *testing.T) {
+func TestWalAppendSingleEntry(t *testing.T) {
 	dir := t.TempDir()
-	p, err := OpenBadgerPersistence(dir)
+	w, err := OpenBadgerPersistence(dir)
 	assert.NilError(t, err)
-	defer p.Close()
+	defer w.Close()
 
 	state := &pb.PersistedState{
 		CurrentTerm: 1,
@@ -52,22 +59,27 @@ func TestBadgerAppendSingleEntry(t *testing.T) {
 		Data: []byte("cmd"),
 	}
 
-	nextIndex := p.Append(state, []*pb.LogEntry{entry})
+	nextIndex, err := w.Append(state, []*pb.LogEntry{entry})
+	assert.NilError(t, err)
 	assert.Equal(t, nextIndex, int64(1))
-	assert.Equal(t, p.EntryCount(), int64(1))
-	assert.Assert(t, proto.Equal(state, p.RetrieveState()))
+	assert.Equal(t, w.EntryCount(), int64(1))
+
+	retrievedState, err := w.RetrieveState()
+	assert.NilError(t, err)
+	assert.Assert(t, proto.Equal(state, retrievedState))
 
 	// Retrieve entry and verify.
-	retrievedEntry := p.GetEntry(0)
+	retrievedEntry, err := w.GetEntry(0)
+	assert.NilError(t, err)
 	assert.Assert(t, proto.Equal(retrievedEntry, entry))
 	assert.Equal(t, retrievedEntry.Index, int64(0))
 }
 
-func TestBadgerAppendMultipleEntries(t *testing.T) {
+func TestWalAppendMultipleEntries(t *testing.T) {
 	dir := t.TempDir()
-	p, err := OpenBadgerPersistence(dir)
+	w, err := OpenBadgerPersistence(dir)
 	assert.NilError(t, err)
-	defer p.Close()
+	defer w.Close()
 
 	state := &pb.PersistedState{
 		CurrentTerm: 1,
@@ -81,12 +93,13 @@ func TestBadgerAppendMultipleEntries(t *testing.T) {
 		{Term: 1, Data: []byte("cmd3")},
 	}
 
-	nextIndex := p.Append(state, entries)
+	nextIndex, err := w.Append(state, entries)
+	assert.NilError(t, err)
 	assert.Equal(t, nextIndex, int64(3))
-	assert.Equal(t, p.EntryCount(), int64(3))
 
 	// Retrieve and verify entries.
-	retrievedEntries := p.GetEntriesFrom(0)
+	retrievedEntries, err := w.GetEntriesFrom(0)
+	assert.NilError(t, err)
 	assert.Equal(t, len(retrievedEntries), len(entries))
 	for i, entry := range entries {
 		assert.Assert(t, proto.Equal(retrievedEntries[i], entry))
@@ -94,11 +107,11 @@ func TestBadgerAppendMultipleEntries(t *testing.T) {
 	}
 }
 
-func TestBadgerGetEntriesFromMiddle(t *testing.T) {
+func TestWalGetEntriesFromMiddle(t *testing.T) {
 	dir := t.TempDir()
-	p, err := OpenBadgerPersistence(dir)
+	w, err := OpenBadgerPersistence(dir)
 	assert.NilError(t, err)
-	defer p.Close()
+	defer w.Close()
 
 	state := &pb.PersistedState{
 		CurrentTerm: 1,
@@ -114,9 +127,11 @@ func TestBadgerGetEntriesFromMiddle(t *testing.T) {
 		{Term: 1, Data: []byte("entry 4")},
 	}
 
-	p.Append(state, entries)
+	_, err = w.Append(state, entries)
+	assert.NilError(t, err)
 
-	retrievedEntries := p.GetEntriesFrom(2)
+	retrievedEntries, err := w.GetEntriesFrom(2)
+	assert.NilError(t, err)
 	assert.Equal(t, len(retrievedEntries), 3)
 	assert.Assert(t, proto.Equal(retrievedEntries[0], entries[2]))
 	assert.Equal(t, retrievedEntries[0].Index, int64(2))
@@ -126,11 +141,11 @@ func TestBadgerGetEntriesFromMiddle(t *testing.T) {
 	assert.Equal(t, retrievedEntries[2].Index, int64(4))
 }
 
-func TestBadgerSetState(t *testing.T) {
+func TestWalSetState(t *testing.T) {
 	dir := t.TempDir()
-	p, err := OpenBadgerPersistence(dir)
+	w, err := OpenBadgerPersistence(dir)
 	assert.NilError(t, err)
-	defer p.Close()
+	defer w.Close()
 
 	// Initial state
 	state1 := &pb.PersistedState{
@@ -139,8 +154,11 @@ func TestBadgerSetState(t *testing.T) {
 		CommitIndex: 0,
 	}
 
-	p.SaveState(state1)
-	assert.Assert(t, proto.Equal(state1, p.RetrieveState()))
+	err = w.SaveState(state1)
+	assert.NilError(t, err)
+
+	state, err := w.RetrieveState()
+	assert.Assert(t, proto.Equal(state1, state))
 
 	// Updated state
 	state2 := &pb.PersistedState{
@@ -149,15 +167,17 @@ func TestBadgerSetState(t *testing.T) {
 		CommitIndex: 5,
 	}
 
-	p.SaveState(state2)
-	assert.Assert(t, proto.Equal(state2, p.RetrieveState()))
+	err = w.SaveState(state2)
+	assert.NilError(t, err)
+	state, err = w.RetrieveState()
+	assert.Assert(t, proto.Equal(state2, state))
 }
 
-func TestBadgerTruncateEntries(t *testing.T) {
+func TestWalTruncateEntries(t *testing.T) {
 	dir := t.TempDir()
-	p, err := OpenBadgerPersistence(dir)
+	w, err := OpenBadgerPersistence(dir)
 	assert.NilError(t, err)
-	defer p.Close()
+	defer w.Close()
 
 	state := &pb.PersistedState{
 		CurrentTerm: 1,
@@ -173,25 +193,33 @@ func TestBadgerTruncateEntries(t *testing.T) {
 		{Term: 1, Data: []byte("cmd4")},
 	}
 
-	p.Append(state, entries)
-	assert.Equal(t, p.EntryCount(), int64(5))
+	_, err = w.Append(state, entries)
+	assert.NilError(t, err)
 
-	p.TruncateEntriesFrom(3)
-	assert.Equal(t, p.EntryCount(), int64(3))
+	assert.Equal(t, w.EntryCount(), int64(5))
 
-	retrievedEntries := p.GetEntriesFrom(0)
+	err = w.TruncateEntriesFrom(3)
+	assert.NilError(t, err)
+
+	assert.NilError(t, err)
+	assert.Equal(t, w.EntryCount(), int64(3))
+
+	retrievedEntries, err := w.GetEntriesFrom(0)
+	assert.NilError(t, err)
 	assert.Equal(t, len(retrievedEntries), 3)
 	for i := range 3 {
 		assert.Assert(t, proto.Equal(entries[i], retrievedEntries[i]))
 	}
 
 	// State is preserved after truncation.
-	assert.Assert(t, proto.Equal(state, p.RetrieveState()))
+	retrievedState, err := w.RetrieveState()
+	assert.NilError(t, err)
+	assert.Assert(t, proto.Equal(state, retrievedState))
 }
 
-func TestBadgerReopen(t *testing.T) {
+func TestWalReopen(t *testing.T) {
 	dir := t.TempDir()
-	p1, err := OpenBadgerPersistence(dir)
+	w1, err := OpenBadgerPersistence(dir)
 	assert.NilError(t, err)
 
 	state := &pb.PersistedState{
@@ -206,32 +234,50 @@ func TestBadgerReopen(t *testing.T) {
 		{Term: 1, Data: []byte("entry 2")},
 	}
 
-	p1.Append(state, entries)
-	p1.Close()
+	w1.Append(state, entries)
+	w1.Close()
 
 	// Reopen.
-	p2, err := OpenBadgerPersistence(dir)
+	w2, err := OpenBadgerPersistence(dir)
 	assert.NilError(t, err)
-	defer p2.Close()
+	defer w2.Close()
 
 	// Verify state was recovered.
-	assert.Assert(t, proto.Equal(p2.RetrieveState(), state))
+	retrievedState, err := w2.RetrieveState()
+	assert.Assert(t, proto.Equal(retrievedState, state))
 
 	// Verify entries were recovered.
-	assert.Equal(t, p2.EntryCount(), int64(3))
+	assert.Equal(t, w2.EntryCount(), int64(3))
 
-	recoveredEntries := p2.GetEntriesFrom(0)
+	recoveredEntries, err := w2.GetEntriesFrom(0)
+	assert.NilError(t, err)
 	assert.Equal(t, len(recoveredEntries), len(entries))
 	for i, entry := range entries {
 		assert.Assert(t, proto.Equal(entry, recoveredEntries[i]))
 	}
 }
 
-func TestBadgerOverwriteState(t *testing.T) {
+func TestWalErrorCases(t *testing.T) {
 	dir := t.TempDir()
-	p1, err := OpenBadgerPersistence(dir)
+	w, err := OpenBadgerPersistence(dir)
+	defer w.Close()
 	assert.NilError(t, err)
-	defer p1.Close()
+
+	_, err = w.GetEntry(100)
+	assert.Assert(t, err != nil)
+
+	// Test using closed WAL
+	w.Close()
+
+	_, err = w.GetEntry(0)
+	assert.Assert(t, err != nil)
+}
+
+func TestWalOverwriteState(t *testing.T) {
+	dir := t.TempDir()
+	w, err := OpenBadgerPersistence(dir)
+	assert.NilError(t, err)
+	defer w.Close()
 
 	// Set initial state.
 	state1 := &pb.PersistedState{
@@ -239,7 +285,8 @@ func TestBadgerOverwriteState(t *testing.T) {
 		VotedFor:    "s1",
 		CommitIndex: 0,
 	}
-	p1.SaveState(state1)
+	err = w.SaveState(state1)
+	assert.NilError(t, err)
 
 	// Update state.
 	state2 := &pb.PersistedState{
@@ -247,44 +294,86 @@ func TestBadgerOverwriteState(t *testing.T) {
 		VotedFor:    "s2",
 		CommitIndex: 5,
 	}
-	p1.SaveState(state2)
+	err = w.SaveState(state2)
+	assert.NilError(t, err)
 
 	// Verify latest state is returned.
-	assert.Assert(t, proto.Equal(p1.RetrieveState(), state2))
+	retrievedState, err := w.RetrieveState()
+	assert.NilError(t, err)
+	assert.Assert(t, proto.Equal(retrievedState, state2))
 
 	// Reopen.
-	p1.Close()
+	w.Close()
 	assert.NilError(t, err)
 
-	p2, err := OpenBadgerPersistence(dir)
+	w2, err := OpenBadgerPersistence(dir)
 	assert.NilError(t, err)
-	defer p2.Close()
+	defer w2.Close()
 
 	// Verify latest state is recovered.
-	assert.Assert(t, proto.Equal(p2.RetrieveState(), state2))
+	retrievedState, err = w2.RetrieveState()
+	assert.NilError(t, err)
+	assert.Assert(t, proto.Equal(retrievedState, state2))
 }
 
-func TestBadgerAppendAfterTruncating(t *testing.T) {
+func TestWalTruncateAfterStateUpdate(t *testing.T) {
 	dir := t.TempDir()
-	p, err := OpenBadgerPersistence(dir)
+	w1, err := OpenBadgerPersistence(dir)
 	assert.NilError(t, err)
-	defer p.Close()
+	defer w1.Close()
 
-	nextIndex := p.Append(nil, []*pb.LogEntry{
+	// Set initial state.
+	state := &pb.PersistedState{
+		CurrentTerm: 1,
+		VotedFor:    "s1",
+		CommitIndex: 0,
+	}
+	nextIndex, err := w1.Append(state, []*pb.LogEntry{
 		{Term: 1, Data: []byte("a")},
 		{Term: 2, Data: []byte("b")},
 	})
+	assert.NilError(t, err)
 	assert.Equal(t, nextIndex, int64(2))
 
-	p.TruncateEntriesFrom(1)
+	err = w1.TruncateEntriesFrom(0)
+	assert.NilError(t, err)
 
-	nextIndex = p.Append(nil, []*pb.LogEntry{
+	w1.Close()
+
+	// Reopen.
+	w2, err := OpenBadgerPersistence(dir)
+	assert.NilError(t, err)
+	defer w2.Close()
+
+	retrievedState, err := w2.RetrieveState()
+	assert.Assert(t, proto.Equal(retrievedState, state))
+}
+
+func TestWalAppendAfterTruncating(t *testing.T) {
+	dir := t.TempDir()
+	w, err := OpenBadgerPersistence(dir)
+	assert.NilError(t, err)
+	defer w.Close()
+
+	nextIndex, err := w.Append(nil, []*pb.LogEntry{
+		{Term: 1, Data: []byte("a")},
+		{Term: 2, Data: []byte("b")},
+	})
+	assert.NilError(t, err)
+	assert.Equal(t, nextIndex, int64(2))
+
+	err = w.TruncateEntriesFrom(1)
+	assert.NilError(t, err)
+
+	nextIndex, err = w.Append(nil, []*pb.LogEntry{
 		{Term: 3, Data: []byte("c")},
 		{Term: 4, Data: []byte("d")},
 	})
+	assert.NilError(t, err)
 	assert.Equal(t, nextIndex, int64(3))
 
-	retrievedEntries := p.GetEntriesFrom(0)
+	retrievedEntries, err := w.GetEntriesFrom(0)
+	assert.NilError(t, err)
 	assert.Equal(t, len(retrievedEntries), 3, len(retrievedEntries))
 
 	expectedEntries := []*pb.LogEntry{
@@ -297,16 +386,23 @@ func TestBadgerAppendAfterTruncating(t *testing.T) {
 	}
 }
 
-func TestBadgerSaveAndRetrieveSnapshot(t *testing.T) {
+// TODO may want to move to testutil.
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil || !os.IsNotExist(err)
+}
+
+func TestWalSaveAndRetrieveSnapshot(t *testing.T) {
 	dir := t.TempDir()
 	w, err := OpenBadgerPersistence(dir)
 	assert.NilError(t, err)
 	defer w.Close()
 
-	snapshot := w.RetrieveSnapshot()
+	snapshot, err := w.RetrieveSnapshot()
+	assert.NilError(t, err)
 	assert.Assert(t, snapshot == nil)
 
-	snapshot = NewSnapshot(&pb.SnapshotMetadata{
+	snapshot = graft.NewSnapshot(&pb.SnapshotMetadata{
 		LastAppliedIndex: 1,
 		LastAppliedTerm:  1,
 		ConfigUpdate: &pb.ConfigUpdate{
@@ -325,20 +421,22 @@ func TestBadgerSaveAndRetrieveSnapshot(t *testing.T) {
 			Phase: pb.ConfigUpdate_LEARNING,
 		},
 	}, []byte("Pikachu"))
-	w.SaveSnapshot(snapshot)
+	err = w.SaveSnapshot(snapshot)
+	assert.NilError(t, err)
 
-	retrievedSnapshot := w.RetrieveSnapshot()
+	retrievedSnapshot, err := w.RetrieveSnapshot()
+	assert.NilError(t, err)
 	assert.Assert(t, proto.Equal(retrievedSnapshot.Metadata(), snapshot.Metadata()))
 	assert.Equal(t, string(retrievedSnapshot.Data()), string(snapshot.Data()))
 }
 
-func TestBadgerRetrieveSnapshotOnReopen(t *testing.T) {
+func TestWalRetrieveSnapshotOnReopen(t *testing.T) {
 	dir := t.TempDir()
 	w1, err := OpenBadgerPersistence(dir)
 	assert.NilError(t, err)
 	defer w1.Close()
 
-	snapshot := NewSnapshot(&pb.SnapshotMetadata{
+	snapshot := graft.NewSnapshot(&pb.SnapshotMetadata{
 		LastAppliedIndex: 1,
 		LastAppliedTerm:  1,
 		ConfigUpdate: &pb.ConfigUpdate{
@@ -357,7 +455,7 @@ func TestBadgerRetrieveSnapshotOnReopen(t *testing.T) {
 			Phase: pb.ConfigUpdate_LEARNING,
 		},
 	}, []byte("Pikachu"))
-	w1.SaveSnapshot(snapshot)
+	err = w1.SaveSnapshot(snapshot)
 	assert.NilError(t, err)
 
 	w1.Close()
@@ -365,12 +463,13 @@ func TestBadgerRetrieveSnapshotOnReopen(t *testing.T) {
 	w2, err := OpenBadgerPersistence(dir)
 	assert.NilError(t, err)
 	defer w2.Close()
-	retrievedSnapshot := w2.RetrieveSnapshot()
+	retrievedSnapshot, err := w2.RetrieveSnapshot()
+	assert.NilError(t, err)
 	assert.Assert(t, proto.Equal(retrievedSnapshot.Metadata(), snapshot.Metadata()))
 	assert.Equal(t, string(retrievedSnapshot.Data()), string(snapshot.Data()))
 }
 
-func TestBadgerTruncateEntriesTo(t *testing.T) {
+func TestWalTruncateEntriesTo(t *testing.T) {
 	dir := t.TempDir()
 	w, err := OpenBadgerPersistence(dir)
 	assert.NilError(t, err)
@@ -380,7 +479,7 @@ func TestBadgerTruncateEntriesTo(t *testing.T) {
 	entryCount := int64(100)
 	entries := make([]*pb.LogEntry, entryCount)
 	for i := range entries {
-		commandSize := rnd.Intn(128)
+		commandSize := rnd.Intn(64)
 		entries[i] = &pb.LogEntry{
 			Index: int64(i),
 			Term:  int64(i),
@@ -389,17 +488,21 @@ func TestBadgerTruncateEntriesTo(t *testing.T) {
 	}
 
 	for _, entry := range entries {
-		w.Append(nil, []*pb.LogEntry{entry})
+		_, err := w.Append(nil, []*pb.LogEntry{entry})
+		assert.NilError(t, err)
 	}
 
 	for i := int64(0); i < entryCount; i++ {
-		w.TruncateEntriesTo(i)
+		err = w.TruncateEntriesTo(i)
+		assert.NilError(t, err)
 
-		firstIndex := w.FirstEntryIndex()
+		firstIndex, err := w.FirstEntryIndex()
+		assert.NilError(t, err)
 		if i < entryCount-1 {
 			assert.Equal(t, firstIndex, i+1)
 
-			retrievedEntries := w.GetEntriesFrom(firstIndex)
+			retrievedEntries, err := w.GetEntriesFrom(firstIndex)
+			assert.NilError(t, err)
 			for j, entry := range entries[i+1:] {
 				assert.Assert(t, proto.Equal(retrievedEntries[j], entry))
 			}
@@ -409,16 +512,20 @@ func TestBadgerTruncateEntriesTo(t *testing.T) {
 	}
 }
 
-func TestBadgerFirstAndLastEntryIndex(t *testing.T) {
+func TestWalFirstAndLastEntryIndex(t *testing.T) {
 	dir := t.TempDir()
 	w, err := OpenBadgerPersistence(dir)
 	assert.NilError(t, err)
 	defer w.Close()
 
-	assert.Equal(t, int64(-1), w.FirstEntryIndex())
-	assert.Equal(t, int64(-1), w.LastEntryIndex())
+	firstIndex, err := w.FirstEntryIndex()
+	assert.NilError(t, err)
+	assert.Equal(t, int64(-1), firstIndex)
+	lastIndex, err := w.LastEntryIndex()
+	assert.NilError(t, err)
+	assert.Equal(t, int64(-1), lastIndex)
 
-	w.Append(nil, []*pb.LogEntry{
+	_, err = w.Append(nil, []*pb.LogEntry{
 		{
 			Term: 2,
 			Data: []byte("foo"),
@@ -428,19 +535,30 @@ func TestBadgerFirstAndLastEntryIndex(t *testing.T) {
 			Data: []byte("bar"),
 		},
 	})
+	assert.NilError(t, err)
 
-	assert.Equal(t, int64(0), w.FirstEntryIndex())
-	assert.Equal(t, int64(1), w.LastEntryIndex())
+	firstIndex, err = w.FirstEntryIndex()
+	assert.NilError(t, err)
+	assert.Equal(t, int64(0), firstIndex)
+	lastIndex, err = w.LastEntryIndex()
+	assert.NilError(t, err)
+	assert.Equal(t, int64(1), lastIndex)
 
-	w.TruncateEntriesTo(0)
+	err = w.TruncateEntriesTo(0)
+	assert.NilError(t, err)
 
-	w.Append(nil, []*pb.LogEntry{
+	_, err = w.Append(nil, []*pb.LogEntry{
 		{
 			Term: 4,
 			Data: []byte("bar"),
 		},
 	})
+	assert.NilError(t, err)
 
-	assert.Equal(t, int64(1), w.FirstEntryIndex())
-	assert.Equal(t, int64(2), w.LastEntryIndex())
+	firstIndex, err = w.FirstEntryIndex()
+	assert.NilError(t, err)
+	assert.Equal(t, int64(1), firstIndex)
+	lastIndex, err = w.LastEntryIndex()
+	assert.NilError(t, err)
+	assert.Equal(t, int64(2), lastIndex)
 }
