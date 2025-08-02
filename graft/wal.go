@@ -87,7 +87,7 @@ func (c *entryCache) truncateTo(index int64) {
 		return
 	}
 
-	truncated := c.data[0 : index-c.firstIndex()+1]
+	truncated := c.data[:index-c.firstIndex()+1]
 	c.data = c.data[index-c.firstIndex()+1:]
 	for _, entry := range truncated {
 		c.size -= int64(len(entry.Data))
@@ -108,21 +108,18 @@ func (c *entryCache) lastIndex() int64 {
 	return c.data[len(c.data)-1].Index
 }
 
-// TODO make sure we handle cases where recordLen is corrupted and is too large.
-
 type wal struct {
-	dir               string
-	segmentSize       int64
-	usableSegmentSize int64
-	segments          []*segment
-	tail              *segment
-	crcTable          *crc32.Table
-	closed            bool
-	trailerRecord     []byte
-	lastState         *pb.PersistedState
-	lastSnapshot      *pb.SnapshotMetadata // TODO we might want to make sure this is appended on truncation.
-	cache             *entryCache
-	logger            *zap.SugaredLogger
+	dir                  string
+	segmentSize          int64
+	segments             []*segment
+	tail                 *segment
+	crcTable             *crc32.Table
+	closed               bool
+	trailerRecord        []byte
+	lastState            *pb.PersistedState
+	lastSnapshotMetadata *pb.SnapshotMetadata
+	cache                *entryCache
+	logger               *zap.SugaredLogger
 }
 
 type segment struct {
@@ -154,6 +151,28 @@ func (s *segment) readerFrom(offset int64) io.Reader {
 
 func (s *segment) reader() io.Reader {
 	return bytes.NewReader(s.m)
+}
+
+func (s *segment) countingReader() *countingReader {
+	return &countingReader{
+		r: s.reader(),
+	}
+}
+
+type countingReader struct {
+	r     io.Reader
+	count int64
+}
+
+func (cr *countingReader) Read(p []byte) (n int, err error) {
+	n, err = cr.r.Read(p)
+	if n >= 0 {
+		cr.count += int64(n)
+	}
+	if err != nil {
+		return n, err
+	}
+	return n, err
 }
 
 func (s *segment) readBytes(offset int64, count int64) ([]byte, error) {
@@ -206,19 +225,18 @@ func (s *segment) getEntryAtOffset(offsetIndex int) (*pb.LogEntry, error) {
 		limit = s.lastOffset
 	}
 
-	// Note that this chunk might contain multiple (e.g. saved states between entries).
+	// Note that this chunk might contain multiple records (e.g., saved states/snapshots between the two entries).
 	chunk, err := s.readBytes(offset, limit-offset)
 	if err != nil {
 		return nil, err
 	}
 
-	recordLen := int(binary.BigEndian.Uint32(chunk))
-	record, err := s.w.decodeRecord(chunk[recordLengthSize : recordLengthSize+recordLen])
+	record, err := s.w.readRecordFromBytes(chunk)
 	if err != nil {
 		return nil, err
 	}
 	if record.Type != entryRecordType {
-		panic(fmt.Errorf("unexpected record type when expecting an entry: %d", record.Type))
+		return nil, fmt.Errorf("unexpected record type when expecting an entry: %d", record.Type)
 	}
 
 	var entry pb.LogEntry
@@ -235,20 +253,7 @@ func (s *segment) getEntriesFrom(from int64) ([]*pb.LogEntry, error) {
 	reader := s.readerFrom(s.entryOffsets[localFrom])
 	var entries []*pb.LogEntry
 	for {
-		var recordLen int32
-		if err := binary.Read(reader, binary.BigEndian, &recordLen); err != nil {
-			if errors.Is(err, io.EOF) {
-				return nil, io.ErrUnexpectedEOF
-			}
-			return nil, err
-		}
-
-		recordBytes := make([]byte, recordLen)
-		if n, err := reader.Read(recordBytes); err != nil && n < len(recordBytes) {
-			return nil, err
-		}
-
-		record, err := s.w.decodeRecord(recordBytes)
+		record, err := s.w.readRecordFromReader(reader)
 		if err != nil {
 			return nil, err
 		}
@@ -277,20 +282,7 @@ func (s *segment) getEntriesTo(to int64) ([]*pb.LogEntry, error) {
 	reader := s.boundedReaderFrom(s.entryOffsets[0])
 	var entries []*pb.LogEntry
 	for index := s.firstIndex; index <= to; {
-		var recordLen int32
-		if err := binary.Read(reader, binary.BigEndian, &recordLen); err != nil {
-			if errors.Is(err, io.EOF) {
-				return nil, io.ErrUnexpectedEOF
-			}
-			return nil, err
-		}
-
-		recordBytes := make([]byte, recordLen)
-		if n, err := reader.Read(recordBytes); err != nil && n < len(recordBytes) {
-			return nil, err
-		}
-
-		record, err := s.w.decodeRecord(recordBytes)
+		record, err := s.w.readRecordFromReader(reader)
 		if err != nil {
 			return nil, err
 		}
@@ -332,7 +324,6 @@ func (s *segment) truncateEntriesTo(index int64) (removeHead bool, err error) {
 	}
 
 	// Write the new segment into a temp file and do an atomic replace.
-
 	newFirstIndex := index + 1
 	newFpath := path.Join(s.w.dir, segFileName(s.number, newFirstIndex))
 	tempNewFpath := newFpath + ".tmp"
@@ -359,7 +350,8 @@ func (s *segment) truncateEntriesTo(index int64) (removeHead bool, err error) {
 
 		// Copy remaining records.
 		copyFromOffset := s.entryOffsets[localIndex+1]
-		nCopied, err := io.Copy(newWriterAt(tempF, int64(nHeader)), newReaderAt(s.f, copyFromOffset))
+		copyToOffset := s.lastOffset + int64(len(s.w.trailerRecord)) // Include the trailer record.
+		nCopied, err := io.Copy(newWriterAt(tempF, int64(nHeader)), io.NewSectionReader(s.f, copyFromOffset, copyToOffset-copyFromOffset))
 		if err != nil {
 			return err
 		}
@@ -372,26 +364,22 @@ func (s *segment) truncateEntriesTo(index int64) (removeHead bool, err error) {
 
 		// We want oldOffset + offsetDiff = newOffset.
 		offsetDiff = int64(len(buf)) - copyFromOffset
-		newLastOffset = int64(len(buf)) + nCopied
+		newLastOffset = int64(len(buf)) + nCopied - int64(len(s.w.trailerRecord))
 		return nil
 	}()
 	if err != nil {
 		return false, removeOnErr(tempNewFpath, closeOnErr(tempF, err))
 	}
 
-	if err := s.m.Unmap(); err != nil {
-		return false, removeOnErr(tempNewFpath, closeOnErr(tempF, err))
-	}
-	if err := s.f.Close(); err != nil {
+	// Close, do atomic replace, re-open.
+
+	if err := s.close(); err != nil {
 		return false, removeOnErr(tempNewFpath, closeOnErr(tempF, err))
 	}
 
 	if err := os.Rename(tempNewFpath, newFpath); err != nil {
 		return false, removeOnErr(tempNewFpath, closeOnErr(tempF, err))
 	}
-
-	// TODO here we assume that s.m will see changes to the file. Seems to be what to expect, and works on testing, but
-	//     are we certain that's the spec?
 
 	s.entryOffsets = s.entryOffsets[localIndex+1:]
 
@@ -411,8 +399,7 @@ func (s *segment) truncateEntriesTo(index int64) (removeHead bool, err error) {
 	}
 
 	s.firstIndex = newFirstIndex
-	s.m = newM
-	s.f, s.fpath = newF, newFpath
+	s.m, s.f, s.fpath = newM, newF, newFpath
 	s.lastOffset = newLastOffset
 	return false, nil
 }
@@ -495,7 +482,7 @@ func openCachedWal(dir string, segmentSize int64, cacheSize int64, logger *zap.L
 			fpath:        path.Join(dir, file.Name()),
 			entryOffsets: []int64{},
 		}
-		w.segments = append(w.segments, s)
+		w.segments = append(w.segments, s) // Append early so that the file / memory-mapping is cleaned if an err occurs.
 
 		s.f, err = os.OpenFile(s.fpath, os.O_APPEND|os.O_RDWR, 0644)
 		if err != nil {
@@ -504,23 +491,13 @@ func openCachedWal(dir string, segmentSize int64, cacheSize int64, logger *zap.L
 
 		s.m, err = mmap.Map(s.f, mmap.RDWR, 0)
 		if err != nil {
-			return nil, err
+			return nil, err // We don't need closeOnErr here as the allGood deferred hook will close the file.
 		}
 
-		reader := s.reader()
+		reader := s.countingReader()
 
 		// Expect header record at the beginning.
-		var recordLen int32
-		if err := binary.Read(reader, binary.BigEndian, &recordLen); err != nil {
-			return nil, err
-		}
-
-		headerBytes := make([]byte, recordLen)
-		if _, err := reader.Read(headerBytes); err != nil {
-			return nil, err
-		}
-
-		record, err := w.decodeRecord(headerBytes)
+		record, err := w.readRecordFromReader(reader)
 		if err != nil {
 			return nil, err
 		}
@@ -554,8 +531,6 @@ func openCachedWal(dir string, segmentSize int64, cacheSize int64, logger *zap.L
 			correctedFirstIndex = header.FirstIndex
 		}
 
-		s.lastOffset = int64(recordLengthSize + recordLen)
-
 		if correctedSegmentNumber != s.number || correctedFirstIndex != s.firstIndex {
 			correctedFpath := path.Join(w.dir, segFileName(correctedSegmentNumber, correctedFirstIndex))
 			if err := os.Rename(s.fpath, correctedFpath); err != nil {
@@ -568,20 +543,7 @@ func openCachedWal(dir string, segmentSize int64, cacheSize int64, logger *zap.L
 
 	outerLoop:
 		for {
-			var recordLen int32
-			if err := binary.Read(reader, binary.BigEndian, &recordLen); err != nil {
-				if errors.Is(err, io.EOF) {
-					return nil, io.ErrUnexpectedEOF
-				}
-				return nil, err
-			}
-
-			recordBytes := make([]byte, recordLen)
-			if _, err := reader.Read(recordBytes); err != nil {
-				return nil, err
-			}
-
-			record, err := w.decodeRecord(recordBytes)
+			record, err := w.readRecordFromReader(reader)
 			if err != nil {
 				return nil, err
 			}
@@ -603,20 +565,20 @@ func openCachedWal(dir string, segmentSize int64, cacheSize int64, logger *zap.L
 			case snapshotMetadataRecordType:
 				var snapshot pb.SnapshotMetadata
 				protoUnmarshal(record.Data, &snapshot)
-				w.lastSnapshot = &snapshot
+				w.lastSnapshotMetadata = &snapshot
 			case trailerRecordType:
 				var trailer pb.WalSegmentTrailer
 				protoUnmarshal(record.Data, &trailer)
 				if trailer.Magic != walMagic {
 					return nil, fmt.Errorf("invalid WAL trailer magic number in %s", s.fpath)
 				}
+				s.lastOffset = reader.count - int64(len(w.trailerRecord))
 				break outerLoop
 			case headerRecordType:
 				return nil, fmt.Errorf("unexpected header record found in segment %s", s.fpath)
 			default:
 				return nil, fmt.Errorf("unexpected record type: %d", record.Type)
 			}
-			s.lastOffset += int64(recordLengthSize + recordLen)
 		}
 	}
 
@@ -653,12 +615,8 @@ func openWal(dir string, softSegmentSize int64, logger *zap.Logger) (*wal, error
 	return openCachedWal(dir, softSegmentSize, 0, logger)
 }
 
-func (w *wal) verify(record *pb.WalRecord) error {
-	dataCrc32 := w.crc32Of(record.Data)
-	if dataCrc32 != record.Crc32 {
-		return fmt.Errorf("mismatching CRC32s computed: %x, read: %x", dataCrc32, record.Crc32)
-	}
-	return nil
+func (w *wal) verify(record *pb.WalRecord) bool {
+	return w.crc32Of(record.Data) == record.Crc32
 }
 
 func (w *wal) decodeRecord(recordBytes []byte) (*pb.WalRecord, error) {
@@ -666,10 +624,10 @@ func (w *wal) decodeRecord(recordBytes []byte) (*pb.WalRecord, error) {
 	if err := proto.Unmarshal(recordBytes, &record); err != nil {
 		return nil, err
 	}
-	if err := w.verify(&record); err != nil {
-		return nil, err
+	if w.verify(&record) {
+		return &record, nil
 	}
-	return &record, nil
+	return nil, ErrCorrupt
 }
 
 func (w *wal) RetrieveState() (*pb.PersistedState, error) {
@@ -692,7 +650,6 @@ func (w *wal) SaveState(state *pb.PersistedState) error {
 	if proto.Equal(state, w.lastState) {
 		return nil
 	}
-
 	return w.saveState(state)
 }
 
@@ -813,18 +770,20 @@ func (w *wal) appendSegment() error {
 	if w.lastState != nil {
 		w.appendRecordToBuffer(&buf, stateRecordType, w.lastState)
 	}
-	if w.lastSnapshot != nil {
-		w.appendRecordToBuffer(&buf, snapshotMetadataRecordType, w.lastSnapshot)
+	if w.lastSnapshotMetadata != nil {
+		w.appendRecordToBuffer(&buf, snapshotMetadataRecordType, w.lastSnapshotMetadata)
 	}
 
-	// TODO there's an assumption here that whatever is written will not exceed segmentSize.
+	writtenCount := buf.Len()
+	if int64(writtenCount) > w.segmentSize-int64(len(w.trailerRecord)) {
+		return ErrLargeRecord
+	}
 
 	tempFpath := s.fpath + ".tmp"
 	tempF, err := os.Create(tempFpath)
 	if err != nil {
 		return err
 	}
-	writtenCount := buf.Len()
 	err = func() error {
 		if err := tempF.Truncate(w.segmentSize); err != nil {
 			return err
@@ -855,11 +814,6 @@ func (w *wal) appendSegment() error {
 		return err
 	}
 
-	// Make sure file metadata is synced.
-	if err := f.Sync(); err != nil {
-		return closeOnErr(f, err)
-	}
-
 	m, err := mmap.Map(f, mmap.RDWR, 0)
 	if err != nil {
 		return closeOnErr(f, err)
@@ -884,27 +838,31 @@ func (w *wal) TruncateEntriesFrom(index int64) error {
 	}
 
 	removedSegments := w.segments[segIndex+1:]
-	w.segments = w.segments[0 : segIndex+1]
-	w.tail = w.segments[segIndex]
-
 	for _, seg := range removedSegments {
 		if err := seg.delete(); err != nil {
 			return err
 		}
 	}
-	if err := w.tail.truncateEntriesFrom(index); err != nil {
+	if err := w.segments[segIndex].truncateEntriesFrom(index); err != nil {
 		return err
 	}
 
-	// Make sure we have lastState appended since it might have been truncated.
+	w.segments = w.segments[0 : segIndex+1]
+	w.tail = w.segments[segIndex]
+	if w.cache.firstIndex() >= 0 {
+		w.cache.truncateFrom(max(index, w.cache.firstIndex()))
+	}
+
+	// Save last state & snapshot metadata since they could've been truncated.
 	if w.lastState != nil {
 		if err := w.saveState(w.lastState); err != nil {
 			return err
 		}
 	}
-
-	if w.cache.firstIndex() >= 0 {
-		w.cache.truncateFrom(max(index, w.cache.firstIndex()))
+	if w.lastSnapshotMetadata != nil {
+		if err := w.saveSnapshotMetadata(w.lastSnapshotMetadata); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -920,31 +878,35 @@ func (w *wal) TruncateEntriesTo(index int64) error {
 	}
 
 	removedSegments := w.segments[:segIndex]
-	w.segments = w.segments[segIndex:]
-
 	for _, seg := range removedSegments {
 		if err := seg.delete(); err != nil {
 			return err
 		}
 	}
 
-	removeHead, err := w.segments[0].truncateEntriesTo(index)
+	removeHead, err := w.segments[segIndex].truncateEntriesTo(index)
 	if err != nil {
 		return err
 	}
+
+	w.segments = w.segments[segIndex:]
 	if removeHead {
 		w.segments = w.segments[1:]
 	}
+	if w.cache.firstIndex() >= 0 && index >= w.cache.firstIndex() {
+		w.cache.truncateTo(index)
+	}
 
-	// Make sure we have lastState appended since it might have been truncated.
+	// Save last state & snapshot metadata since they could've been truncated.
 	if w.lastState != nil {
 		if err := w.saveState(w.lastState); err != nil {
 			return err
 		}
 	}
-
-	if w.cache.firstIndex() >= 0 && index >= w.cache.firstIndex() {
-		w.cache.truncateTo(index)
+	if w.lastSnapshotMetadata != nil {
+		if err := w.saveSnapshotMetadata(w.lastSnapshotMetadata); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -1137,6 +1099,13 @@ func (w *wal) getEntriesFrom(from int64) ([]*pb.LogEntry, error) {
 	return entries, nil
 }
 
+func (w *wal) saveSnapshotMetadata(metadata *pb.SnapshotMetadata) error {
+	if err := w.appendRecord(snapshotMetadataRecordType, metadata); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (w *wal) SaveSnapshot(snapshot Snapshot) error {
 	if w.closed {
 		return ErrClosed
@@ -1162,10 +1131,11 @@ func (w *wal) SaveSnapshot(snapshot Snapshot) error {
 	if err != nil {
 		return err
 	}
-	if err := w.appendRecord(snapshotMetadataRecordType, metadata); err != nil {
+
+	if err := w.saveSnapshotMetadata(metadata); err != nil {
 		return err
 	}
-	w.lastSnapshot = metadata
+	w.lastSnapshotMetadata = snapshot.Metadata()
 	return nil
 }
 
@@ -1174,7 +1144,7 @@ func (w *wal) RetrieveSnapshot() (Snapshot, error) {
 		return nil, ErrClosed
 	}
 
-	metadata := w.lastSnapshot
+	metadata := w.lastSnapshotMetadata
 	if metadata == nil {
 		return nil, nil
 	}
@@ -1187,7 +1157,7 @@ func (w *wal) RetrieveSnapshot() (Snapshot, error) {
 }
 
 func (w *wal) SnapshotMetadata() (*pb.SnapshotMetadata, error) {
-	return w.lastSnapshot, nil
+	return w.lastSnapshotMetadata, nil
 }
 
 func (w *wal) FirstEntryIndex() (int64, error) {
@@ -1282,4 +1252,38 @@ func (w *wal) appendRecord(recordType uint32, msg proto.Message) error {
 	}
 	w.tail.lastOffset += int64(len(recordBytes))
 	return nil
+}
+
+func (w *wal) readRecordFromBytes(chunk []byte) (*pb.WalRecord, error) {
+	recordLen := int(binary.BigEndian.Uint32(chunk))
+	if recordLen <= 0 || int64(recordLen) > w.segmentSize {
+		return nil, ErrCorrupt
+	}
+
+	record, err := w.decodeRecord(chunk[recordLengthSize : recordLengthSize+recordLen])
+	if err != nil {
+		return nil, err
+	}
+	return record, nil
+}
+
+func (w *wal) readRecordFromReader(reader io.Reader) (*pb.WalRecord, error) {
+	var recordLen int32
+	if err := binary.Read(reader, binary.BigEndian, &recordLen); err != nil {
+		return nil, err
+	}
+	if recordLen <= 0 || int64(recordLen) > w.segmentSize {
+		return nil, ErrCorrupt
+	}
+
+	recordBytes := make([]byte, recordLen)
+	if n, err := reader.Read(recordBytes); err != nil && n < len(recordBytes) {
+		return nil, err
+	}
+
+	record, err := w.decodeRecord(recordBytes)
+	if err != nil {
+		return nil, err
+	}
+	return record, nil
 }
