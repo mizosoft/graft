@@ -1,7 +1,6 @@
 package graft
 
 import (
-	"go.uber.org/zap"
 	"math/rand"
 	"os"
 	"path"
@@ -17,7 +16,10 @@ import (
 
 func TestWalNewWalOpen(t *testing.T) {
 	dir := t.TempDir()
-	wal, err := openWal(dir, 1024, zap.NewNop())
+	wal, err := openWal(WalOptions{
+		Dir:         dir,
+		SegmentSize: 1024,
+	})
 	assert.NilError(t, err)
 	defer wal.Close()
 
@@ -26,11 +28,17 @@ func TestWalNewWalOpen(t *testing.T) {
 
 func TestWalEmptyWalReopen(t *testing.T) {
 	dir := t.TempDir()
-	wal, err := openWal(dir, 1024, zap.NewNop())
+	wal, err := openWal(WalOptions{
+		Dir:         dir,
+		SegmentSize: 1024,
+	})
 	assert.NilError(t, err)
 	wal.Close()
 
-	wal, err = openWal(dir, 1024, zap.NewNop())
+	wal, err = openWal(WalOptions{
+		Dir:         dir,
+		SegmentSize: 1024,
+	})
 	assert.NilError(t, err)
 	defer wal.Close()
 
@@ -45,7 +53,10 @@ func TestWalEmptyWalReopen(t *testing.T) {
 
 func TestWalAppendSingleEntry(t *testing.T) {
 	dir := t.TempDir()
-	w, err := openWal(dir, 1024, zap.NewNop())
+	w, err := openWal(WalOptions{
+		Dir:         dir,
+		SegmentSize: 1024,
+	})
 	assert.NilError(t, err)
 	defer w.Close()
 
@@ -78,7 +89,10 @@ func TestWalAppendSingleEntry(t *testing.T) {
 
 func TestWalAppendMultipleEntries(t *testing.T) {
 	dir := t.TempDir()
-	w, err := openWal(dir, 1024, zap.NewNop())
+	w, err := openWal(WalOptions{
+		Dir:         dir,
+		SegmentSize: 1024,
+	})
 	assert.NilError(t, err)
 	defer w.Close()
 
@@ -110,7 +124,10 @@ func TestWalAppendMultipleEntries(t *testing.T) {
 
 func TestWalGetEntriesFromMiddle(t *testing.T) {
 	dir := t.TempDir()
-	w, err := openWal(dir, 1024, zap.NewNop())
+	w, err := openWal(WalOptions{
+		Dir:         dir,
+		SegmentSize: 1024,
+	})
 	assert.NilError(t, err)
 	defer w.Close()
 
@@ -144,7 +161,10 @@ func TestWalGetEntriesFromMiddle(t *testing.T) {
 
 func TestWalSetState(t *testing.T) {
 	dir := t.TempDir()
-	w, err := openWal(dir, 1024, zap.NewNop())
+	w, err := openWal(WalOptions{
+		Dir:         dir,
+		SegmentSize: 1024,
+	})
 	assert.NilError(t, err)
 	defer w.Close()
 
@@ -176,7 +196,10 @@ func TestWalSetState(t *testing.T) {
 
 func TestWalTruncateEntries(t *testing.T) {
 	dir := t.TempDir()
-	w, err := openWal(dir, 1024, zap.NewNop())
+	w, err := openWal(WalOptions{
+		Dir:         dir,
+		SegmentSize: 1024,
+	})
 	assert.NilError(t, err)
 	defer w.Close()
 
@@ -217,7 +240,10 @@ func TestWalTruncateEntries(t *testing.T) {
 
 func TestWalMultipleSegments(t *testing.T) {
 	dir := t.TempDir()
-	w, err := openWal(dir, 128, zap.NewNop())
+	w, err := openWal(WalOptions{
+		Dir:         dir,
+		SegmentSize: 512,
+	})
 	assert.NilError(t, err)
 	defer w.Close()
 
@@ -233,7 +259,7 @@ func TestWalMultipleSegments(t *testing.T) {
 	for i := range entryCount {
 		entries[i] = &pb.LogEntry{
 			Term: 1,
-			Data: []byte("entry data that is long enough to force segment creation"),
+			Data: []byte(strings.Repeat("entry data that is long enough to force segment creation", 3)),
 		}
 	}
 
@@ -259,7 +285,10 @@ func TestWalMultipleSegments(t *testing.T) {
 
 func TestWalReopen(t *testing.T) {
 	dir := t.TempDir()
-	w1, err := openWal(dir, 1024, zap.NewNop())
+	w1, err := openWal(WalOptions{
+		Dir:         dir,
+		SegmentSize: 1024,
+	})
 	assert.NilError(t, err)
 
 	state := &pb.PersistedState{
@@ -278,7 +307,10 @@ func TestWalReopen(t *testing.T) {
 	w1.Close()
 
 	// Reopen.
-	w2, err := openWal(dir, 1024, zap.NewNop())
+	w2, err := openWal(WalOptions{
+		Dir:         dir,
+		SegmentSize: 1024,
+	})
 	assert.NilError(t, err)
 	defer w2.Close()
 
@@ -299,7 +331,10 @@ func TestWalReopen(t *testing.T) {
 
 func TestWalErrorCases(t *testing.T) {
 	dir := t.TempDir()
-	w, err := openWal(dir, 1024, zap.NewNop())
+	w, err := openWal(WalOptions{
+		Dir:         dir,
+		SegmentSize: 1024,
+	})
 	defer w.Close()
 	assert.NilError(t, err)
 
@@ -315,7 +350,10 @@ func TestWalErrorCases(t *testing.T) {
 
 func TestWalCorruptedCRC(t *testing.T) {
 	dir := t.TempDir()
-	w, err := openWal(dir, 1024, zap.NewNop())
+	w, err := openWal(WalOptions{
+		Dir:         dir,
+		SegmentSize: 1024,
+	})
 	defer w.Close()
 	assert.NilError(t, err)
 
@@ -348,13 +386,19 @@ func TestWalCorruptedCRC(t *testing.T) {
 	assert.NilError(t, err)
 
 	// Open log with corrupt segment.
-	w, err = openWal(dir, 1024, zap.NewNop())
+	w, err = openWal(WalOptions{
+		Dir:         dir,
+		SegmentSize: 1024,
+	})
 	assert.Assert(t, err != nil, "Expected error when opening corrupted WAL")
 }
 
 func TestWalOverwriteState(t *testing.T) {
 	dir := t.TempDir()
-	w, err := openWal(dir, 1024, zap.NewNop())
+	w, err := openWal(WalOptions{
+		Dir:         dir,
+		SegmentSize: 1024,
+	})
 	assert.NilError(t, err)
 	defer w.Close()
 
@@ -385,7 +429,10 @@ func TestWalOverwriteState(t *testing.T) {
 	w.Close()
 	assert.NilError(t, err)
 
-	w2, err := openWal(dir, 1024, zap.NewNop())
+	w2, err := openWal(WalOptions{
+		Dir:         dir,
+		SegmentSize: 1024,
+	})
 	assert.NilError(t, err)
 	defer w2.Close()
 
@@ -397,7 +444,10 @@ func TestWalOverwriteState(t *testing.T) {
 
 func TestWalTruncateAfterStateUpdate(t *testing.T) {
 	dir := t.TempDir()
-	w1, err := openWal(dir, 1024, zap.NewNop())
+	w1, err := openWal(WalOptions{
+		Dir:         dir,
+		SegmentSize: 1024,
+	})
 	assert.NilError(t, err)
 	defer w1.Close()
 
@@ -420,7 +470,10 @@ func TestWalTruncateAfterStateUpdate(t *testing.T) {
 	w1.Close()
 
 	// Reopen.
-	w2, err := openWal(dir, 1024, zap.NewNop())
+	w2, err := openWal(WalOptions{
+		Dir:         dir,
+		SegmentSize: 1024,
+	})
 	assert.NilError(t, err)
 	defer w2.Close()
 
@@ -430,7 +483,10 @@ func TestWalTruncateAfterStateUpdate(t *testing.T) {
 
 func TestWalAppendAfterTruncating(t *testing.T) {
 	dir := t.TempDir()
-	w, err := openWal(dir, 1024, zap.NewNop())
+	w, err := openWal(WalOptions{
+		Dir:         dir,
+		SegmentSize: 1024,
+	})
 	assert.NilError(t, err)
 	defer w.Close()
 
@@ -467,7 +523,10 @@ func TestWalAppendAfterTruncating(t *testing.T) {
 
 func TestWalTruncateMultipleSegments(t *testing.T) {
 	dir := t.TempDir()
-	w, err := openWal(dir, 128, zap.NewNop())
+	w, err := openWal(WalOptions{
+		Dir:         dir,
+		SegmentSize: 512,
+	})
 	assert.NilError(t, err)
 	defer w.Close()
 
@@ -483,7 +542,7 @@ func TestWalTruncateMultipleSegments(t *testing.T) {
 	for i := range entryCount {
 		entries[i] = &pb.LogEntry{
 			Term: 1,
-			Data: []byte("they see me rollin' they hatin'"),
+			Data: []byte(strings.Repeat("they see me rollin' they hatin'", 3)),
 		}
 	}
 
@@ -533,7 +592,10 @@ func TestWalTruncateMultipleSegments(t *testing.T) {
 
 func TestWalHeadEntry(t *testing.T) {
 	dir := t.TempDir()
-	w, err := openWal(dir, 128, zap.NewNop())
+	w, err := openWal(WalOptions{
+		Dir:         dir,
+		SegmentSize: 512,
+	})
 	assert.NilError(t, err)
 	defer w.Close()
 
@@ -558,7 +620,10 @@ func TestWalHeadEntry(t *testing.T) {
 
 func TestWalTailEntry(t *testing.T) {
 	dir := t.TempDir()
-	w, err := openWal(dir, 100, zap.NewNop())
+	w, err := openWal(WalOptions{
+		Dir:         dir,
+		SegmentSize: 512,
+	})
 	assert.NilError(t, err)
 	defer w.Close()
 
@@ -583,7 +648,10 @@ func TestWalTailEntry(t *testing.T) {
 
 func TestWalTailEntryWithEmptySegments(t *testing.T) {
 	dir := t.TempDir()
-	w, err := openWal(dir, 128, zap.NewNop())
+	w, err := openWal(WalOptions{
+		Dir:         dir,
+		SegmentSize: 512,
+	})
 	assert.NilError(t, err)
 	defer w.Close()
 
@@ -600,7 +668,7 @@ func TestWalTailEntryWithEmptySegments(t *testing.T) {
 	assert.Equal(t, lastIndex, int64(2))
 
 	// Create a couple of segments without entries at the end.
-	for i := range 6 {
+	for i := range 50 {
 		err = w.SaveState(&pb.PersistedState{CurrentTerm: int64(i), VotedFor: "s1", CommitIndex: 0})
 		assert.NilError(t, err)
 	}
@@ -621,7 +689,10 @@ func fileExists(path string) bool {
 
 func TestWalMismatchingSegNumber(t *testing.T) {
 	dir := t.TempDir()
-	w1, err := openWal(dir, 1024, zap.NewNop())
+	w1, err := openWal(WalOptions{
+		Dir:         dir,
+		SegmentSize: 1024,
+	})
 	assert.NilError(t, err)
 	defer w1.Close()
 
@@ -641,7 +712,10 @@ func TestWalMismatchingSegNumber(t *testing.T) {
 		assert.NilError(t, err)
 	}
 
-	w2, err := openWal(dir, 128, zap.NewNop())
+	w2, err := openWal(WalOptions{
+		Dir:         dir,
+		SegmentSize: 1024,
+	})
 	assert.NilError(t, err)
 	defer w2.Close()
 
@@ -654,7 +728,10 @@ func TestWalMismatchingSegNumber(t *testing.T) {
 
 func TestWalMismatchingFirstIndex(t *testing.T) {
 	dir := t.TempDir()
-	w1, err := openWal(dir, 128, zap.NewNop())
+	w1, err := openWal(WalOptions{
+		Dir:         dir,
+		SegmentSize: 512,
+	})
 	assert.NilError(t, err)
 	defer w1.Close()
 
@@ -674,7 +751,10 @@ func TestWalMismatchingFirstIndex(t *testing.T) {
 		assert.NilError(t, err)
 	}
 
-	w2, err := openWal(dir, 128, zap.NewNop())
+	w2, err := openWal(WalOptions{
+		Dir:         dir,
+		SegmentSize: 512,
+	})
 	assert.NilError(t, err)
 	defer w1.Close()
 
@@ -687,7 +767,10 @@ func TestWalMismatchingFirstIndex(t *testing.T) {
 
 func TestWalGetEntriesFromTo(t *testing.T) {
 	dir := t.TempDir()
-	w, err := openWal(dir, 128, zap.NewNop())
+	w, err := openWal(WalOptions{
+		Dir:         dir,
+		SegmentSize: 512,
+	})
 	assert.NilError(t, err)
 	defer w.Close()
 
@@ -770,7 +853,10 @@ func TestWalGetEntriesFromTo(t *testing.T) {
 
 func TestWalSaveAndRetrieveSnapshot(t *testing.T) {
 	dir := t.TempDir()
-	w, err := openWal(dir, 128, zap.NewNop())
+	w, err := openWal(WalOptions{
+		Dir:         dir,
+		SegmentSize: 512,
+	})
 	assert.NilError(t, err)
 	defer w.Close()
 
@@ -808,7 +894,10 @@ func TestWalSaveAndRetrieveSnapshot(t *testing.T) {
 
 func TestWalRetrieveSnapshotOnReopen(t *testing.T) {
 	dir := t.TempDir()
-	w1, err := openWal(dir, 128, zap.NewNop())
+	w1, err := openWal(WalOptions{
+		Dir:         dir,
+		SegmentSize: 512,
+	})
 	assert.NilError(t, err)
 	defer w1.Close()
 
@@ -836,7 +925,10 @@ func TestWalRetrieveSnapshotOnReopen(t *testing.T) {
 
 	w1.Close()
 
-	w2, err := openWal(dir, 128, zap.NewNop())
+	w2, err := openWal(WalOptions{
+		Dir:         dir,
+		SegmentSize: 512,
+	})
 	assert.NilError(t, err)
 	defer w2.Close()
 	retrievedSnapshot, err := w2.RetrieveSnapshot()
@@ -847,7 +939,10 @@ func TestWalRetrieveSnapshotOnReopen(t *testing.T) {
 
 func TestWalTruncateEntriesTo(t *testing.T) {
 	dir := t.TempDir()
-	w, err := openWal(dir, 256, zap.NewNop())
+	w, err := openWal(WalOptions{
+		Dir:         dir,
+		SegmentSize: 512,
+	})
 	assert.NilError(t, err)
 	defer w.Close()
 
@@ -892,7 +987,10 @@ func TestWalTruncateEntriesTo(t *testing.T) {
 
 func TestWalFirstAndLastEntryIndex(t *testing.T) {
 	dir := t.TempDir()
-	w, err := openWal(dir, 1024, zap.NewNop())
+	w, err := openWal(WalOptions{
+		Dir:         dir,
+		SegmentSize: 1024,
+	})
 	assert.NilError(t, err)
 	defer w.Close()
 

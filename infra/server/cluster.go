@@ -176,7 +176,12 @@ func StartLocalCluster[T Service](config ClusterConfig[T]) (*Cluster[T], error) 
 
 	if config.PersistenceFactory == nil {
 		config.PersistenceFactory = func(dir string) (graft.Persistence, error) {
-			return graft.OpenWal(dir, 64*1024*1024, 1*1024*1024, config.Logger)
+			return graft.OpenWal(graft.WalOptions{
+				Dir:             dir,
+				SegmentSize:     64 * 1024 * 1024,
+				SuffixCacheSize: 1 * 1024 * 1024,
+				Logger:          config.Logger,
+			})
 		}
 	}
 

@@ -31,6 +31,7 @@ const (
 
 const (
 	recordLengthSize = 4
+	minSegmentSize   = 512
 )
 
 type entryCache struct {
@@ -427,22 +428,55 @@ func (s *segment) close() error {
 	return err
 }
 
-func openCachedWal(dir string, segmentSize int64, cacheSize int64, logger *zap.Logger) (*wal, error) {
-	files, err := os.ReadDir(dir)
+type WalOptions struct {
+	Dir             string
+	SegmentSize     int64
+	SuffixCacheSize int64
+	MemoryMapped    bool
+	Logger          *zap.Logger
+}
+
+func (o *WalOptions) Validate() error {
+	if o.Dir == "" {
+		return errors.New("dir is required")
+	}
+	if o.SegmentSize < minSegmentSize {
+		return errors.New("segment size is too low")
+	}
+	if o.SuffixCacheSize < 0 {
+		return errors.New("suffix cache size must be positive")
+	}
+	return nil
+}
+
+func OpenWal(options WalOptions) (Persistence, error) {
+	return openWal(options)
+}
+
+func openWal(options WalOptions) (*wal, error) {
+	if err := options.Validate(); err != nil {
+		return nil, err
+	}
+
+	files, err := os.ReadDir(options.Dir)
 	if err != nil {
 		return nil, err
 	}
 
+	if options.Logger == nil {
+		options.Logger = zap.NewNop()
+	}
+
 	w := &wal{
-		dir:         dir,
-		segmentSize: segmentSize,
+		dir:         options.Dir,
+		segmentSize: options.SegmentSize,
 		segments:    make([]*segment, 0),
 		crcTable:    crc32.MakeTable(crc32.Castagnoli),
 		cache: &entryCache{
 			data:    make([]*pb.LogEntry, 0),
-			maxSize: cacheSize,
+			maxSize: options.SuffixCacheSize,
 		},
-		logger: logger.With(zap.String("name", "WAL")).Sugar(),
+		logger: options.Logger.With(zap.String("name", "WAL")).Sugar(),
 	}
 
 	w.trailerRecord = w.appendRecordTo(nil, trailerRecordType, &pb.WalSegmentTrailer{Magic: walMagic})
@@ -479,7 +513,7 @@ func openCachedWal(dir string, segmentSize int64, cacheSize int64, logger *zap.L
 			number:       segNum,
 			firstIndex:   firstIndex,
 			nextIndex:    firstIndex,
-			fpath:        path.Join(dir, file.Name()),
+			fpath:        path.Join(options.Dir, file.Name()),
 			entryOffsets: []int64{},
 		}
 		w.segments = append(w.segments, s) // Append early so that the file / memory-mapping is cleaned if an err occurs.
@@ -609,10 +643,6 @@ func openCachedWal(dir string, segmentSize int64, cacheSize int64, logger *zap.L
 	}
 	allGood = true
 	return w, nil
-}
-
-func openWal(dir string, softSegmentSize int64, logger *zap.Logger) (*wal, error) {
-	return openCachedWal(dir, softSegmentSize, 0, logger)
 }
 
 func (w *wal) verify(record *pb.WalRecord) bool {

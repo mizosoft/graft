@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"github.com/mizosoft/graft/pb"
-	"go.uber.org/zap"
 )
 
 var (
@@ -89,10 +88,6 @@ func (s *snapshot) Data() []byte {
 
 func MemoryPersistence() Persistence {
 	return &memoryPersistence{}
-}
-
-func OpenWal(dir string, softSegmentSize int64, suffixCacheSize int64, logger *zap.Logger) (Persistence, error) {
-	return openCachedWal(dir, softSegmentSize, suffixCacheSize, logger)
 }
 
 func NewSnapshot(metadata *pb.SnapshotMetadata, data []byte) Snapshot {

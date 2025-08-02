@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"github.com/mizosoft/graft"
 	"github.com/mizosoft/graft/pb"
-	"go.uber.org/zap"
 	"math/rand"
 	"testing"
 )
@@ -38,7 +37,10 @@ import (
 func BenchmarkWalAppend(b *testing.B) {
 	// Setup
 	dir := b.TempDir()
-	wal, err := graft.OpenWal(dir, 512*1024, 0, zap.NewNop())
+	wal, err := graft.OpenWal(graft.WalOptions{
+		Dir:         dir,
+		SegmentSize: 512 * 1024,
+	})
 	if err != nil {
 		b.Fatalf("OpenWal error: %v", err)
 	}
@@ -69,7 +71,10 @@ func BenchmarkWalAppend(b *testing.B) {
 func BenchmarkWalSequentialScan(b *testing.B) {
 	// Setup
 	dir := b.TempDir()
-	wal, err := graft.OpenWal(dir, 128*1024, 0, zap.NewNop())
+	wal, err := graft.OpenWal(graft.WalOptions{
+		Dir:         dir,
+		SegmentSize: 128 * 1024,
+	})
 	if err != nil {
 		b.Fatalf("OpenWal error: %v", err)
 	}
@@ -113,7 +118,10 @@ func BenchmarkWalSequentialScan(b *testing.B) {
 func BenchmarkWalBatchedSequentialScan(b *testing.B) {
 	// Setup
 	dir := b.TempDir()
-	wal, err := graft.OpenWal(dir, 128*1024, 0, zap.NewNop())
+	wal, err := graft.OpenWal(graft.WalOptions{
+		Dir:         dir,
+		SegmentSize: 128 * 1024,
+	})
 	if err != nil {
 		b.Fatalf("OpenWal error: %v", err)
 	}
@@ -163,7 +171,10 @@ func BenchmarkWalBatchedSequentialScan(b *testing.B) {
 func BenchmarkRandomScan(b *testing.B) {
 	// Setup
 	dir := b.TempDir()
-	wal, err := graft.OpenWal(dir, 128*1024, 0, zap.NewNop())
+	wal, err := graft.OpenWal(graft.WalOptions{
+		Dir:         dir,
+		SegmentSize: 128 * 1024,
+	})
 	if err != nil {
 		b.Fatalf("OpenWal error: %v", err)
 	}
@@ -209,7 +220,11 @@ func BenchmarkRandomScan(b *testing.B) {
 func BenchmarkWalSequentialScanWithTailCache(b *testing.B) {
 	// Setup
 	dir := b.TempDir()
-	wal, err := graft.OpenWal(dir, 128*1024, 2*128*1024, zap.NewNop()) // Cache 2 segments.
+	wal, err := graft.OpenWal(graft.WalOptions{
+		Dir:             dir,
+		SegmentSize:     128 * 1024,
+		SuffixCacheSize: 2 * 128 * 1024,
+	})
 	if err != nil {
 		b.Fatalf("OpenWal error: %v", err)
 	}
@@ -253,7 +268,11 @@ func BenchmarkWalSequentialScanWithTailCache(b *testing.B) {
 func BenchmarkWalBatchedSequentialScanWithTailCache(b *testing.B) {
 	// Setup
 	dir := b.TempDir()
-	wal, err := graft.OpenWal(dir, 128*1024, 2*128*1024, zap.NewNop()) // Cache 2 segments.
+	wal, err := graft.OpenWal(graft.WalOptions{
+		Dir:             dir,
+		SegmentSize:     128 * 1024,
+		SuffixCacheSize: 2 * 128 * 1024,
+	})
 	if err != nil {
 		b.Fatalf("OpenWal error: %v", err)
 	}
@@ -303,7 +322,11 @@ func BenchmarkWalBatchedSequentialScanWithTailCache(b *testing.B) {
 func BenchmarkRandomScanWithTailCache(b *testing.B) {
 	// Setup
 	dir := b.TempDir()
-	wal, err := graft.OpenWal(dir, 128*1024, 2*128*1024, zap.NewNop()) // Cache 2 segments.
+	wal, err := graft.OpenWal(graft.WalOptions{
+		Dir:             dir,
+		SegmentSize:     128 * 1024,
+		SuffixCacheSize: 2 * 128 * 1024,
+	})
 	if err != nil {
 		b.Fatalf("OpenWal error: %v", err)
 	}

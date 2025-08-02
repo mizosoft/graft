@@ -51,7 +51,11 @@ func newClusterClientWithWalPersistence(b *testing.B, nodeCount int, batchInterv
 				return service.NewKvService(address, batchInterval, config)
 			},
 			PersistenceFactory: func(dir string) (graft.Persistence, error) {
-				return graft.OpenWal(dir, 64*1024*1024, 1*1024*1024, zap.NewNop())
+				return graft.OpenWal(graft.WalOptions{
+					Dir:             dir,
+					SegmentSize:     64 * 1024 * 1024,
+					SuffixCacheSize: 1 * 1024 * 1024,
+				})
 			},
 			Logger: zap.NewNop(),
 		},
