@@ -46,8 +46,6 @@ type bufferedReader struct {
 	reader io.Reader
 }
 
-const bufferSize = 8096
-
 func newReaderAt(f *os.File, offset int64) io.Reader {
 	return &offsetFileReader{f: f, offset: offset}
 }
@@ -55,6 +53,8 @@ func newReaderAt(f *os.File, offset int64) io.Reader {
 func newWriterAt(f *os.File, offset int64) io.Writer {
 	return &offsetFileWriter{f: f, offset: offset}
 }
+
+const bufferSize = 16 * 1024
 
 func newBufferedReader(reader io.Reader) io.Reader {
 	return &bufferedReader{

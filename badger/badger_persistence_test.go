@@ -234,7 +234,8 @@ func TestWalReopen(t *testing.T) {
 		{Term: 1, Data: []byte("entry 2")},
 	}
 
-	w1.Append(state, entries)
+	_, err = w1.Append(state, entries)
+	assert.NilError(t, err)
 	w1.Close()
 
 	// Reopen.
