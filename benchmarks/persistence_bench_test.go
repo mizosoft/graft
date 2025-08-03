@@ -35,283 +35,201 @@ import (
 //}
 
 func BenchmarkWalAppend(b *testing.B) {
-	// Setup
-	dir := b.TempDir()
-	wal, err := graft.OpenWal(graft.WalOptions{
-		Dir:         dir,
-		SegmentSize: 512 * 1024,
-	})
-	if err != nil {
-		b.Fatalf("OpenWal error: %v", err)
-	}
+	for _, memoryMapped := range []bool{false, true} {
+		b.Run(fmt.Sprintf("memoryMapped=%t", memoryMapped), func(b *testing.B) {
+			// Setup
+			dir := b.TempDir()
+			wal, err := graft.OpenWal(graft.WalOptions{
+				Dir:          dir,
+				MemoryMapped: memoryMapped,
+				SegmentSize:  512 * 1024,
+			})
+			if err != nil {
+				b.Fatalf("OpenWal error: %v", err)
+			}
 
-	entriesCount := 1024
-	entries := make([]*pb.LogEntry, entriesCount)
-	for i := 0; i < entriesCount; i++ {
-		entries[i] = &pb.LogEntry{
-			Term: int64(i),
-			Data: []byte("Hello from the other side"),
-			Type: pb.LogEntry_COMMAND,
-		}
-	}
+			entriesCount := 1024
+			entries := make([]*pb.LogEntry, entriesCount)
+			for i := 0; i < entriesCount; i++ {
+				entries[i] = &pb.LogEntry{
+					Term: int64(i),
+					Data: []byte("Hello from the other side"),
+					Type: pb.LogEntry_COMMAND,
+				}
+			}
 
-	// Benchmark
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		nextIndex, err := wal.Append(&pb.PersistedState{CurrentTerm: int64(entriesCount + i)}, entries)
-		if err != nil {
-			b.Fatalf("Append error: %v", err)
-		}
-		if nextIndex != int64((i+1)*entriesCount) {
-			b.Fatalf("Append error: nextIndex=%d", nextIndex)
-		}
+			// Benchmark
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				nextIndex, err := wal.Append(&pb.PersistedState{CurrentTerm: int64(entriesCount + i)}, entries)
+				if err != nil {
+					b.Fatalf("Append error: %v", err)
+				}
+				if nextIndex != int64((i+1)*entriesCount) {
+					b.Fatalf("Append error: nextIndex=%d", nextIndex)
+				}
+			}
+		})
 	}
 }
 
 func BenchmarkWalSequentialScan(b *testing.B) {
-	// Setup
-	dir := b.TempDir()
-	wal, err := graft.OpenWal(graft.WalOptions{
-		Dir:         dir,
-		SegmentSize: 128 * 1024,
-	})
-	if err != nil {
-		b.Fatalf("OpenWal error: %v", err)
-	}
-
-	entriesCount := 1024
-	entries := make([]*pb.LogEntry, entriesCount)
-	for i := 0; i < entriesCount; i++ {
-		entries[i] = &pb.LogEntry{
-			Term: int64(i),
-			Data: []byte("Hello from the other side"),
-			Type: pb.LogEntry_COMMAND,
-		}
-	}
-
-	// Span multiple segments.
-	appendCount := 32
-	for i := range 32 {
-		_, err := wal.Append(&pb.PersistedState{CurrentTerm: int64(i)}, entries)
-		if err != nil {
-			b.Fatalf("Append error: %v", err)
-		}
-	}
-
-	totalEntryCount := entriesCount * appendCount
-
-	// Benchmark
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		for i := range totalEntryCount {
-			e, err := wal.GetEntry(int64(i))
+	for _, memoryMapped := range []bool{false, true} {
+		b.Run(fmt.Sprintf("memoryMapped=%t", memoryMapped), func(b *testing.B) {
+			// Setup
+			dir := b.TempDir()
+			wal, err := graft.OpenWal(graft.WalOptions{
+				Dir:          dir,
+				MemoryMapped: memoryMapped,
+				SegmentSize:  128 * 1024,
+			})
 			if err != nil {
-				b.Fatalf("GetEntry error: %v", err)
+				b.Fatalf("OpenWal error: %v", err)
 			}
-			if e.Index != int64(i) {
-				b.Fatalf("GetEntry error: index=%d, expected=%d", e.Index, i)
+
+			entriesCount := 1024
+			entries := make([]*pb.LogEntry, entriesCount)
+			for i := 0; i < entriesCount; i++ {
+				entries[i] = &pb.LogEntry{
+					Term: int64(i),
+					Data: []byte("Hello from the other side"),
+					Type: pb.LogEntry_COMMAND,
+				}
 			}
-		}
+
+			// Span multiple segments.
+			appendCount := 32
+			for i := range 32 {
+				_, err := wal.Append(&pb.PersistedState{CurrentTerm: int64(i)}, entries)
+				if err != nil {
+					b.Fatalf("Append error: %v", err)
+				}
+			}
+
+			totalEntryCount := entriesCount * appendCount
+
+			// Benchmark
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				for i := range totalEntryCount {
+					e, err := wal.GetEntry(int64(i))
+					if err != nil {
+						b.Fatalf("GetEntry error: %v", err)
+					}
+					if e.Index != int64(i) {
+						b.Fatalf("GetEntry error: index=%d, expected=%d", e.Index, i)
+					}
+				}
+			}
+		})
 	}
 }
 
 func BenchmarkWalBatchedSequentialScan(b *testing.B) {
-	// Setup
-	dir := b.TempDir()
-	wal, err := graft.OpenWal(graft.WalOptions{
-		Dir:         dir,
-		SegmentSize: 128 * 1024,
-	})
-	if err != nil {
-		b.Fatalf("OpenWal error: %v", err)
-	}
+	for _, memoryMapped := range []bool{false, true} {
+		b.Run(fmt.Sprintf("memoryMapped=%t", memoryMapped), func(b *testing.B) {
+			// Setup
+			dir := b.TempDir()
+			wal, err := graft.OpenWal(graft.WalOptions{
+				Dir:          dir,
+				MemoryMapped: memoryMapped,
+				SegmentSize:  128 * 1024,
+			})
+			if err != nil {
+				b.Fatalf("OpenWal error: %v", err)
+			}
 
-	entriesCount := 1024
-	entries := make([]*pb.LogEntry, entriesCount)
-	for i := 0; i < entriesCount; i++ {
-		entries[i] = &pb.LogEntry{
-			Term: int64(i),
-			Data: []byte("Hello from the other side"),
-			Type: pb.LogEntry_COMMAND,
-		}
-	}
+			entriesCount := 1024
+			entries := make([]*pb.LogEntry, entriesCount)
+			for i := 0; i < entriesCount; i++ {
+				entries[i] = &pb.LogEntry{
+					Term: int64(i),
+					Data: []byte("Hello from the other side"),
+					Type: pb.LogEntry_COMMAND,
+				}
+			}
 
-	// Span multiple segments.
-	appendCount := 32
-	for i := range 32 {
-		_, err := wal.Append(&pb.PersistedState{CurrentTerm: int64(i)}, entries)
-		if err != nil {
-			b.Fatalf("Append error: %v", err)
-		}
-	}
+			// Span multiple segments.
+			appendCount := 32
+			for i := range 32 {
+				_, err := wal.Append(&pb.PersistedState{CurrentTerm: int64(i)}, entries)
+				if err != nil {
+					b.Fatalf("Append error: %v", err)
+				}
+			}
 
-	totalEntryCount := entriesCount * appendCount
+			totalEntryCount := entriesCount * appendCount
 
-	// Benchmark
-	b.ResetTimer()
-	for _, batchSize := range []int{1024, 2048, 4096, 8192, 16384} {
-		b.Run(fmt.Sprintf("batchSize=%dB", batchSize), func(b *testing.B) {
-			for i := 0; i < b.N; i++ {
-				for i := 0; i < totalEntryCount; i += batchSize {
-					es, err := wal.GetEntries(int64(i), int64(i+batchSize-1))
-					if err != nil {
-						b.Fatalf("GetEntries error: %v", err)
-					}
-					for ei, e := range es {
-						if e.Index != int64(i+ei) {
-							b.Fatalf("GetEntry error: index=%d, expected=%d", e.Index, i)
+			// Benchmark
+			b.ResetTimer()
+			for _, batchSize := range []int{1024, 2048, 4096, 8192, 16384} {
+				b.Run(fmt.Sprintf("batchSize=%dB", batchSize), func(b *testing.B) {
+					for i := 0; i < b.N; i++ {
+						for i := 0; i < totalEntryCount; i += batchSize {
+							es, err := wal.GetEntries(int64(i), int64(i+batchSize-1))
+							if err != nil {
+								b.Fatalf("GetEntries error: %v", err)
+							}
+							for ei, e := range es {
+								if e.Index != int64(i+ei) {
+									b.Fatalf("GetEntry error: index=%d, expected=%d", e.Index, i)
+								}
+							}
 						}
 					}
-				}
+				})
 			}
 		})
 	}
 }
 
 func BenchmarkRandomScan(b *testing.B) {
-	// Setup
-	dir := b.TempDir()
-	wal, err := graft.OpenWal(graft.WalOptions{
-		Dir:         dir,
-		SegmentSize: 128 * 1024,
-	})
-	if err != nil {
-		b.Fatalf("OpenWal error: %v", err)
-	}
-
-	entriesCount := 1024
-	entries := make([]*pb.LogEntry, entriesCount)
-	for i := 0; i < entriesCount; i++ {
-		entries[i] = &pb.LogEntry{
-			Term: int64(i),
-			Data: []byte("Hello from the other side"),
-			Type: pb.LogEntry_COMMAND,
-		}
-	}
-
-	// Span multiple segments.
-	appendCount := 32
-	for i := range 32 {
-		_, err := wal.Append(&pb.PersistedState{CurrentTerm: int64(i)}, entries)
-		if err != nil {
-			b.Fatalf("Append error: %v", err)
-		}
-	}
-
-	totalEntryCount := entriesCount * appendCount
-
-	access := rand.New(rand.NewSource(10)).Perm(totalEntryCount)
-
-	// Benchmark
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		for _, i := range access {
-			e, err := wal.GetEntry(int64(i))
+	for _, memoryMapped := range []bool{false, true} {
+		b.Run(fmt.Sprintf("memoryMapped=%t", memoryMapped), func(b *testing.B) {
+			// Setup
+			dir := b.TempDir()
+			wal, err := graft.OpenWal(graft.WalOptions{
+				Dir:          dir,
+				MemoryMapped: memoryMapped,
+				SegmentSize:  128 * 1024,
+			})
 			if err != nil {
-				b.Fatalf("GetEntries error: %v", err)
+				b.Fatalf("OpenWal error: %v", err)
 			}
-			if e.Index != int64(i) {
-				b.Fatalf("GetEntry error: index=%d, expected=%d", e.Index, i)
+
+			entriesCount := 1024
+			entries := make([]*pb.LogEntry, entriesCount)
+			for i := 0; i < entriesCount; i++ {
+				entries[i] = &pb.LogEntry{
+					Term: int64(i),
+					Data: []byte("Hello from the other side"),
+					Type: pb.LogEntry_COMMAND,
+				}
 			}
-		}
-	}
-}
 
-func BenchmarkWalSequentialScanWithTailCache(b *testing.B) {
-	// Setup
-	dir := b.TempDir()
-	wal, err := graft.OpenWal(graft.WalOptions{
-		Dir:             dir,
-		SegmentSize:     128 * 1024,
-		SuffixCacheSize: 2 * 128 * 1024,
-	})
-	if err != nil {
-		b.Fatalf("OpenWal error: %v", err)
-	}
-
-	entriesCount := 1024
-	entries := make([]*pb.LogEntry, entriesCount)
-	for i := 0; i < entriesCount; i++ {
-		entries[i] = &pb.LogEntry{
-			Term: int64(i),
-			Data: []byte("Hello from the other side"),
-			Type: pb.LogEntry_COMMAND,
-		}
-	}
-
-	// Span multiple segments.
-	appendCount := 32
-	for i := range 32 {
-		_, err := wal.Append(&pb.PersistedState{CurrentTerm: int64(i)}, entries)
-		if err != nil {
-			b.Fatalf("Append error: %v", err)
-		}
-	}
-
-	totalEntryCount := entriesCount * appendCount
-
-	// Benchmark
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		for i := range totalEntryCount {
-			e, err := wal.GetEntry(int64(i))
-			if err != nil {
-				b.Fatalf("GetEntries error: %v", err)
+			// Span multiple segments.
+			appendCount := 32
+			for i := range 32 {
+				_, err := wal.Append(&pb.PersistedState{CurrentTerm: int64(i)}, entries)
+				if err != nil {
+					b.Fatalf("Append error: %v", err)
+				}
 			}
-			if e.Index != int64(i) {
-				b.Fatalf("GetEntry error: index=%d, expected=%d", e.Index, i)
-			}
-		}
-	}
-}
 
-func BenchmarkWalBatchedSequentialScanWithTailCache(b *testing.B) {
-	// Setup
-	dir := b.TempDir()
-	wal, err := graft.OpenWal(graft.WalOptions{
-		Dir:             dir,
-		SegmentSize:     128 * 1024,
-		SuffixCacheSize: 2 * 128 * 1024,
-	})
-	if err != nil {
-		b.Fatalf("OpenWal error: %v", err)
-	}
+			totalEntryCount := entriesCount * appendCount
 
-	entriesCount := 1024
-	entries := make([]*pb.LogEntry, entriesCount)
-	for i := 0; i < entriesCount; i++ {
-		entries[i] = &pb.LogEntry{
-			Term: int64(i),
-			Data: []byte("Hello from the other side"),
-			Type: pb.LogEntry_COMMAND,
-		}
-	}
+			access := rand.New(rand.NewSource(10)).Perm(totalEntryCount)
 
-	// Span multiple segments.
-	appendCount := 32
-	for i := range 32 {
-		_, err := wal.Append(&pb.PersistedState{CurrentTerm: int64(i)}, entries)
-		if err != nil {
-			b.Fatalf("Append error: %v", err)
-		}
-	}
-
-	totalEntryCount := entriesCount * appendCount
-
-	// Benchmark
-	b.ResetTimer()
-	for _, batchSize := range []int{1024, 2048, 4096, 8192, 16384} {
-		b.Run(fmt.Sprintf("batchSize=%dB", batchSize), func(b *testing.B) {
+			// Benchmark
+			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				for i := 0; i < totalEntryCount; i += batchSize {
-					es, err := wal.GetEntries(int64(i), int64(i+batchSize-1))
+				for _, i := range access {
+					e, err := wal.GetEntry(int64(i))
 					if err != nil {
 						b.Fatalf("GetEntries error: %v", err)
 					}
-					for ei, e := range es {
-						if e.Index != int64(i+ei) {
-							b.Fatalf("GetEntry error: index=%d, expected=%d", e.Index, i)
-						}
+					if e.Index != int64(i) {
+						b.Fatalf("GetEntry error: index=%d, expected=%d", e.Index, i)
 					}
 				}
 			}
@@ -319,52 +237,169 @@ func BenchmarkWalBatchedSequentialScanWithTailCache(b *testing.B) {
 	}
 }
 
-func BenchmarkRandomScanWithTailCache(b *testing.B) {
-	// Setup
-	dir := b.TempDir()
-	wal, err := graft.OpenWal(graft.WalOptions{
-		Dir:             dir,
-		SegmentSize:     128 * 1024,
-		SuffixCacheSize: 2 * 128 * 1024,
-	})
-	if err != nil {
-		b.Fatalf("OpenWal error: %v", err)
-	}
-
-	entriesCount := 1024
-	entries := make([]*pb.LogEntry, entriesCount)
-	for i := 0; i < entriesCount; i++ {
-		entries[i] = &pb.LogEntry{
-			Term: int64(i),
-			Data: []byte("Hello from the other side"),
-			Type: pb.LogEntry_COMMAND,
-		}
-	}
-
-	// Span multiple segments.
-	appendCount := 32
-	for i := range 32 {
-		_, err := wal.Append(&pb.PersistedState{CurrentTerm: int64(i)}, entries)
-		if err != nil {
-			b.Fatalf("Append error: %v", err)
-		}
-	}
-
-	totalEntryCount := entriesCount * appendCount
-
-	access := rand.New(rand.NewSource(10)).Perm(totalEntryCount)
-
-	// Benchmark
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		for _, i := range access {
-			e, err := wal.GetEntry(int64(i))
+func BenchmarkWalSequentialScanWithTailCache(b *testing.B) {
+	for _, memoryMapped := range []bool{false, true} {
+		b.Run(fmt.Sprintf("memoryMapped=%t", memoryMapped), func(b *testing.B) {
+			// Setup
+			dir := b.TempDir()
+			wal, err := graft.OpenWal(graft.WalOptions{
+				Dir:             dir,
+				MemoryMapped:    memoryMapped,
+				SegmentSize:     128 * 1024,
+				SuffixCacheSize: 2 * 128 * 1024,
+			})
 			if err != nil {
-				b.Fatalf("GetEntry error: %v", err)
+				b.Fatalf("OpenWal error: %v", err)
 			}
-			if e.Index != int64(i) {
-				b.Fatalf("GetEntry error: index=%d, expected=%d", e.Index, i)
+
+			entriesCount := 1024
+			entries := make([]*pb.LogEntry, entriesCount)
+			for i := 0; i < entriesCount; i++ {
+				entries[i] = &pb.LogEntry{
+					Term: int64(i),
+					Data: []byte("Hello from the other side"),
+					Type: pb.LogEntry_COMMAND,
+				}
 			}
-		}
+
+			// Span multiple segments.
+			appendCount := 32
+			for i := range 32 {
+				_, err := wal.Append(&pb.PersistedState{CurrentTerm: int64(i)}, entries)
+				if err != nil {
+					b.Fatalf("Append error: %v", err)
+				}
+			}
+
+			totalEntryCount := entriesCount * appendCount
+
+			// Benchmark
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				for i := range totalEntryCount {
+					e, err := wal.GetEntry(int64(i))
+					if err != nil {
+						b.Fatalf("GetEntries error: %v", err)
+					}
+					if e.Index != int64(i) {
+						b.Fatalf("GetEntry error: index=%d, expected=%d", e.Index, i)
+					}
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkWalBatchedSequentialScanWithTailCache(b *testing.B) {
+	for _, memoryMapped := range []bool{false, true} {
+		b.Run(fmt.Sprintf("memoryMapped=%t", memoryMapped), func(b *testing.B) {
+			// Setup
+			dir := b.TempDir()
+			wal, err := graft.OpenWal(graft.WalOptions{
+				Dir:             dir,
+				MemoryMapped:    memoryMapped,
+				SegmentSize:     128 * 1024,
+				SuffixCacheSize: 2 * 128 * 1024,
+			})
+			if err != nil {
+				b.Fatalf("OpenWal error: %v", err)
+			}
+
+			entriesCount := 1024
+			entries := make([]*pb.LogEntry, entriesCount)
+			for i := 0; i < entriesCount; i++ {
+				entries[i] = &pb.LogEntry{
+					Term: int64(i),
+					Data: []byte("Hello from the other side"),
+					Type: pb.LogEntry_COMMAND,
+				}
+			}
+
+			// Span multiple segments.
+			appendCount := 32
+			for i := range 32 {
+				_, err := wal.Append(&pb.PersistedState{CurrentTerm: int64(i)}, entries)
+				if err != nil {
+					b.Fatalf("Append error: %v", err)
+				}
+			}
+
+			totalEntryCount := entriesCount * appendCount
+
+			// Benchmark
+			b.ResetTimer()
+			for _, batchSize := range []int{1024, 2048, 4096, 8192, 16384} {
+				b.Run(fmt.Sprintf("batchSize=%dB", batchSize), func(b *testing.B) {
+					for i := 0; i < b.N; i++ {
+						for i := 0; i < totalEntryCount; i += batchSize {
+							es, err := wal.GetEntries(int64(i), int64(i+batchSize-1))
+							if err != nil {
+								b.Fatalf("GetEntries error: %v", err)
+							}
+							for ei, e := range es {
+								if e.Index != int64(i+ei) {
+									b.Fatalf("GetEntry error: index=%d, expected=%d", e.Index, i)
+								}
+							}
+						}
+					}
+				})
+			}
+		})
+	}
+}
+
+func BenchmarkRandomScanWithTailCache(b *testing.B) {
+	for _, memoryMapped := range []bool{false, true} {
+		b.Run(fmt.Sprintf("memoryMapped=%t", memoryMapped), func(b *testing.B) {
+			// Setup
+			dir := b.TempDir()
+			wal, err := graft.OpenWal(graft.WalOptions{
+				Dir:             dir,
+				MemoryMapped:    memoryMapped,
+				SegmentSize:     128 * 1024,
+				SuffixCacheSize: 2 * 128 * 1024,
+			})
+			if err != nil {
+				b.Fatalf("OpenWal error: %v", err)
+			}
+
+			entriesCount := 1024
+			entries := make([]*pb.LogEntry, entriesCount)
+			for i := 0; i < entriesCount; i++ {
+				entries[i] = &pb.LogEntry{
+					Term: int64(i),
+					Data: []byte("Hello from the other side"),
+					Type: pb.LogEntry_COMMAND,
+				}
+			}
+
+			// Span multiple segments.
+			appendCount := 32
+			for i := range 32 {
+				_, err := wal.Append(&pb.PersistedState{CurrentTerm: int64(i)}, entries)
+				if err != nil {
+					b.Fatalf("Append error: %v", err)
+				}
+			}
+
+			totalEntryCount := entriesCount * appendCount
+
+			access := rand.New(rand.NewSource(10)).Perm(totalEntryCount)
+
+			// Benchmark
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				for _, i := range access {
+					e, err := wal.GetEntry(int64(i))
+					if err != nil {
+						b.Fatalf("GetEntry error: %v", err)
+					}
+					if e.Index != int64(i) {
+						b.Fatalf("GetEntry error: index=%d, expected=%d", e.Index, i)
+					}
+				}
+			}
+		})
 	}
 }
