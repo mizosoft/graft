@@ -60,11 +60,11 @@ func (m *msgq) Restore(snapshot []byte) {
 	m.queues = queues
 }
 
-func (m *msgq) MaybeSnapshot() []byte {
-	if atomic.LoadInt32(&m.redundantOperations) < 4096 {
-		return nil
-	}
+func (m *msgq) ShouldSnapshot() bool {
+	return atomic.LoadInt32(&m.redundantOperations) >= 4096
+}
 
+func (m *msgq) Snapshot() []byte {
 	m.mut.Lock()
 	defer m.mut.Unlock()
 

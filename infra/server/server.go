@@ -11,6 +11,7 @@ import (
 	"github.com/mizosoft/graft/infra/api"
 	"github.com/mizosoft/graft/pb"
 	"go.uber.org/zap"
+	"io"
 	"net/http"
 	"sync/atomic"
 	"time"
@@ -196,15 +197,21 @@ func (s *Server) Initialize() {
 		return
 	}
 
-	s.G.Restore = func(snapshot graft.Snapshot) {
+	s.G.Restore = func(snapshot graft.Snapshot) error {
 		s.sm.Restore(snapshot.Data())
+		return nil
 	}
-	s.G.Apply = func(entries []*pb.LogEntry) []byte {
+	s.G.Apply = func(entries []*pb.LogEntry) (bool, error) {
 		s.apply(entries)
-		return s.sm.MaybeSnapshot()
+		return s.sm.ShouldSnapshot(), nil
 	}
-	s.G.ConfigUpdateCommitted = func(update *pb.ConfigUpdate) {
+	s.G.Snapshot = func(writer io.Writer) error {
+		_, err := writer.Write(s.sm.Snapshot())
+		return err
+	}
+	s.G.ApplyConfigUpdate = func(update *pb.ConfigUpdate) error {
 		s.publisher.publish(update.Id, update)
+		return nil
 	}
 
 	s.Mux.HandleFunc("POST /config", s.handlePostConfig)

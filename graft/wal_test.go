@@ -47,7 +47,7 @@ func TestWalEmptyWalReopen(t *testing.T) {
 	state, err := wal.RetrieveState()
 	assert.NilError(t, err)
 	testutil.AssertNil(t, state)
-	snapshot, err := wal.RetrieveSnapshot()
+	snapshot, err := wal.LastSnapshotMetadata()
 	assert.NilError(t, err)
 	testutil.AssertNil(t, snapshot)
 }
@@ -966,11 +966,12 @@ func TestWalSaveAndRetrieveSnapshot(t *testing.T) {
 			assert.NilError(t, err)
 			defer w.Close()
 
-			snapshot, err := w.RetrieveSnapshot()
+			retrievedMetadata, err := w.LastSnapshotMetadata()
 			assert.NilError(t, err)
-			assert.Assert(t, snapshot == nil)
+			assert.Assert(t, retrievedMetadata == nil)
 
-			snapshot = NewSnapshot(&pb.SnapshotMetadata{
+			data := []byte("Pikachu")
+			metadata := &pb.SnapshotMetadata{
 				LastAppliedIndex: 1,
 				LastAppliedTerm:  1,
 				ConfigUpdate: &pb.ConfigUpdate{
@@ -988,14 +989,154 @@ func TestWalSaveAndRetrieveSnapshot(t *testing.T) {
 					},
 					Phase: pb.ConfigUpdate_LEARNING,
 				},
-			}, []byte("Pikachu"))
-			err = w.SaveSnapshot(snapshot)
+			}
+			writer, err := w.NewSnapshot(metadata)
 			assert.NilError(t, err)
 
-			retrievedSnapshot, err := w.RetrieveSnapshot()
+			n, err := writer.WriteAt(data[0:2], 0)
 			assert.NilError(t, err)
-			assert.Assert(t, proto.Equal(retrievedSnapshot.Metadata(), snapshot.Metadata()))
-			assert.Equal(t, string(retrievedSnapshot.Data()), string(snapshot.Data()))
+			assert.Equal(t, n, 2)
+
+			n, err = writer.WriteAt(data[2:], 2)
+			assert.NilError(t, err)
+			assert.Equal(t, n, len(data)-2)
+
+			committedMetadata, err := writer.Commit()
+			assert.NilError(t, err)
+			assert.Equal(t, committedMetadata.Size, int64(len(data)))
+
+			metadata.Size = int64(len(data))
+			assert.Assert(t, proto.Equal(committedMetadata, metadata))
+
+			retrievedMetadata, err = w.LastSnapshotMetadata()
+			assert.NilError(t, err)
+			assert.Assert(t, proto.Equal(retrievedMetadata, metadata))
+
+			snapshot, err := w.OpenSnapshot(metadata)
+			assert.NilError(t, err)
+			assert.Assert(t, proto.Equal(snapshot.Metadata(), metadata))
+			assert.Equal(t, string(snapshot.Data()), string(data))
+		})
+	}
+}
+
+func TestWalDiscardedSnapshot(t *testing.T) {
+	for _, memoryMapped := range []bool{false, true} {
+		t.Run(fmt.Sprintf("MemoryMapped=%t", memoryMapped), func(t *testing.T) {
+			dir := t.TempDir()
+			w, err := openWal(WalOptions{
+				Dir:          dir,
+				MemoryMapped: memoryMapped,
+				SegmentSize:  512,
+			})
+			assert.NilError(t, err)
+			defer w.Close()
+
+			writer, err := w.NewSnapshot(&pb.SnapshotMetadata{
+				LastAppliedIndex: 1,
+				LastAppliedTerm:  1,
+				ConfigUpdate: &pb.ConfigUpdate{
+					Old: []*pb.NodeConfig{
+						{
+							Id:      "s1",
+							Address: "127.0.0.1:1234",
+						},
+					},
+					New: []*pb.NodeConfig{
+						{
+							Id:      "s2",
+							Address: "127.0.0.2:1234",
+						},
+					},
+					Phase: pb.ConfigUpdate_LEARNING,
+				},
+			})
+			assert.NilError(t, err)
+
+			n, err := writer.WriteAt([]byte("abc"), 0)
+			assert.NilError(t, err)
+			assert.Equal(t, n, 3)
+
+			err = writer.Close()
+			assert.NilError(t, err)
+
+			retrievedMetadata, err := w.LastSnapshotMetadata()
+			assert.NilError(t, err)
+			testutil.AssertNil(t, retrievedMetadata)
+		})
+	}
+}
+
+func TestWalDiscardedSnapshotAfterCommittedSnapshot(t *testing.T) {
+	for _, memoryMapped := range []bool{false, true} {
+		t.Run(fmt.Sprintf("MemoryMapped=%t", memoryMapped), func(t *testing.T) {
+			dir := t.TempDir()
+			w, err := openWal(WalOptions{
+				Dir:          dir,
+				MemoryMapped: memoryMapped,
+				SegmentSize:  512,
+			})
+			assert.NilError(t, err)
+			defer w.Close()
+
+			metadata1 := &pb.SnapshotMetadata{
+				LastAppliedIndex: 1,
+				LastAppliedTerm:  1,
+				ConfigUpdate: &pb.ConfigUpdate{
+					Old: []*pb.NodeConfig{
+						{
+							Id:      "s1",
+							Address: "127.0.0.1:1234",
+						},
+					},
+					New: []*pb.NodeConfig{
+						{
+							Id:      "s2",
+							Address: "127.0.0.2:1234",
+						},
+					},
+					Phase: pb.ConfigUpdate_LEARNING,
+				},
+			}
+
+			writer1, err := w.NewSnapshot(metadata1)
+			assert.NilError(t, err)
+
+			n, err := writer1.WriteAt([]byte("abc"), 0)
+			assert.NilError(t, err)
+			assert.Equal(t, n, 3)
+
+			_, err = writer1.Commit()
+			assert.NilError(t, err)
+
+			snapshot, err := w.OpenSnapshot(metadata1)
+			assert.NilError(t, err)
+			assert.Assert(t, proto.Equal(snapshot.Metadata(), metadata1))
+			assert.Equal(t, string(snapshot.Data()), "abc")
+
+			metadata2 := cloneMsg(metadata1)
+			metadata2.LastAppliedIndex, metadata2.LastAppliedTerm = 2, 2
+			writer2, err := w.NewSnapshot(metadata1)
+			assert.NilError(t, err)
+
+			n, err = writer2.WriteAt([]byte("bde"), 0)
+			assert.NilError(t, err)
+			assert.Equal(t, n, 3)
+
+			// Discard.
+			err = writer2.Close()
+			assert.NilError(t, err)
+
+			retrievedMetadata, err := w.LastSnapshotMetadata()
+			assert.NilError(t, err)
+
+			metadata1.Size = int64(len("abc"))
+			assert.Assert(t, proto.Equal(retrievedMetadata, metadata1))
+
+			snapshot, err = w.OpenSnapshot(metadata1)
+			assert.NilError(t, err)
+			assert.Assert(t, proto.Equal(snapshot.Metadata(), metadata1))
+			assert.Equal(t, string(snapshot.Data()), "abc")
 		})
 	}
 }
@@ -1012,7 +1153,7 @@ func TestWalRetrieveSnapshotOnReopen(t *testing.T) {
 			assert.NilError(t, err)
 			defer w1.Close()
 
-			snapshot := NewSnapshot(&pb.SnapshotMetadata{
+			metadata := &pb.SnapshotMetadata{
 				LastAppliedIndex: 1,
 				LastAppliedTerm:  1,
 				ConfigUpdate: &pb.ConfigUpdate{
@@ -1030,8 +1171,17 @@ func TestWalRetrieveSnapshotOnReopen(t *testing.T) {
 					},
 					Phase: pb.ConfigUpdate_LEARNING,
 				},
-			}, []byte("Pikachu"))
-			err = w1.SaveSnapshot(snapshot)
+			}
+			data := []byte("Pikachu")
+
+			writer, err := w1.NewSnapshot(metadata)
+			assert.NilError(t, err)
+
+			n, err := writer.WriteAt(data, 0)
+			assert.NilError(t, err)
+			assert.Equal(t, n, len(data))
+
+			_, err = writer.Commit()
 			assert.NilError(t, err)
 
 			w1.Close()
@@ -1043,10 +1193,11 @@ func TestWalRetrieveSnapshotOnReopen(t *testing.T) {
 			})
 			assert.NilError(t, err)
 			defer w2.Close()
-			retrievedSnapshot, err := w2.RetrieveSnapshot()
+
+			retrievedSnapshot, err := w2.OpenSnapshot(metadata)
 			assert.NilError(t, err)
-			assert.Assert(t, proto.Equal(retrievedSnapshot.Metadata(), snapshot.Metadata()))
-			assert.Equal(t, string(retrievedSnapshot.Data()), string(snapshot.Data()))
+			assert.Assert(t, proto.Equal(retrievedSnapshot.Metadata(), metadata))
+			assert.Equal(t, string(retrievedSnapshot.Data()), string(data))
 		})
 	}
 }

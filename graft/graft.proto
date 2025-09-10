@@ -4,6 +4,8 @@ package graft;
 
 option go_package = "github.com/mizosoft/graft/pb;pb";
 
+// RPC service & messages.
+
 service Raft {
   rpc RequestVote(RequestVoteRequest) returns (RequestVoteResponse);
   rpc AppendEntries(AppendEntriesRequest) returns (AppendEntriesResponse);
@@ -39,15 +41,43 @@ message AppendEntriesResponse {
 message SnapshotRequest {
   int64 term = 1;
   string leaderId = 2;
-  SnapshotMetadata metadata = 3;
-  int64 offset = 4;
-  bytes data = 5;
-  bool done = 6;
+  int64 offset = 3;
+  bytes data = 4;
+  bool done = 5;
+  SnapshotMetadata metadata = 6;
 }
 
 message SnapshotResponse {
   int64 term = 1;
 }
+
+message SnapshotMetadata {
+  int64 lastAppliedIndex = 1;
+  int64 lastAppliedTerm = 2;
+  int64 size = 3;
+  ConfigUpdate configUpdate = 4;
+  int64 configUpdateIndex = 5;
+}
+
+message NodeConfig {
+  string id = 1;
+  string address = 2;
+}
+
+message ConfigUpdate {
+  repeated NodeConfig old  = 1;
+  repeated NodeConfig new = 2;
+  Phase phase = 3;
+  string id = 4;
+
+  enum Phase {
+    LEARNING = 0;
+    JOINT = 1;
+    APPLIED = 2;
+  }
+}
+
+// WAL entries.
 
 message LogEntry {
   enum Type {
@@ -84,28 +114,4 @@ message WalSegmentHeader {
 
 message WalSegmentTrailer {
   uint64 magic = 1;
-}
-
-message SnapshotMetadata {
-  int64 lastAppliedIndex = 1;
-  int64 lastAppliedTerm = 2;
-  optional ConfigUpdate configUpdate = 3;
-}
-
-message NodeConfig {
-  string id = 1;
-  string address = 2;
-}
-
-message ConfigUpdate {
-  repeated NodeConfig old  = 1;
-  repeated NodeConfig new = 2;
-  Phase phase = 3;
-  string id = 4;
-
-  enum Phase {
-    LEARNING = 0;
-    JOINT = 1;
-    APPLIED = 2;
-  }
 }

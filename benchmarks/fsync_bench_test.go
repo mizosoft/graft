@@ -58,20 +58,21 @@ func BenchmarkWriteWithMsync(b *testing.B) {
 	b.ResetTimer()
 	for _, data := range datas {
 		b.Run(fmt.Sprintf("dataSize=%dB", len(data)), func(b *testing.B) {
-			// Setup
-			file, err := os.CreateTemp(b.TempDir(), "fsync-bench")
+			file, err := os.CreateTemp(b.TempDir(), "msync-bench")
 			if err != nil {
 				b.Fatalf("couldn't create file: %v", err)
 			}
+			defer os.Remove(file.Name())
+			defer file.Close()
+
 			if err := file.Truncate(int64(len(data))); err != nil {
 				b.Fatalf("truncate error: %v", err)
 			}
+
 			mem, err := mmap.Map(file, mmap.RDWR, 0)
 			if err != nil {
 				b.Fatalf("mmap error: %v", err)
 			}
-			defer os.Remove(file.Name())
-			defer file.Close()
 			defer mem.Unmap()
 
 			// Benchmark
@@ -79,7 +80,7 @@ func BenchmarkWriteWithMsync(b *testing.B) {
 			for i := 0; i < b.N; i++ {
 				copy(mem, data)
 				if err := mem.Flush(); err != nil {
-					b.Fatalf("sync error: %v", err)
+					b.Fatalf("flush error: %v", err)
 				}
 			}
 		})

@@ -70,11 +70,11 @@ func (s *kvstore) Restore(snapshot []byte) {
 	s.data = mp
 }
 
-func (s *kvstore) MaybeSnapshot() []byte {
-	if atomic.LoadInt32(&s.redundantOperations) < 4096 {
-		return nil
-	}
+func (s *kvstore) ShouldSnapshot() bool {
+	return atomic.LoadInt32(&s.redundantOperations) >= 4096
+}
 
+func (s *kvstore) Snapshot() []byte {
 	s.mut.RLock()
 	defer s.mut.RUnlock()
 

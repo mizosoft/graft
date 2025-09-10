@@ -180,6 +180,7 @@ func StartLocalCluster[T Service](config ClusterConfig[T]) (*Cluster[T], error) 
 				Dir:             dir,
 				SegmentSize:     64 * 1024 * 1024,
 				SuffixCacheSize: 1 * 1024 * 1024,
+				MemoryMapped:    true,
 				Logger:          config.Logger,
 			})
 		}

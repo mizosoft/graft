@@ -5,5 +5,7 @@ type StateMachine interface {
 
 	Restore(snapshot []byte)
 
-	MaybeSnapshot() []byte
+	ShouldSnapshot() bool
+
+	Snapshot() []byte
 }

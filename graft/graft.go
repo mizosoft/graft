@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"go.uber.org/zap"
+	"io"
 	"log"
 	"net"
 	"slices"
@@ -16,10 +17,13 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// TODO recheck the use of panics.
+
 const UnknownLeader = "UNKNOWN"
 
 type state int
 
+// TODO add stateUninitialized
 const (
 	stateFollower state = iota
 	stateCandidate
@@ -48,7 +52,10 @@ func (s state) String() string {
 	}
 }
 
+// TODO make this as default, allow users to override.
 const entryBatchSize = 4096
+
+// TODO limit broadcastWorker & make each worker send requests to any peer.
 
 type raftState struct {
 	state       state
@@ -62,32 +69,36 @@ type Graft struct {
 	_ uncopyable
 
 	raftState
-	address                         string
-	leaderId                        string
-	peers                           map[string]*peer
-	electionTimer                   *periodicTimer
-	heartbeatTimer                  *periodicTimer
-	server                          server
-	grpcServer                      *grpc.Server
-	mut                             sync.Mutex
-	applyChan                       chan any
-	electionChan                    chan int64
-	heartbeatChan                   chan struct{}
-	broadcastChans                  map[string]*broadcastChannel
-	initialized                     bool
-	lastUpdate, lastCommittedUpdate *pb.ConfigUpdate
-	lastUpdateIndex                 int64 // -1 if no update has been applied (using static configuration).
-	leaving                         bool  // Set to true when a leader is not part of the new configuration.
-	lastHeartbeatTime               time.Time
-	minElectionTimeout              time.Duration
-	logger                          *zap.SugaredLogger
+	address                   string
+	leaderId                  string
+	peers                     map[string]*peer
+	electionTimer             *periodicTimer
+	heartbeatTimer            *periodicTimer
+	server                    server
+	grpcServer                *grpc.Server
+	mut                       sync.Mutex
+	applyChan                 chan any
+	electionChan              chan int64
+	heartbeatChan             chan struct{}
+	broadcastChans            map[string]*broadcastChannel
+	initialized               bool
+	latestConfigUpdate        *pb.ConfigUpdate // Currently active update entry. Might not have been committed yet.
+	lastCommittedConfigUpdate *pb.ConfigUpdate // Last update committed to raft log.
+	lastAppliedConfigUpdate   *pb.ConfigUpdate // Last update applied to the state machine.
+	latestConfigUpdateIndex   int64            // -1 if no update has been applied (using static configuration).
+	leaving                   bool             // Set to true when a leader is not part of the new configuration and should be leaving when the configuration is committed.
+	snapshotWriter            SnapshotWriter   // Writer for the currently streaming snapshot.
+	lastHeartbeatTime         time.Time
+	minElectionTimeout        time.Duration
+	logger                    *zap.SugaredLogger
 
-	Id                    string
-	Persistence           Persistence
-	Restore               func(snapshot Snapshot)
-	Apply                 func(entries []*pb.LogEntry) (snapshot []byte)
-	ConfigUpdateCommitted func(update *pb.ConfigUpdate)
-	Closed                func()
+	Id                string
+	Persistence       Persistence
+	Restore           func(snapshot Snapshot) error
+	Apply             func(entries []*pb.LogEntry) (shouldSnapshot bool, err error)
+	Snapshot          func(writer io.Writer) error
+	ApplyConfigUpdate func(update *pb.ConfigUpdate) error
+	Closed            func() error
 }
 
 func (g *Graft) String() string {
@@ -118,16 +129,6 @@ func New(config Config) (*Graft, error) {
 		return nil, fmt.Errorf("sever ID cannot be %s", UnknownLeader)
 	}
 
-	update := &pb.ConfigUpdate{
-		Phase: pb.ConfigUpdate_APPLIED,
-	}
-	for id, addr := range config.Addresses {
-		update.New = append(update.New, &pb.NodeConfig{
-			Id:      id,
-			Address: addr,
-		})
-	}
-
 	g := &Graft{
 		Id: config.Id,
 		raftState: raftState{
@@ -137,10 +138,10 @@ func New(config Config) (*Graft, error) {
 			commitIndex: -1,
 			lastApplied: -1,
 		},
-		leaderId:           UnknownLeader,
-		address:            config.Addresses[config.Id],
-		lastUpdateIndex:    -1,
-		minElectionTimeout: time.Duration(config.ElectionTimeoutLowMillis) * time.Millisecond,
+		leaderId:                UnknownLeader,
+		address:                 config.Addresses[config.Id],
+		latestConfigUpdateIndex: -1,
+		minElectionTimeout:      time.Duration(config.ElectionTimeoutLowMillis) * time.Millisecond,
 		electionTimer: newRandomizedTimer(
 			time.Duration(config.ElectionTimeoutLowMillis)*time.Millisecond,
 			time.Duration(config.ElectionTimeoutHighMillis)*time.Millisecond),
@@ -154,14 +155,32 @@ func New(config Config) (*Graft, error) {
 		lastHeartbeatTime: time.Now().Add(-time.Duration(config.ElectionTimeoutLowMillis) * time.Millisecond),
 		logger:            config.LoggerOrNoop().With(zap.String("name", "Graft"), zap.String("id", config.Id)).Sugar(),
 
-		Persistence:           config.Persistence,
-		ConfigUpdateCommitted: func(update *pb.ConfigUpdate) {},
-		Apply: func(entries []*pb.LogEntry) (snapshot []byte) {
+		Persistence: config.Persistence,
+		Restore: func(snapshot Snapshot) error {
 			return nil
 		},
-		Restore: func(snapshot Snapshot) {},
+		Apply: func(entries []*pb.LogEntry) (shouldSnapshot bool, err error) {
+			return false, nil
+		},
+		Snapshot: func(writer io.Writer) error {
+			return nil
+		},
+		ApplyConfigUpdate: func(update *pb.ConfigUpdate) error {
+			return nil
+		},
 	}
-	g.unguardedApplyUpdate(update, -1)
+
+	initialConfigUpdate := &pb.ConfigUpdate{
+		Phase: pb.ConfigUpdate_APPLIED,
+	}
+	for id, addr := range config.Addresses {
+		initialConfigUpdate.New = append(initialConfigUpdate.New, &pb.NodeConfig{
+			Id:      id,
+			Address: addr,
+		})
+	}
+	g.unguardedInitConfigUpdate(initialConfigUpdate, -1)
+
 	return g, nil
 }
 
@@ -172,7 +191,9 @@ func (g *Graft) GetCurrentTerm() int64 {
 }
 
 func (g *Graft) ListenAndServe() error {
-	g.Initialize()
+	if err := g.Initialize(); err != nil {
+		return err
+	}
 
 	listener, err := net.Listen("tcp", g.address)
 	if err != nil {
@@ -190,12 +211,12 @@ func (g *Graft) ListenAndServe() error {
 	return g.grpcServer.Serve(listener)
 }
 
-func (g *Graft) Initialize() {
+func (g *Graft) Initialize() error {
 	g.mut.Lock()
 	defer g.mut.Unlock()
 
 	if g.initialized {
-		return
+		return nil
 	}
 	g.initialized = true
 
@@ -215,16 +236,17 @@ func (g *Graft) Initialize() {
 
 	state, err := g.Persistence.RetrieveState()
 	if err != nil {
-		panic(err)
+		return err
 	}
 	if state == nil {
+		// Set initial state.
 		state = &pb.PersistedState{
 			CurrentTerm: 0,
 			VotedFor:    UnknownLeader,
 			CommitIndex: -1,
 		}
 		if err := g.Persistence.SaveState(state); err != nil {
-			panic(err)
+			return err
 		}
 	}
 
@@ -232,25 +254,41 @@ func (g *Graft) Initialize() {
 	g.votedFor = state.VotedFor
 	g.commitIndex = state.CommitIndex
 
-	// Restore the state-machine.
-	snapshot, err := g.Persistence.RetrieveSnapshot()
+	// Publish snapshot to applyChan if there is one.
+	metadata, err := g.Persistence.LastSnapshotMetadata()
 	if err != nil {
-		panic(err)
+		return err
 	}
-	if snapshot != nil {
-		g.Restore(snapshot)
-		g.lastApplied = snapshot.Metadata().LastAppliedIndex
+	if metadata != nil {
+		g.applyChan <- metadata
 	}
 
 	firstIndex, err := g.Persistence.FirstEntryIndex()
 	if err != nil {
-		panic(err)
+		return err
 	}
-	commitIndex := g.commitIndex // Only apply committed entries.
+
+	// Apply committed entries to the state machine.
+	// TODO we might want to do this in batches if the log is too big.
+	//      or we can use an entry iterator.
+	commitIndex := g.commitIndex
 	if firstIndex >= 0 && commitIndex >= firstIndex {
-		g.unguardedApply(firstIndex, commitIndex, true)
-		g.lastApplied = commitIndex
+		entries, err := g.Persistence.GetEntries(firstIndex, commitIndex)
+		if err != nil {
+			panic(err)
+		}
+
+		for _, e := range entries {
+			if e.Type == pb.LogEntry_CONFIG {
+				var update *pb.ConfigUpdate
+				protoUnmarshal(e.Data, update)
+				g.unguardedInitConfigUpdate(update, e.Index)
+			}
+		}
+
+		g.applyChan <- entries
 	}
+	return nil
 }
 
 func (g *Graft) Close() {
@@ -282,7 +320,7 @@ func (g *Graft) Close() {
 }
 
 func (g *Graft) unguardedCountMajority(condition func(*peer) bool) bool {
-	switch g.lastUpdate.Phase {
+	switch g.latestConfigUpdate.Phase {
 	case pb.ConfigUpdate_LEARNING:
 		satisfiedCount := 1 // Count self.
 		learnerCount := 0
@@ -300,21 +338,21 @@ func (g *Graft) unguardedCountMajority(condition func(*peer) bool) bool {
 	case pb.ConfigUpdate_JOINT:
 		// Make sure we satisfy the two majorities.
 
-		count1 := len(g.lastUpdate.Old)
-		count2 := len(g.lastUpdate.New)
+		count1 := len(g.latestConfigUpdate.Old)
+		count2 := len(g.latestConfigUpdate.New)
 
 		satisfiedCount1 := 1 // Count self.
 		satisfiedCount2 := 0
-		if in(g.Id, g.lastUpdate.New) {
+		if in(g.Id, g.latestConfigUpdate.New) {
 			satisfiedCount2++
 		}
 
 		for _, p := range g.peers {
 			if condition(p) {
-				if in(p.id, g.lastUpdate.Old) {
+				if in(p.id, g.latestConfigUpdate.Old) {
 					satisfiedCount1++
 				}
-				if in(p.id, g.lastUpdate.New) && condition(p) {
+				if in(p.id, g.latestConfigUpdate.New) && condition(p) {
 					satisfiedCount2++
 				}
 
@@ -326,7 +364,7 @@ func (g *Graft) unguardedCountMajority(condition func(*peer) bool) bool {
 	case pb.ConfigUpdate_APPLIED:
 		count := len(g.peers)
 		satisfiedCount := 0
-		if in(g.Id, g.lastUpdate.New) {
+		if in(g.Id, g.latestConfigUpdate.New) {
 			count++
 			satisfiedCount++
 		}
@@ -346,40 +384,117 @@ func (g *Graft) applyWorker() {
 	for e := range g.applyChan {
 		switch e := e.(type) {
 		case []*pb.LogEntry:
-			snapshotData := g.Apply(e)
-			g.lastApplied = e[len(e)-1].Index
-			if snapshotData != nil {
-				func() {
-					g.mut.Lock()
-					defer g.mut.Unlock()
+			// Split entries to: commands (applied in batches), configs (passed to callback individually) & NOOP (skipped),
+			// and apply them in order.
 
-					metadata := &pb.SnapshotMetadata{
-						LastAppliedIndex: g.lastApplied,
-						LastAppliedTerm:  e[len(e)-1].Term,
-					}
-					if g.lastUpdateIndex >= 0 && g.lastUpdateIndex <= g.lastApplied {
-						metadata.ConfigUpdate = g.lastUpdate
+			commandEntries := make([]*pb.LogEntry, 0, len(e))
+			for _, entry := range e {
+				switch entry.Type {
+				case pb.LogEntry_COMMAND:
+					commandEntries = append(commandEntries, entry)
+				case pb.LogEntry_CONFIG:
+					if len(commandEntries) > 0 {
+						g.applyCommands(commandEntries)
+						commandEntries = commandEntries[:0]
 					}
 
-					if err := g.Persistence.SaveSnapshot(NewSnapshot(metadata, snapshotData)); err != nil {
+					var update *pb.ConfigUpdate
+					protoUnmarshal(entry.Data, update)
+					if err := g.ApplyConfigUpdate(update); err != nil {
 						panic(err)
 					}
-					if err := g.Persistence.TruncateEntriesTo(metadata.LastAppliedIndex); err != nil {
-						panic(err)
-					}
-				}()
+
+					func() {
+						g.mut.Lock()
+						defer g.mut.Unlock()
+
+						g.lastAppliedConfigUpdate = update
+					}()
+				case pb.LogEntry_NOOP:
+					// Skip.
+				default:
+					panic(fmt.Sprintf("Unexpected entry type %v", entry.Type))
+				}
 			}
-		case Snapshot:
-			g.Restore(e)
-			g.lastApplied = e.Metadata().LastAppliedIndex
-		case []*pb.ConfigUpdate:
-			for _, c := range e {
-				g.ConfigUpdateCommitted(c)
+
+			if len(commandEntries) > 0 {
+				g.applyCommands(commandEntries)
 			}
+		case *pb.SnapshotMetadata:
+			snapshot, err := g.Persistence.OpenSnapshot(e)
+			if err != nil {
+				panic(err)
+			}
+			if err := g.Restore(snapshot); err != nil {
+				panic(err)
+			}
+
+			func() {
+				g.mut.Lock()
+				defer g.mut.Unlock()
+
+				g.lastApplied = e.LastAppliedIndex
+			}()
 		default:
-			g.logger.Panicf("Unknown type %T", e)
+			g.logger.Panicf("Unknown apply entry type %T", e)
 		}
 	}
+}
+
+type sequentialSnapshotWriter struct {
+	base   SnapshotWriter
+	offset int64
+}
+
+func (w *sequentialSnapshotWriter) Write(data []byte) (int, error) {
+	if n, err := w.base.WriteAt(data, w.offset); err != nil {
+		return 0, err
+	} else {
+		w.offset += int64(n)
+	}
+	return len(data), nil
+}
+
+func (g *Graft) applyCommands(commandEntries []*pb.LogEntry) {
+	shouldSnapshot, err := g.Apply(commandEntries)
+	if err != nil {
+		panic(err)
+	}
+
+	func() {
+		g.mut.Lock()
+		defer g.mut.Unlock()
+
+		g.lastApplied = commandEntries[len(commandEntries)-1].Index
+
+		if shouldSnapshot {
+			metadata := &pb.SnapshotMetadata{
+				LastAppliedIndex: g.lastApplied,
+				LastAppliedTerm:  commandEntries[len(commandEntries)-1].Term,
+			}
+
+			writer, err := g.Persistence.NewSnapshot(metadata)
+			if err != nil {
+				panic(err)
+			}
+			defer func() {
+				err := g.snapshotWriter.Close()
+				if err != nil {
+					g.logger.Error("Failed to close snapshotWriter", zap.Error(err))
+				}
+			}()
+
+			if err := g.Snapshot(&sequentialSnapshotWriter{base: writer}); err != nil {
+				panic(err)
+			}
+			if _, err = writer.Commit(); err != nil {
+				panic(err)
+			}
+			if err := g.Persistence.TruncateEntriesTo(metadata.LastAppliedIndex); err != nil {
+				panic(err)
+			}
+		}
+	}()
 }
 
 func (g *Graft) electionWorker() {
@@ -425,13 +540,14 @@ func (g *Graft) runElection(timeoutTerm int64) {
 					if err != nil {
 						panic(err)
 					}
+
 					var lastLogTerm int64 = -1
 					if lastLogIndex >= 0 {
 						lastLogTerm, err = g.Persistence.GetEntryTerm(lastLogIndex)
 						if err != nil {
 							panic(err)
 						}
-					} else if metadata, err := g.Persistence.SnapshotMetadata(); err == nil && metadata != nil {
+					} else if metadata, err := g.Persistence.LastSnapshotMetadata(); err == nil && metadata != nil {
 						lastLogIndex, lastLogTerm = metadata.LastAppliedIndex, metadata.LastAppliedTerm
 					} else if err != nil {
 						panic(err)
@@ -502,8 +618,24 @@ func (g *Graft) broadcastWorker(p *peer, c *broadcastChannel) {
 				return nil
 			}
 
-			// Check nextIndex validity.
-			nextIndex := p.nextIndex
+			/*
+				Generally, we have this layout:
+
+					|--------------------------+--------------------------+
+					|         Snapshot         |       Log entries        |
+					|--------------------------+--------------------------+
+					^                          ^                          ^
+					|                          |                          |
+					+- 0 to LastIncludedIndex -+- firstNext to lastIndex -+
+
+				We want to make sure that peer's nextIndex lies within 0 to lastIndex+1.
+				We also want to take into account cases where there are no snapshot or log entries.
+			*/
+
+			if p.nextIndex < 0 {
+				g.logger.Panicf("Invalid peer.nextIndex: {%s}.nextIndex=%d", p.id, p.nextIndex)
+			}
+
 			firstIndex, err := g.Persistence.FirstEntryIndex()
 			if err != nil {
 				panic(err)
@@ -514,33 +646,37 @@ func (g *Graft) broadcastWorker(p *peer, c *broadcastChannel) {
 				panic(err)
 			}
 
-			if nextIndex < firstIndex || nextIndex > lastIndex+1 { // Even if lastIndex == -1 we want nextIndex = 0.
-				metadata, err := g.Persistence.SnapshotMetadata()
+			var metadata *pb.SnapshotMetadata
+			if firstIndex < 0 || p.nextIndex < firstIndex {
+				// We might have a snapshot that covers nextIndex.
+				metadata, err = g.Persistence.LastSnapshotMetadata()
 				if err != nil {
 					panic(err)
 				}
-				if metadata == nil || nextIndex < 0 || nextIndex > metadata.LastAppliedIndex+1 {
+				if p.nextIndex > 0 && (metadata == nil || p.nextIndex <= metadata.LastAppliedIndex) {
 					g.logger.Panicf(
-						"Invalid nextIndex: nextIndex=%d, firstIndex=%d, lastIndex=%d, snapshotMetadata=%v",
-						nextIndex, firstIndex, metadata.LastAppliedIndex, metadata)
+						"Invalid nextIndex: {%s}.nextIndex=%d, firstIndex=%d, lastIndex=%d, metadata=%v",
+						p.id, p.nextIndex, firstIndex, lastIndex, metadata)
 				}
 			}
 
-			if firstIndex < 0 || nextIndex < firstIndex {
-				snapshot, err := g.Persistence.RetrieveSnapshot()
+			if metadata != nil {
+				snapshot, err := g.Persistence.OpenSnapshot(metadata)
 				if err != nil {
 					panic(err)
 				}
-				if snapshot != nil {
-					return &pb.SnapshotRequest{
-						Term:     g.currentTerm,
-						LeaderId: g.Id,
-						Offset:   0,
-						Done:     true,
-						Metadata: snapshot.Metadata(),
-						Data:     snapshot.Data(),
-					}
+				return &pb.SnapshotRequest{
+					Term:     g.currentTerm,
+					LeaderId: g.Id,
+					Offset:   0,
+					Done:     true,
+					Metadata: snapshot.Metadata(),
+					Data:     snapshot.Data(),
 				}
+			}
+
+			if p.nextIndex > lastIndex+1 {
+				g.logger.Panicf("Invalid nextIndex: {%s}.nextIndex=%d, lastIndex=%d", p.id, p.nextIndex, lastIndex)
 			}
 
 			request := &pb.AppendEntriesRequest{
@@ -549,7 +685,7 @@ func (g *Graft) broadcastWorker(p *peer, c *broadcastChannel) {
 				LeaderCommitIndex: g.commitIndex,
 			}
 
-			prevLogIndex := nextIndex - 1
+			prevLogIndex := p.nextIndex - 1
 			if prevLogIndex < 0 {
 				request.PrevLogIndex, request.PrevLogTerm = -1, -1
 			} else if firstIndex >= 0 && prevLogIndex >= firstIndex && prevLogIndex <= lastIndex {
@@ -558,21 +694,19 @@ func (g *Graft) broadcastWorker(p *peer, c *broadcastChannel) {
 					panic(err)
 				}
 				request.PrevLogIndex, request.PrevLogTerm = prevLogIndex, prevLogTerm
-			} else if metadata, err := g.Persistence.SnapshotMetadata(); err == nil && metadata != nil && prevLogIndex == metadata.LastAppliedIndex {
+			} else if metadata != nil && prevLogIndex == metadata.LastAppliedIndex {
+				request.PrevLogIndex, request.PrevLogTerm = metadata.LastAppliedIndex, metadata.LastAppliedIndex
+			} else if metadata, err := g.Persistence.LastSnapshotMetadata(); err == nil && metadata != nil && prevLogIndex == metadata.LastAppliedIndex {
 				request.PrevLogIndex, request.PrevLogTerm = metadata.LastAppliedIndex, metadata.LastAppliedIndex
 			} else if err != nil {
 				panic(err)
 			} else {
-				g.logger.Panicf("Invalid prevLogIndex: %d", prevLogIndex)
+				g.logger.Panicf("Invalid prevLogIndex: {%s}.prevLogIndex=%d, firstIndex=%d, lastIndex=%d, metadata=%v",
+					p.id, prevLogIndex, firstIndex, lastIndex, metadata)
 			}
 
-			if nextIndex <= lastIndex && nextIndex >= 0 {
-				from := nextIndex
-				to := nextIndex + entryBatchSize - 1
-				if to > lastIndex {
-					to = lastIndex
-				}
-				es, err := g.Persistence.GetEntries(from, to)
+			if p.nextIndex <= lastIndex && p.nextIndex >= 0 {
+				es, err := g.Persistence.GetEntries(p.nextIndex, min(p.nextIndex+entryBatchSize-1, lastIndex))
 				if err != nil {
 					panic(err)
 				}
@@ -691,31 +825,6 @@ func (g *Graft) broadcastWorker(p *peer, c *broadcastChannel) {
 	}
 }
 
-func (g *Graft) unguardedFlushCommittedEntries() {
-	newCommitIndex := g.commitIndex
-	lastIndex, err := g.Persistence.LastEntryIndex()
-	if err != nil {
-		panic(err)
-	}
-	for i := g.commitIndex + 1; i <= lastIndex; i++ { // Note that commitIndex is initialized to -1 initially.
-		// We must only commit entries from current term. See paper section 5.4.2.
-		term, err := g.Persistence.GetEntryTerm(i)
-		if err != nil {
-			panic(err)
-		}
-		if term == g.currentTerm && g.unguardedCountMajority(func(p *peer) bool {
-			return p.matchIndex >= i
-		}) {
-			newCommitIndex = i
-		}
-	}
-
-	if newCommitIndex > g.commitIndex {
-		g.unguardedCommit(newCommitIndex)
-		g.heartbeatTimer.poke() // Broadcast new commitIndex.
-	}
-}
-
 func (g *Graft) unguardedTransitionToLeader() {
 	g.logger.Info("Transitioning to Leader", zap.Stringer("state", g))
 
@@ -726,8 +835,9 @@ func (g *Graft) unguardedTransitionToLeader() {
 	if err != nil {
 		panic(err)
 	}
+
 	for _, peer := range g.peers {
-		peer.nextIndex = lastIndex + 1
+		peer.nextIndex = lastIndex + 1 // Assumes lastIndex = -1 if the log is empty.
 		peer.matchIndex = -1
 	}
 
@@ -769,12 +879,48 @@ func (g *Graft) unguardedTransitionToFollower(term int64) {
 	g.heartbeatTimer.pause() // If we were a leader.
 }
 
-func (g *Graft) unguardedContinueConfigUpdate() {
-	if g.lastUpdateIndex < 0 || g.commitIndex < g.lastUpdateIndex {
+func (g *Graft) unguardedFlushCommittedEntries() {
+	newCommitIndex := g.commitIndex
+	lastIndex, err := g.Persistence.LastEntryIndex()
+	if err != nil {
+		panic(err)
+	}
+
+	if lastIndex < 0 { // Log is empty.
 		return
 	}
 
-	switch g.lastUpdate.Phase {
+	// Note that commitIndex is initialized to -1 initially.
+	entries, err := g.Persistence.GetEntries(g.commitIndex+1, lastIndex)
+	for _, e := range entries {
+		// We must only commit entries from current term. See paper section 5.4.2.
+		if e.Term == g.currentTerm && g.unguardedCountMajority(func(p *peer) bool {
+			return p.matchIndex >= e.Index
+		}) {
+			newCommitIndex = e.Index
+		}
+	}
+
+	if newCommitIndex > g.commitIndex {
+		g.unguardedUpdateCommitIndex(newCommitIndex)
+		g.applyChan <- entries
+		g.heartbeatTimer.poke() // Broadcast new commitIndex.
+	}
+}
+
+func (g *Graft) unguardedUpdateCommitIndex(newCommitIndex int64) {
+	if g.latestConfigUpdateIndex >= 0 && newCommitIndex >= g.latestConfigUpdateIndex {
+		g.lastCommittedConfigUpdate = g.latestConfigUpdate
+	}
+	g.commitIndex = newCommitIndex
+}
+
+func (g *Graft) unguardedContinueConfigUpdate() {
+	if g.latestConfigUpdateIndex < 0 || g.commitIndex < g.latestConfigUpdateIndex {
+		return
+	}
+
+	switch g.latestConfigUpdate.Phase {
 	case pb.ConfigUpdate_LEARNING:
 		hasLearners := false
 		for _, p := range g.peers {
@@ -785,16 +931,16 @@ func (g *Graft) unguardedContinueConfigUpdate() {
 		}
 
 		if !hasLearners {
-			update := cloneMsg(g.lastUpdate)
+			update := cloneMsg(g.latestConfigUpdate)
 			update.Phase = pb.ConfigUpdate_JOINT
-			if err := g.unguardedAppendUpdate(update); err != nil {
+			if err := g.unguardedAppendConfigUpdate(update); err != nil {
 				panic(err)
 			}
 		}
 	case pb.ConfigUpdate_JOINT:
-		update := cloneMsg(g.lastUpdate)
+		update := cloneMsg(g.latestConfigUpdate)
 		update.Phase = pb.ConfigUpdate_APPLIED
-		if err := g.unguardedAppendUpdate(update); err != nil {
+		if err := g.unguardedAppendConfigUpdate(update); err != nil {
 			panic(err)
 		}
 	case pb.ConfigUpdate_APPLIED:
@@ -802,46 +948,6 @@ func (g *Graft) unguardedContinueConfigUpdate() {
 			g.leaving = false
 			g.unguardedTransitionToFollower(g.currentTerm) // Step down.
 		}
-	}
-}
-
-func (g *Graft) unguardedCommit(newCommitIndex int64) {
-	if g.lastUpdateIndex >= 0 && newCommitIndex >= g.lastUpdateIndex {
-		g.lastCommittedUpdate = g.lastUpdate
-	}
-
-	prevCommitIndex := g.commitIndex
-	g.commitIndex = newCommitIndex
-	g.unguardedApply(prevCommitIndex+1, newCommitIndex, false)
-}
-
-func (g *Graft) unguardedApply(from, to int64, applyConfigUpdates bool) {
-	commandEntries := make([]*pb.LogEntry, 0)
-	entries, err := g.Persistence.GetEntries(from, to)
-	if err != nil {
-		panic(err)
-	}
-	for _, entry := range entries {
-		switch entry.Type {
-		case pb.LogEntry_COMMAND:
-			commandEntries = append(commandEntries, entry)
-		case pb.LogEntry_CONFIG:
-			if len(commandEntries) > 0 {
-				g.applyChan <- cloneMsgs(commandEntries)
-				commandEntries = commandEntries[:0]
-			}
-
-			var update pb.ConfigUpdate
-			protoUnmarshal(entry.Data, &update)
-			if applyConfigUpdates {
-				g.unguardedApplyUpdate(&update, entry.Index)
-			}
-			g.applyChan <- &update
-		}
-	}
-
-	if len(commandEntries) > 0 {
-		g.applyChan <- cloneMsgs(commandEntries)
 	}
 }
 
@@ -868,19 +974,19 @@ func (g *Graft) unguardedProbablyHasLeader() bool {
 }
 
 func (g *Graft) unguardedIsUnknownPeer(peerId string) bool {
-	if g.lastCommittedUpdate == nil {
+	if g.lastCommittedConfigUpdate == nil {
 		return false // We can't know otherwise.
 	}
 
-	switch g.lastCommittedUpdate.Phase {
+	switch g.lastCommittedConfigUpdate.Phase {
 	case pb.ConfigUpdate_LEARNING:
-		return !in(peerId, g.lastCommittedUpdate.Old)
+		return !in(peerId, g.lastCommittedConfigUpdate.Old)
 	case pb.ConfigUpdate_JOINT:
-		return !in(peerId, g.lastCommittedUpdate.Old) && !in(peerId, g.lastCommittedUpdate.New)
+		return !in(peerId, g.lastCommittedConfigUpdate.Old) && !in(peerId, g.lastCommittedConfigUpdate.New)
 	case pb.ConfigUpdate_APPLIED:
-		return !in(peerId, g.lastCommittedUpdate.New)
+		return !in(peerId, g.lastCommittedConfigUpdate.New)
 	default:
-		g.logger.Panicf("Unknown phase: %v", g.lastCommittedUpdate.Phase)
+		g.logger.Panicf("Unknown phase: %v", g.lastCommittedConfigUpdate.Phase)
 		return false // Unreachable.
 	}
 }
@@ -890,13 +996,14 @@ func (g *Graft) unguardedIsCandidateLogUpToDate(request *pb.RequestVoteRequest) 
 	if err != nil {
 		panic(err)
 	}
+
 	var myLastLogTerm int64 = -1
 	if myLastLogIndex >= 0 {
 		myLastLogTerm, err = g.Persistence.GetEntryTerm(myLastLogIndex)
 		if err != nil {
 			panic(err)
 		}
-	} else if metadata, err := g.Persistence.SnapshotMetadata(); err == nil && metadata != nil {
+	} else if metadata, err := g.Persistence.LastSnapshotMetadata(); err == nil && metadata != nil {
 		myLastLogIndex, myLastLogTerm = metadata.LastAppliedIndex, metadata.LastAppliedTerm
 	} else if err != nil {
 		panic(err)
@@ -1035,15 +1142,16 @@ func (g *Graft) appendEntries(request *pb.AppendEntriesRequest) (*pb.AppendEntri
 		}
 		newCommitIndex := min(request.LeaderCommitIndex, lastIndex)
 		if newCommitIndex > g.commitIndex {
-			g.unguardedCommit(newCommitIndex)
+			g.unguardedUpdateCommitIndex(newCommitIndex)
 		}
 	}
 
+	// Apply config entries if any.
 	for _, entry := range request.Entries {
 		if entry.Type == pb.LogEntry_CONFIG {
 			var update pb.ConfigUpdate
 			protoUnmarshal(entry.Data, &update)
-			g.unguardedApplyUpdate(&update, entry.Index)
+			g.unguardedInitConfigUpdate(&update, entry.Index)
 		}
 	}
 
@@ -1053,7 +1161,6 @@ func (g *Graft) appendEntries(request *pb.AppendEntriesRequest) (*pb.AppendEntri
 	}, nil
 }
 
-// FIXME may want to use streaming
 func (g *Graft) installSnapshot(request *pb.SnapshotRequest) (*pb.SnapshotResponse, error) {
 	g.mut.Lock()
 	defer g.mut.Unlock()
@@ -1083,46 +1190,69 @@ func (g *Graft) installSnapshot(request *pb.SnapshotRequest) (*pb.SnapshotRespon
 		g.leaderId = request.LeaderId
 	}
 
-	if err := g.Persistence.SaveState(g.unguardedCapturePersistedState()); err != nil {
-		panic(err)
+	if request.Offset == 0 {
+		// Discard potentially incomplete snapshot.
+		if g.snapshotWriter != nil {
+			err := g.snapshotWriter.Close()
+			if err != nil {
+				g.logger.Error("Failed to close discarded snapshotWriter", zap.Error(err))
+			}
+			g.snapshotWriter = nil
+		}
+
+		// Begin a new snapshot.
+		writer, err := g.Persistence.NewSnapshot(request.Metadata)
+		if err != nil {
+			panic(err)
+		}
+		g.snapshotWriter = writer
 	}
 
-	if !request.Done {
-		return nil, fmt.Errorf("expected snapshot to be done in one call")
-	}
-
-	if request.Offset > 0 {
-		return nil, fmt.Errorf("expected offset to be zero")
-	}
-
-	snapshot := NewSnapshot(request.Metadata, request.Data)
-	if err := g.Persistence.SaveSnapshot(snapshot); err != nil {
-		panic(err)
-	}
-
-	firstIndex, err := g.Persistence.FirstEntryIndex()
+	_, err := g.snapshotWriter.WriteAt(request.Data, request.Offset)
 	if err != nil {
 		panic(err)
 	}
 
-	if request.Metadata.LastAppliedIndex >= firstIndex && firstIndex >= 0 {
-		lastIndex, err := g.Persistence.LastEntryIndex()
+	if request.Done {
+		defer func() {
+			sw := g.snapshotWriter
+			g.snapshotWriter = nil
+			err := sw.Close()
+			if err != nil {
+				g.logger.Error("Failed to close snapshotWriter", zap.Error(err))
+			}
+		}()
+
+		metadata, err := g.snapshotWriter.Commit()
 		if err != nil {
 			panic(err)
 		}
-		err = g.Persistence.TruncateEntriesTo(min(request.Metadata.LastAppliedIndex, lastIndex))
 
-	} else if firstIndex >= 0 {
-		if err := g.Persistence.TruncateEntriesFrom(firstIndex); err != nil { // Truncate entire log.
+		// Truncate entries invalidated by the snapshot.
+		firstIndex, err := g.Persistence.FirstEntryIndex()
+		if err != nil {
 			panic(err)
 		}
-	}
+		if firstIndex >= 0 { // If the log has entries.
+			if request.Metadata.LastAppliedIndex >= firstIndex {
+				lastIndex, err := g.Persistence.LastEntryIndex()
+				if err != nil {
+					panic(err)
+				}
+				err = g.Persistence.TruncateEntriesTo(min(request.Metadata.LastAppliedIndex, lastIndex))
+			} else if err := g.Persistence.TruncateEntriesFrom(firstIndex); err != nil { // Truncate entire log.
+				panic(err)
+			}
+		}
 
-	if request.Metadata.ConfigUpdate != nil {
-		g.unguardedApplyUpdate(request.Metadata.ConfigUpdate, request.Metadata.LastAppliedIndex)
-	}
+		// Apply snapshot configuration.
+		if request.Metadata.ConfigUpdate != nil {
+			g.unguardedInitConfigUpdate(request.Metadata.ConfigUpdate, request.Metadata.LastAppliedIndex)
+		}
 
-	g.applyChan <- snapshot
+		// Publish snapshot to state-machine.
+		g.applyChan <- metadata
+	}
 
 	return &pb.SnapshotResponse{
 		Term: g.currentTerm,
@@ -1151,7 +1281,7 @@ func (f *peerFactory) get(config *pb.NodeConfig) *peer {
 	return p
 }
 
-func (g *Graft) unguardedAppendUpdate(update *pb.ConfigUpdate) error {
+func (g *Graft) unguardedAppendConfigUpdate(update *pb.ConfigUpdate) error {
 	nextIndex, err := g.Persistence.Append(g.unguardedCapturePersistedState(), []*pb.LogEntry{{
 		Term: g.currentTerm,
 		Type: pb.LogEntry_CONFIG,
@@ -1160,18 +1290,18 @@ func (g *Graft) unguardedAppendUpdate(update *pb.ConfigUpdate) error {
 	if err != nil {
 		return err
 	}
-	g.unguardedApplyUpdate(update, nextIndex-1)
+	g.unguardedInitConfigUpdate(update, nextIndex-1)
 	g.heartbeatTimer.poke() // Broadcast update.
 	return nil
 }
 
-func (g *Graft) unguardedApplyUpdate(update *pb.ConfigUpdate, updateIndex int64) {
+func (g *Graft) unguardedInitConfigUpdate(update *pb.ConfigUpdate, updateIndex int64) {
 	g.logger.Info("Applying ConfigUpdate", zap.Any("update", update), zap.Stringer("state", g))
 
-	g.lastUpdate = update
-	g.lastUpdateIndex = updateIndex
+	g.latestConfigUpdate = update
+	g.latestConfigUpdateIndex = updateIndex
 
-	// Leaders not in the new configuration step down when the configuration is committed.
+	// If the leader is not in the new configuration, make it step down when the configuration is committed.
 	if g.state == stateLeader && update.Phase == pb.ConfigUpdate_APPLIED && !in(g.Id, update.New) {
 		g.leaving = true
 	}
@@ -1324,7 +1454,7 @@ func (g *Graft) ConfigUpdate(id string, addedNodes map[string]string, removedNod
 
 	update := &pb.ConfigUpdate{
 		Id:  id,
-		Old: g.lastUpdate.New,
+		Old: g.latestConfigUpdate.New,
 	}
 
 	for id, address := range existingNodes {
@@ -1348,7 +1478,7 @@ func (g *Graft) ConfigUpdate(id string, addedNodes map[string]string, removedNod
 	} else {
 		update.Phase = pb.ConfigUpdate_JOINT
 	}
-	return g.unguardedAppendUpdate(update)
+	return g.unguardedAppendConfigUpdate(update)
 }
 
 func in(id string, configs []*pb.NodeConfig) bool {
@@ -1371,7 +1501,7 @@ func (g *Graft) Config() map[string]string {
 	defer g.mut.Unlock()
 
 	config := make(map[string]string)
-	for _, nodeConfig := range g.lastUpdate.New {
+	for _, nodeConfig := range g.latestConfigUpdate.New {
 		config[nodeConfig.Id] = nodeConfig.Address
 	}
 	return config

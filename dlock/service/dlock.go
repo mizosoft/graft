@@ -202,11 +202,11 @@ func (d *dlock) Restore(snapshot []byte) {
 	d.locks = mp
 }
 
-func (d *dlock) MaybeSnapshot() []byte {
-	if atomic.LoadInt32(&d.redundantOperations) < 4096 {
-		return nil
-	}
+func (d *dlock) ShouldSnapshot() bool {
+	return atomic.LoadInt32(&d.redundantOperations) >= 4096
+}
 
+func (d *dlock) Snapshot() []byte {
 	d.mut.Lock()
 	defer d.mut.Unlock()
 

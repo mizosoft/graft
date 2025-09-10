@@ -9,16 +9,25 @@ import (
 type periodicTimer struct {
 	duration func() time.Duration
 	timer    *time.Timer
+	started  bool
 	c        chan struct{}
 	mut      sync.Mutex
 }
 
 func (t *periodicTimer) start(trigger func()) {
+	t.mut.Lock()
+	defer t.mut.Unlock()
+
+	if t.started {
+		return
+	}
+
 	go func() {
 		for range t.c {
 			trigger()
 		}
 	}()
+	t.started = true
 }
 
 func (t *periodicTimer) pause() {
