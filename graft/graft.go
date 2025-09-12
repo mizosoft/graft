@@ -17,7 +17,7 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// TODO recheck the use of panics.
+// TODO recheck the overuse of panics.
 
 const UnknownLeader = "UNKNOWN"
 
@@ -53,7 +53,9 @@ func (s state) String() string {
 }
 
 // TODO make this as default, allow users to override.
-const entryBatchSize = 4096
+const defaultEntryBatchSize = 4096
+
+const defaultSnapshotBufferSize = 1 * 1024 * 1024
 
 // TODO limit broadcastWorker & make each worker send requests to any peer.
 
@@ -87,10 +89,11 @@ type Graft struct {
 	lastAppliedConfigUpdate   *pb.ConfigUpdate // Last update applied to the state machine.
 	latestConfigUpdateIndex   int64            // -1 if no update has been applied (using static configuration).
 	leaving                   bool             // Set to true when a leader is not part of the new configuration and should be leaving when the configuration is committed.
-	snapshotWriter            SnapshotWriter   // Writer for the currently streaming snapshot.
-	lastHeartbeatTime         time.Time
-	minElectionTimeout        time.Duration
-	logger                    *zap.SugaredLogger
+	// TODO we need some sort of a timeout for this.
+	snapshotWriter     SnapshotWriter // Writer for the currently streaming snapshot.
+	lastHeartbeatTime  time.Time
+	minElectionTimeout time.Duration
+	logger             *zap.SugaredLogger
 
 	Id                string
 	Persistence       Persistence
@@ -421,19 +424,23 @@ func (g *Graft) applyWorker() {
 				g.applyCommands(commandEntries)
 			}
 		case *pb.SnapshotMetadata:
-			snapshot, err := g.Persistence.OpenSnapshot(e)
-			if err != nil {
-				panic(err)
-			}
-			if err := g.Restore(snapshot); err != nil {
-				panic(err)
-			}
-
 			func() {
-				g.mut.Lock()
-				defer g.mut.Unlock()
+				snapshot, err := g.Persistence.OpenSnapshot(e)
+				defer snapshot.Close()
 
-				g.lastApplied = e.LastAppliedIndex
+				if err != nil {
+					panic(err)
+				}
+				if err := g.Restore(snapshot); err != nil {
+					panic(err)
+				}
+
+				func() {
+					g.mut.Lock()
+					defer g.mut.Unlock()
+
+					g.lastApplied = e.LastAppliedIndex
+				}()
 			}()
 		default:
 			g.logger.Panicf("Unknown apply entry type %T", e)
@@ -473,16 +480,11 @@ func (g *Graft) applyCommands(commandEntries []*pb.LogEntry) {
 				LastAppliedTerm:  commandEntries[len(commandEntries)-1].Term,
 			}
 
-			writer, err := g.Persistence.NewSnapshot(metadata)
+			writer, err := g.Persistence.CreateSnapshot(metadata)
 			if err != nil {
 				panic(err)
 			}
-			defer func() {
-				err := g.snapshotWriter.Close()
-				if err != nil {
-					g.logger.Error("Failed to close snapshotWriter", zap.Error(err))
-				}
-			}()
+			defer g.snapshotWriter.Close()
 
 			if err := g.Snapshot(&sequentialSnapshotWriter{base: writer}); err != nil {
 				panic(err)
@@ -608,113 +610,112 @@ func (g *Graft) runHeartbeat() {
 	}
 }
 
+func (g *Graft) createAppendEntriesOrSnapshotRequest(p *peer) proto.Message {
+	g.mut.Lock()
+	defer g.mut.Unlock()
+
+	if g.state != stateLeader {
+		return nil
+	}
+
+	/*
+		Generally, we have this layout:
+
+			|--------------------------+--------------------------+
+			|         Snapshot         |       Log entries        |
+			|--------------------------+--------------------------+
+			^                          ^                          ^
+			|                          |                          |
+			+- 0 to LastIncludedIndex -+- firstNext to lastIndex -+
+
+		We want to make sure that peer's nextIndex lies within 0 to lastIndex+1.
+		We also want to take into account cases where there are no snapshot and/or log entries.
+	*/
+
+	if p.nextIndex < 0 {
+		g.logger.Panicf("Invalid peer.nextIndex: {%s}.nextIndex=%d", p.id, p.nextIndex)
+	}
+
+	firstIndex, err := g.Persistence.FirstEntryIndex()
+	if err != nil {
+		panic(err)
+	}
+
+	lastIndex, err := g.Persistence.LastEntryIndex()
+	if err != nil {
+		panic(err)
+	}
+
+	var metadata *pb.SnapshotMetadata
+	if firstIndex < 0 || p.nextIndex < firstIndex {
+		// We might have a snapshot that covers nextIndex.
+		metadata, err = g.Persistence.LastSnapshotMetadata()
+		if err != nil {
+			panic(err)
+		}
+		if p.nextIndex > 0 && (metadata == nil || p.nextIndex <= metadata.LastAppliedIndex) {
+			g.logger.Panicf(
+				"Invalid nextIndex: {%s}.nextIndex=%d, firstIndex=%d, lastIndex=%d, metadata=%v",
+				p.id, p.nextIndex, firstIndex, lastIndex, metadata)
+		}
+	}
+
+	if metadata != nil {
+		snapshot, err := g.Persistence.OpenSnapshot(metadata)
+		if err != nil {
+			panic(err)
+		}
+		return &pb.SnapshotRequest{
+			Term:     g.currentTerm,
+			LeaderId: g.Id,
+			Metadata: snapshot.Metadata(),
+			// Data, Offset & Done are filled later.
+		}
+	}
+
+	if p.nextIndex > lastIndex+1 {
+		g.logger.Panicf("Invalid nextIndex: {%s}.nextIndex=%d, lastIndex=%d", p.id, p.nextIndex, lastIndex)
+	}
+
+	request := &pb.AppendEntriesRequest{
+		Term:              g.currentTerm,
+		LeaderId:          g.Id,
+		LeaderCommitIndex: g.commitIndex,
+	}
+
+	prevLogIndex := p.nextIndex - 1
+	if prevLogIndex < 0 {
+		request.PrevLogIndex, request.PrevLogTerm = -1, -1
+	} else if firstIndex >= 0 && prevLogIndex >= firstIndex && prevLogIndex <= lastIndex {
+		prevLogTerm, err := g.Persistence.GetEntryTerm(prevLogIndex)
+		if err != nil {
+			panic(err)
+		}
+		request.PrevLogIndex, request.PrevLogTerm = prevLogIndex, prevLogTerm
+	} else if metadata, err := g.Persistence.LastSnapshotMetadata(); err == nil &&
+		metadata != nil && prevLogIndex == metadata.LastAppliedIndex {
+		request.PrevLogIndex, request.PrevLogTerm = metadata.LastAppliedIndex, metadata.LastAppliedIndex
+	} else if err != nil {
+		panic(err)
+	} else {
+		g.logger.Panicf("Invalid prevLogIndex: {%s}.prevLogIndex=%d, firstIndex=%d, lastIndex=%d, metadata=%v",
+			p.id, prevLogIndex, firstIndex, lastIndex, metadata)
+	}
+
+	if p.nextIndex <= lastIndex && p.nextIndex >= 0 {
+		es, err := g.Persistence.GetEntries(p.nextIndex, min(p.nextIndex+defaultEntryBatchSize-1, lastIndex))
+		if err != nil {
+			panic(err)
+		}
+		request.Entries = es
+	}
+
+	return request
+}
+
 func (g *Graft) broadcastWorker(p *peer, c *broadcastChannel) {
 	for range c.c {
-		req := func() proto.Message {
-			g.mut.Lock()
-			defer g.mut.Unlock()
-
-			if g.state != stateLeader {
-				return nil
-			}
-
-			/*
-				Generally, we have this layout:
-
-					|--------------------------+--------------------------+
-					|         Snapshot         |       Log entries        |
-					|--------------------------+--------------------------+
-					^                          ^                          ^
-					|                          |                          |
-					+- 0 to LastIncludedIndex -+- firstNext to lastIndex -+
-
-				We want to make sure that peer's nextIndex lies within 0 to lastIndex+1.
-				We also want to take into account cases where there are no snapshot or log entries.
-			*/
-
-			if p.nextIndex < 0 {
-				g.logger.Panicf("Invalid peer.nextIndex: {%s}.nextIndex=%d", p.id, p.nextIndex)
-			}
-
-			firstIndex, err := g.Persistence.FirstEntryIndex()
-			if err != nil {
-				panic(err)
-			}
-
-			lastIndex, err := g.Persistence.LastEntryIndex()
-			if err != nil {
-				panic(err)
-			}
-
-			var metadata *pb.SnapshotMetadata
-			if firstIndex < 0 || p.nextIndex < firstIndex {
-				// We might have a snapshot that covers nextIndex.
-				metadata, err = g.Persistence.LastSnapshotMetadata()
-				if err != nil {
-					panic(err)
-				}
-				if p.nextIndex > 0 && (metadata == nil || p.nextIndex <= metadata.LastAppliedIndex) {
-					g.logger.Panicf(
-						"Invalid nextIndex: {%s}.nextIndex=%d, firstIndex=%d, lastIndex=%d, metadata=%v",
-						p.id, p.nextIndex, firstIndex, lastIndex, metadata)
-				}
-			}
-
-			if metadata != nil {
-				snapshot, err := g.Persistence.OpenSnapshot(metadata)
-				if err != nil {
-					panic(err)
-				}
-				return &pb.SnapshotRequest{
-					Term:     g.currentTerm,
-					LeaderId: g.Id,
-					Offset:   0,
-					Done:     true,
-					Metadata: snapshot.Metadata(),
-					Data:     snapshot.Data(),
-				}
-			}
-
-			if p.nextIndex > lastIndex+1 {
-				g.logger.Panicf("Invalid nextIndex: {%s}.nextIndex=%d, lastIndex=%d", p.id, p.nextIndex, lastIndex)
-			}
-
-			request := &pb.AppendEntriesRequest{
-				Term:              g.currentTerm,
-				LeaderId:          g.Id,
-				LeaderCommitIndex: g.commitIndex,
-			}
-
-			prevLogIndex := p.nextIndex - 1
-			if prevLogIndex < 0 {
-				request.PrevLogIndex, request.PrevLogTerm = -1, -1
-			} else if firstIndex >= 0 && prevLogIndex >= firstIndex && prevLogIndex <= lastIndex {
-				prevLogTerm, err := g.Persistence.GetEntryTerm(prevLogIndex)
-				if err != nil {
-					panic(err)
-				}
-				request.PrevLogIndex, request.PrevLogTerm = prevLogIndex, prevLogTerm
-			} else if metadata != nil && prevLogIndex == metadata.LastAppliedIndex {
-				request.PrevLogIndex, request.PrevLogTerm = metadata.LastAppliedIndex, metadata.LastAppliedIndex
-			} else if metadata, err := g.Persistence.LastSnapshotMetadata(); err == nil && metadata != nil && prevLogIndex == metadata.LastAppliedIndex {
-				request.PrevLogIndex, request.PrevLogTerm = metadata.LastAppliedIndex, metadata.LastAppliedIndex
-			} else if err != nil {
-				panic(err)
-			} else {
-				g.logger.Panicf("Invalid prevLogIndex: {%s}.prevLogIndex=%d, firstIndex=%d, lastIndex=%d, metadata=%v",
-					p.id, prevLogIndex, firstIndex, lastIndex, metadata)
-			}
-
-			if p.nextIndex <= lastIndex && p.nextIndex >= 0 {
-				es, err := g.Persistence.GetEntries(p.nextIndex, min(p.nextIndex+entryBatchSize-1, lastIndex))
-				if err != nil {
-					panic(err)
-				}
-				request.Entries = es
-			}
-
-			return request
-		}()
+		req := g.createAppendEntriesOrSnapshotRequest(p)
 
 		if req == nil {
 			continue
@@ -732,13 +733,76 @@ func (g *Graft) broadcastWorker(p *peer, c *broadcastChannel) {
 					} else {
 						return res
 					}
+
 				case *pb.SnapshotRequest:
-					if res, err := client.InstallSnapshot(context.Background(), req); err != nil {
+					if stream, err := client.InstallSnapshot(context.Background()); err != nil {
 						g.logger.Error("InstallSnapshot->", zap.String("peer", p.id), zap.Any("request", req), zap.Error(err), zap.Stringer("state", g))
 						return nil
 					} else {
-						return res
+						snapshot, err := g.Persistence.OpenSnapshot(req.Metadata)
+						if err != nil {
+							panic(err)
+						}
+
+						defer snapshot.Close()
+
+						if snapshot.Metadata().Size <= defaultSnapshotBufferSize {
+							// Send without streaming.
+							data, err := snapshot.ReadAll()
+							if err != nil {
+								panic(err)
+							}
+
+							req.Data = data
+							req.Offset = 0
+							req.Done = true
+							err = stream.Send(req)
+							if err == nil || errors.Is(err, io.EOF) {
+								res, err := stream.CloseAndRecv()
+								if err != nil {
+									g.logger.Error("InstallSnapshot->", zap.String("peer", p.id), zap.Any("request", req), zap.Error(err), zap.Stringer("state", g))
+									return nil
+								} else {
+									return res
+								}
+							} else {
+								g.logger.Error("InstallSnapshot->", zap.String("peer", p.id), zap.Any("request", req), zap.Error(err), zap.Stringer("state", g))
+								return nil
+							}
+						} else {
+							reader := snapshot.Reader()
+							buffer := make([]byte, defaultSnapshotBufferSize)
+							req.Offset = 0
+							for {
+								n, err := reader.Read(buffer)
+								if errors.Is(err, io.EOF) {
+									req.Done = true
+								} else if err != nil {
+									// TODO this will cause a leak. We need a way to discard sending the snapshot first.
+									panic(err)
+								}
+
+								req.Data = buffer[:n]
+								err = stream.Send(req)
+								if errors.Is(err, io.EOF) {
+									// The corresponding node closed the stream & returned early. Might be a change in leadership.
+									res, err := stream.CloseAndRecv()
+									if err != nil {
+										g.logger.Error("InstallSnapshot->", zap.String("peer", p.id), zap.Any("request", req), zap.Error(err), zap.Stringer("state", g))
+										return nil
+									} else {
+										return res
+									}
+								} else if err != nil {
+									g.logger.Error("InstallSnapshot->", zap.String("peer", p.id), zap.Any("request", req), zap.Error(err), zap.Stringer("state", g))
+									return nil
+								}
+
+								req.Offset += int64(n)
+							}
+						}
 					}
+
 				default:
 					g.logger.Panicf("Unknown request type: %T", req)
 					return nil // Unreachable
@@ -1161,20 +1225,37 @@ func (g *Graft) appendEntries(request *pb.AppendEntriesRequest) (*pb.AppendEntri
 	}, nil
 }
 
-func (g *Graft) installSnapshot(request *pb.SnapshotRequest) (*pb.SnapshotResponse, error) {
+func (g *Graft) installSnapshot(stream grpc.ClientStreamingServer[pb.SnapshotRequest, pb.SnapshotResponse]) error {
+	// Do not block for the entire streaming duration.
+	for {
+		request, err := stream.Recv()
+		if errors.Is(err, io.EOF) {
+			return stream.SendAndClose(&pb.SnapshotResponse{Term: g.GetCurrentTerm()})
+		} else if err != nil {
+			return err
+		}
+
+		success, err := g.installSnapshotBlock(request)
+		if err != nil {
+			return err
+		} else if !success {
+			return stream.SendAndClose(&pb.SnapshotResponse{Term: g.GetCurrentTerm()})
+		}
+	}
+}
+
+func (g *Graft) installSnapshotBlock(request *pb.SnapshotRequest) (bool, error) {
 	g.mut.Lock()
 	defer g.mut.Unlock()
 
 	g.logger.Info("->InstallSnapshot", zap.Any("request", request), zap.Stringer("state", g))
 
 	if g.state == stateDead {
-		return nil, ErrDead
+		return false, ErrDead
 	}
 
 	if request.Term < g.currentTerm || g.unguardedIsUnknownPeer(request.LeaderId) {
-		return &pb.SnapshotResponse{
-			Term: g.currentTerm,
-		}, nil
+		return false, nil
 	}
 
 	g.lastHeartbeatTime = time.Now()
@@ -1193,15 +1274,12 @@ func (g *Graft) installSnapshot(request *pb.SnapshotRequest) (*pb.SnapshotRespon
 	if request.Offset == 0 {
 		// Discard potentially incomplete snapshot.
 		if g.snapshotWriter != nil {
-			err := g.snapshotWriter.Close()
-			if err != nil {
-				g.logger.Error("Failed to close discarded snapshotWriter", zap.Error(err))
-			}
+			g.snapshotWriter.Close()
 			g.snapshotWriter = nil
 		}
 
 		// Begin a new snapshot.
-		writer, err := g.Persistence.NewSnapshot(request.Metadata)
+		writer, err := g.Persistence.CreateSnapshot(request.Metadata)
 		if err != nil {
 			panic(err)
 		}
@@ -1215,12 +1293,8 @@ func (g *Graft) installSnapshot(request *pb.SnapshotRequest) (*pb.SnapshotRespon
 
 	if request.Done {
 		defer func() {
-			sw := g.snapshotWriter
+			g.snapshotWriter.Close()
 			g.snapshotWriter = nil
-			err := sw.Close()
-			if err != nil {
-				g.logger.Error("Failed to close snapshotWriter", zap.Error(err))
-			}
 		}()
 
 		metadata, err := g.snapshotWriter.Commit()
@@ -1253,10 +1327,7 @@ func (g *Graft) installSnapshot(request *pb.SnapshotRequest) (*pb.SnapshotRespon
 		// Publish snapshot to state-machine.
 		g.applyChan <- metadata
 	}
-
-	return &pb.SnapshotResponse{
-		Term: g.currentTerm,
-	}, nil
+	return true, nil
 }
 
 type peerFactory struct {

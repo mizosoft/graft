@@ -3,6 +3,7 @@ package service
 import (
 	"bytes"
 	"encoding/gob"
+	"github.com/mizosoft/graft"
 	dlock2 "github.com/mizosoft/graft/dlock/api"
 	"github.com/mizosoft/graft/infra/server"
 	"go.uber.org/zap"
@@ -188,18 +189,19 @@ func (d *dlock) Apply(command *server.Command) any {
 	}
 }
 
-func (d *dlock) Restore(snapshot []byte) {
+func (d *dlock) Restore(snapshot graft.Snapshot) error {
 	d.mut.Lock()
 	defer d.mut.Unlock()
 
 	var mp map[string]*Lock
-	decoder := gob.NewDecoder(bytes.NewReader(snapshot))
+	decoder := gob.NewDecoder(snapshot.Reader())
 	err := decoder.Decode(&mp)
 	if err != nil {
-		panic(err)
+		return err
 	}
 	d.redundantOperations = 0
 	d.locks = mp
+	return nil
 }
 
 func (d *dlock) ShouldSnapshot() bool {

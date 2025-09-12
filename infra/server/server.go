@@ -198,8 +198,7 @@ func (s *Server) Initialize() {
 	}
 
 	s.G.Restore = func(snapshot graft.Snapshot) error {
-		s.sm.Restore(snapshot.Data())
-		return nil
+		return s.sm.Restore(snapshot)
 	}
 	s.G.Apply = func(entries []*pb.LogEntry) (bool, error) {
 		s.apply(entries)

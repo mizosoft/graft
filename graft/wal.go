@@ -138,10 +138,6 @@ func segFileName(number int, firstIndex int64) string {
 	return fmt.Sprintf("log_%d_%d.dat", number, firstIndex)
 }
 
-func snapshotFilename(metadata *pb.SnapshotMetadata) string {
-	return fmt.Sprintf("snap_%d_%d.dat", metadata.LastAppliedIndex, metadata.LastAppliedTerm)
-}
-
 func (s *segment) boundedReaderFrom(offset int64) io.Reader {
 	if s.m != nil {
 		return bytes.NewReader(s.m[offset:s.lastOffset])
@@ -1237,91 +1233,95 @@ func (w *wal) OpenSnapshot(metadata *pb.SnapshotMetadata) (Snapshot, error) {
 		metadata.LastAppliedTerm != myMetadata.LastAppliedTerm {
 		return nil, ErrNoSuchSnapshot
 	}
-
-	data, err := os.ReadFile(path.Join(w.dir, snapshotFilename(metadata)))
-	if err != nil {
-		return nil, err
-	}
-	return NewSnapshot(metadata, data), nil
+	return NewFileSnapshot(metadata, path.Join(w.dir, SnapshotFilename(metadata)))
 }
 
-func (w *wal) NewSnapshot(metadata *pb.SnapshotMetadata) (SnapshotWriter, error) {
+func (w *wal) CreateSnapshot(metadata *pb.SnapshotMetadata) (SnapshotWriter, error) {
 	if w.closed {
 		return nil, ErrClosed
 	}
 
-	fpath := path.Join(w.dir, snapshotFilename(metadata)+".tmp")
+	fpath := path.Join(w.dir, SnapshotFilename(metadata)+".tmp")
 	f, err := os.Create(fpath)
 	if err != nil {
 		return nil, err
 	}
-	return &diskSnapshotWriter{w: w, metadata: metadata, f: f}, nil
+	return &fileSnapshotWriter{w: w, metadata: metadata, f: f}, nil
 }
 
-// May want to return "committed".
-type diskSnapshotWriter struct {
+type fileSnapshotWriter struct {
 	w          *wal
-	metadata   *pb.SnapshotMetadata
 	f          *os.File
+	metadata   *pb.SnapshotMetadata
 	lastOffset int64
 	closed     bool
 }
 
-func (d *diskSnapshotWriter) WriteAt(p []byte, off int64) (n int, err error) {
-	if d.closed {
+func (s *fileSnapshotWriter) WriteAt(p []byte, off int64) (n int, err error) {
+	if s.closed {
 		return 0, ErrClosed
 	}
 
-	if off < 0 || off > d.lastOffset {
+	if off < 0 || off > s.lastOffset {
 		return 0, ErrOffsetOutOfRange
 	}
-	n, err = d.f.WriteAt(p, off)
+	n, err = s.f.WriteAt(p, off)
 	if err == nil {
-		d.lastOffset = max(d.lastOffset, off+int64(n))
+		s.lastOffset = max(s.lastOffset, off+int64(n))
 	}
 	return
 }
 
-func (d *diskSnapshotWriter) Close() error {
-	if d.closed {
+func (s *fileSnapshotWriter) Close() error {
+	if s.closed {
 		return nil
 	}
-	d.closed = true
-	return errors.Join(d.f.Close(), os.Remove(d.f.Name()))
+	s.closed = true
+	return errors.Join(s.f.Close(), os.Remove(s.f.Name()))
 }
 
-func (d *diskSnapshotWriter) Commit() (*pb.SnapshotMetadata, error) {
-	if d.closed {
+func (s *fileSnapshotWriter) Commit() (*pb.SnapshotMetadata, error) {
+	if s.closed {
 		return nil, ErrClosed
 	}
 
-	d.closed = true
+	s.closed = true
 
 	committed := false
 	defer func() {
 		if !committed {
-			if err := errors.Join(d.f.Close(), os.Remove(d.f.Name())); err != nil {
-				d.w.logger.Error("Failed to close/delete snapshot file", zap.Error(err))
+			if err := errors.Join(s.f.Close(), os.Remove(s.f.Name())); err != nil {
+				s.w.logger.Error("Failed to close and/or delete snapshot file", zap.Error(err))
 			}
 		}
 	}()
 
-	if err := d.f.Sync(); err != nil {
+	if err := s.f.Sync(); err != nil {
 		return nil, err
 	}
-	if err := os.Rename(d.f.Name(), path.Join(d.w.dir, snapshotFilename(d.metadata))); err != nil {
+	if err := os.Rename(s.f.Name(), path.Join(s.w.dir, SnapshotFilename(s.metadata))); err != nil {
 		return nil, err
 	}
-	if err := d.f.Close(); err != nil {
+	if err := s.f.Close(); err != nil {
 		return nil, err
 	}
 
-	d.metadata.Size = d.lastOffset
-	if err := d.w.saveSnapshotMetadata(d.metadata); err != nil {
+	prevMetadata := s.w.lastSnapshotMetadata
+
+	s.metadata.Size = s.lastOffset
+	if err := s.w.saveSnapshotMetadata(s.metadata); err != nil {
 		return nil, err
 	}
 	committed = true
-	return d.metadata, nil
+
+	// Delete previous snapshot.
+	if prevMetadata != nil {
+		if err := os.Remove(path.Join(s.w.dir, SnapshotFilename(prevMetadata))); err != nil {
+			s.w.logger.Error("Failed to delete previous snapshot file", zap.Error(err))
+		}
+	}
+
+	return s.metadata, nil
 }
 
 func (w *wal) findSegment(entryIndex int64) (int, error) {

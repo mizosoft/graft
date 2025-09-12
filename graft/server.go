@@ -3,6 +3,7 @@ package graft
 import (
 	"context"
 	"github.com/mizosoft/graft/pb"
+	"google.golang.org/grpc"
 )
 
 type server struct {
@@ -27,10 +28,10 @@ func (s *server) AppendEntries(ctx context.Context, request *pb.AppendEntriesReq
 	return g.appendEntries(request)
 }
 
-func (s *server) InstallSnapshot(ctx context.Context, request *pb.SnapshotRequest) (*pb.SnapshotResponse, error) {
-	g, ok := ctx.Value(graftKey{}).(*Graft)
+func (s *server) InstallSnapshot(stream grpc.ClientStreamingServer[pb.SnapshotRequest, pb.SnapshotResponse]) error {
+	g, ok := stream.Context().Value(graftKey{}).(*Graft)
 	if !ok {
 		panic("unable to find Graft instance in context")
 	}
-	return g.installSnapshot(request)
+	return g.installSnapshot(stream)
 }

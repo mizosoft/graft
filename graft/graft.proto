@@ -9,7 +9,7 @@ option go_package = "github.com/mizosoft/graft/pb;pb";
 service Raft {
   rpc RequestVote(RequestVoteRequest) returns (RequestVoteResponse);
   rpc AppendEntries(AppendEntriesRequest) returns (AppendEntriesResponse);
-  rpc InstallSnapshot(SnapshotRequest) returns (SnapshotResponse);
+  rpc InstallSnapshot(stream SnapshotRequest) returns (SnapshotResponse);
 }
 
 message RequestVoteRequest {

@@ -990,7 +990,7 @@ func TestWalSaveAndRetrieveSnapshot(t *testing.T) {
 					Phase: pb.ConfigUpdate_LEARNING,
 				},
 			}
-			writer, err := w.NewSnapshot(metadata)
+			writer, err := w.CreateSnapshot(metadata)
 			assert.NilError(t, err)
 
 			n, err := writer.WriteAt(data[0:2], 0)
@@ -1015,7 +1015,10 @@ func TestWalSaveAndRetrieveSnapshot(t *testing.T) {
 			snapshot, err := w.OpenSnapshot(metadata)
 			assert.NilError(t, err)
 			assert.Assert(t, proto.Equal(snapshot.Metadata(), metadata))
-			assert.Equal(t, string(snapshot.Data()), string(data))
+
+			retrievedData, err := snapshot.ReadAll()
+			assert.NilError(t, err)
+			assert.Equal(t, string(retrievedData), string(data))
 		})
 	}
 }
@@ -1032,7 +1035,7 @@ func TestWalDiscardedSnapshot(t *testing.T) {
 			assert.NilError(t, err)
 			defer w.Close()
 
-			writer, err := w.NewSnapshot(&pb.SnapshotMetadata{
+			writer, err := w.CreateSnapshot(&pb.SnapshotMetadata{
 				LastAppliedIndex: 1,
 				LastAppliedTerm:  1,
 				ConfigUpdate: &pb.ConfigUpdate{
@@ -1099,7 +1102,7 @@ func TestWalDiscardedSnapshotAfterCommittedSnapshot(t *testing.T) {
 				},
 			}
 
-			writer1, err := w.NewSnapshot(metadata1)
+			writer1, err := w.CreateSnapshot(metadata1)
 			assert.NilError(t, err)
 
 			n, err := writer1.WriteAt([]byte("abc"), 0)
@@ -1112,11 +1115,13 @@ func TestWalDiscardedSnapshotAfterCommittedSnapshot(t *testing.T) {
 			snapshot, err := w.OpenSnapshot(metadata1)
 			assert.NilError(t, err)
 			assert.Assert(t, proto.Equal(snapshot.Metadata(), metadata1))
-			assert.Equal(t, string(snapshot.Data()), "abc")
+
+			retrievedData, err := snapshot.ReadAll()
+			assert.Equal(t, string(retrievedData), "abc")
 
 			metadata2 := cloneMsg(metadata1)
 			metadata2.LastAppliedIndex, metadata2.LastAppliedTerm = 2, 2
-			writer2, err := w.NewSnapshot(metadata1)
+			writer2, err := w.CreateSnapshot(metadata1)
 			assert.NilError(t, err)
 
 			n, err = writer2.WriteAt([]byte("bde"), 0)
@@ -1136,7 +1141,9 @@ func TestWalDiscardedSnapshotAfterCommittedSnapshot(t *testing.T) {
 			snapshot, err = w.OpenSnapshot(metadata1)
 			assert.NilError(t, err)
 			assert.Assert(t, proto.Equal(snapshot.Metadata(), metadata1))
-			assert.Equal(t, string(snapshot.Data()), "abc")
+
+			retrievedData, err = snapshot.ReadAll()
+			assert.Equal(t, string(retrievedData), "abc")
 		})
 	}
 }
@@ -1174,7 +1181,7 @@ func TestWalRetrieveSnapshotOnReopen(t *testing.T) {
 			}
 			data := []byte("Pikachu")
 
-			writer, err := w1.NewSnapshot(metadata)
+			writer, err := w1.CreateSnapshot(metadata)
 			assert.NilError(t, err)
 
 			n, err := writer.WriteAt(data, 0)
@@ -1197,7 +1204,9 @@ func TestWalRetrieveSnapshotOnReopen(t *testing.T) {
 			retrievedSnapshot, err := w2.OpenSnapshot(metadata)
 			assert.NilError(t, err)
 			assert.Assert(t, proto.Equal(retrievedSnapshot.Metadata(), metadata))
-			assert.Equal(t, string(retrievedSnapshot.Data()), string(data))
+
+			retrievedData, err := retrievedSnapshot.ReadAll()
+			assert.Equal(t, string(retrievedData), string(data))
 		})
 	}
 }

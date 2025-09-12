@@ -30,7 +30,7 @@ const (
 type RaftClient interface {
 	RequestVote(ctx context.Context, in *RequestVoteRequest, opts ...grpc.CallOption) (*RequestVoteResponse, error)
 	AppendEntries(ctx context.Context, in *AppendEntriesRequest, opts ...grpc.CallOption) (*AppendEntriesResponse, error)
-	InstallSnapshot(ctx context.Context, in *SnapshotRequest, opts ...grpc.CallOption) (*SnapshotResponse, error)
+	InstallSnapshot(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[SnapshotRequest, SnapshotResponse], error)
 }
 
 type raftClient struct {
@@ -61,15 +61,18 @@ func (c *raftClient) AppendEntries(ctx context.Context, in *AppendEntriesRequest
 	return out, nil
 }
 
-func (c *raftClient) InstallSnapshot(ctx context.Context, in *SnapshotRequest, opts ...grpc.CallOption) (*SnapshotResponse, error) {
+func (c *raftClient) InstallSnapshot(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[SnapshotRequest, SnapshotResponse], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(SnapshotResponse)
-	err := c.cc.Invoke(ctx, Raft_InstallSnapshot_FullMethodName, in, out, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &Raft_ServiceDesc.Streams[0], Raft_InstallSnapshot_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
-	return out, nil
+	x := &grpc.GenericClientStream[SnapshotRequest, SnapshotResponse]{ClientStream: stream}
+	return x, nil
 }
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type Raft_InstallSnapshotClient = grpc.ClientStreamingClient[SnapshotRequest, SnapshotResponse]
 
 // RaftServer is the server API for Raft service.
 // All implementations must embed UnimplementedRaftServer
@@ -77,7 +80,7 @@ func (c *raftClient) InstallSnapshot(ctx context.Context, in *SnapshotRequest, o
 type RaftServer interface {
 	RequestVote(context.Context, *RequestVoteRequest) (*RequestVoteResponse, error)
 	AppendEntries(context.Context, *AppendEntriesRequest) (*AppendEntriesResponse, error)
-	InstallSnapshot(context.Context, *SnapshotRequest) (*SnapshotResponse, error)
+	InstallSnapshot(grpc.ClientStreamingServer[SnapshotRequest, SnapshotResponse]) error
 	mustEmbedUnimplementedRaftServer()
 }
 
@@ -94,8 +97,8 @@ func (UnimplementedRaftServer) RequestVote(context.Context, *RequestVoteRequest)
 func (UnimplementedRaftServer) AppendEntries(context.Context, *AppendEntriesRequest) (*AppendEntriesResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method AppendEntries not implemented")
 }
-func (UnimplementedRaftServer) InstallSnapshot(context.Context, *SnapshotRequest) (*SnapshotResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method InstallSnapshot not implemented")
+func (UnimplementedRaftServer) InstallSnapshot(grpc.ClientStreamingServer[SnapshotRequest, SnapshotResponse]) error {
+	return status.Errorf(codes.Unimplemented, "method InstallSnapshot not implemented")
 }
 func (UnimplementedRaftServer) mustEmbedUnimplementedRaftServer() {}
 func (UnimplementedRaftServer) testEmbeddedByValue()              {}
@@ -154,23 +157,12 @@ func _Raft_AppendEntries_Handler(srv interface{}, ctx context.Context, dec func(
 	return interceptor(ctx, in, info, handler)
 }
 
-func _Raft_InstallSnapshot_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(SnapshotRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(RaftServer).InstallSnapshot(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: Raft_InstallSnapshot_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(RaftServer).InstallSnapshot(ctx, req.(*SnapshotRequest))
-	}
-	return interceptor(ctx, in, info, handler)
+func _Raft_InstallSnapshot_Handler(srv interface{}, stream grpc.ServerStream) error {
+	return srv.(RaftServer).InstallSnapshot(&grpc.GenericServerStream[SnapshotRequest, SnapshotResponse]{ServerStream: stream})
 }
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type Raft_InstallSnapshotServer = grpc.ClientStreamingServer[SnapshotRequest, SnapshotResponse]
 
 // Raft_ServiceDesc is the grpc.ServiceDesc for Raft service.
 // It's only intended for direct use with grpc.RegisterService,
@@ -187,11 +179,13 @@ var Raft_ServiceDesc = grpc.ServiceDesc{
 			MethodName: "AppendEntries",
 			Handler:    _Raft_AppendEntries_Handler,
 		},
+	},
+	Streams: []grpc.StreamDesc{
 		{
-			MethodName: "InstallSnapshot",
-			Handler:    _Raft_InstallSnapshot_Handler,
+			StreamName:    "InstallSnapshot",
+			Handler:       _Raft_InstallSnapshot_Handler,
+			ClientStreams: true,
 		},
 	},
-	Streams:  []grpc.StreamDesc{},
 	Metadata: "graft.proto",
 }

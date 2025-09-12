@@ -504,13 +504,14 @@ func (x *SnapshotResponse) GetTerm() int64 {
 }
 
 type SnapshotMetadata struct {
-	state            protoimpl.MessageState `protogen:"open.v1"`
-	LastAppliedIndex int64                  `protobuf:"varint,1,opt,name=lastAppliedIndex,proto3" json:"lastAppliedIndex,omitempty"`
-	LastAppliedTerm  int64                  `protobuf:"varint,2,opt,name=lastAppliedTerm,proto3" json:"lastAppliedTerm,omitempty"`
-	Size             int64                  `protobuf:"varint,3,opt,name=size,proto3" json:"size,omitempty"`
-	ConfigUpdate     *ConfigUpdate          `protobuf:"bytes,4,opt,name=configUpdate,proto3" json:"configUpdate,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	LastAppliedIndex  int64                  `protobuf:"varint,1,opt,name=lastAppliedIndex,proto3" json:"lastAppliedIndex,omitempty"`
+	LastAppliedTerm   int64                  `protobuf:"varint,2,opt,name=lastAppliedTerm,proto3" json:"lastAppliedTerm,omitempty"`
+	Size              int64                  `protobuf:"varint,3,opt,name=size,proto3" json:"size,omitempty"`
+	ConfigUpdate      *ConfigUpdate          `protobuf:"bytes,4,opt,name=configUpdate,proto3" json:"configUpdate,omitempty"`
+	ConfigUpdateIndex int64                  `protobuf:"varint,5,opt,name=configUpdateIndex,proto3" json:"configUpdateIndex,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *SnapshotMetadata) Reset() {
@@ -569,6 +570,13 @@ func (x *SnapshotMetadata) GetConfigUpdate() *ConfigUpdate {
 		return x.ConfigUpdate
 	}
 	return nil
+}
+
+func (x *SnapshotMetadata) GetConfigUpdateIndex() int64 {
+	if x != nil {
+		return x.ConfigUpdateIndex
+	}
+	return 0
 }
 
 type NodeConfig struct {
@@ -1030,12 +1038,13 @@ const file_graft_proto_rawDesc = "" +
 	"\x04done\x18\x05 \x01(\bR\x04done\x123\n" +
 	"\bmetadata\x18\x06 \x01(\v2\x17.graft.SnapshotMetadataR\bmetadata\"&\n" +
 	"\x10SnapshotResponse\x12\x12\n" +
-	"\x04term\x18\x01 \x01(\x03R\x04term\"\xb5\x01\n" +
+	"\x04term\x18\x01 \x01(\x03R\x04term\"\xe3\x01\n" +
 	"\x10SnapshotMetadata\x12*\n" +
 	"\x10lastAppliedIndex\x18\x01 \x01(\x03R\x10lastAppliedIndex\x12(\n" +
 	"\x0flastAppliedTerm\x18\x02 \x01(\x03R\x0flastAppliedTerm\x12\x12\n" +
 	"\x04size\x18\x03 \x01(\x03R\x04size\x127\n" +
-	"\fconfigUpdate\x18\x04 \x01(\v2\x13.graft.ConfigUpdateR\fconfigUpdate\"6\n" +
+	"\fconfigUpdate\x18\x04 \x01(\v2\x13.graft.ConfigUpdateR\fconfigUpdate\x12,\n" +
+	"\x11configUpdateIndex\x18\x05 \x01(\x03R\x11configUpdateIndex\"6\n" +
 	"\n" +
 	"NodeConfig\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x18\n" +
@@ -1076,11 +1085,11 @@ const file_graft_proto_rawDesc = "" +
 	"firstIndex\x18\x05 \x01(\x03R\n" +
 	"firstIndex\")\n" +
 	"\x11WalSegmentTrailer\x12\x14\n" +
-	"\x05magic\x18\x01 \x01(\x04R\x05magic2\xdc\x01\n" +
+	"\x05magic\x18\x01 \x01(\x04R\x05magic2\xde\x01\n" +
 	"\x04Raft\x12D\n" +
 	"\vRequestVote\x12\x19.graft.RequestVoteRequest\x1a\x1a.graft.RequestVoteResponse\x12J\n" +
-	"\rAppendEntries\x12\x1b.graft.AppendEntriesRequest\x1a\x1c.graft.AppendEntriesResponse\x12B\n" +
-	"\x0fInstallSnapshot\x12\x16.graft.SnapshotRequest\x1a\x17.graft.SnapshotResponseB!Z\x1fgithub.com/mizosoft/graft/pb;pbb\x06proto3"
+	"\rAppendEntries\x12\x1b.graft.AppendEntriesRequest\x1a\x1c.graft.AppendEntriesResponse\x12D\n" +
+	"\x0fInstallSnapshot\x12\x16.graft.SnapshotRequest\x1a\x17.graft.SnapshotResponse(\x01B!Z\x1fgithub.com/mizosoft/graft/pb;pbb\x06proto3"
 
 var (
 	file_graft_proto_rawDescOnce sync.Once

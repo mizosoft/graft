@@ -1,7 +1,6 @@
 package badger
 
 import (
-	"github.com/mizosoft/graft"
 	"math/rand"
 	"os"
 	"strings"
@@ -15,7 +14,7 @@ import (
 
 func TestWalNewWalOpen(t *testing.T) {
 	dir := t.TempDir()
-	wal, err := OpenBadgerPersistence(dir)
+	wal, err := OpenBadgerPersistence(dir, nil)
 	assert.NilError(t, err)
 	defer wal.Close()
 
@@ -25,11 +24,11 @@ func TestWalNewWalOpen(t *testing.T) {
 
 func TestWalEmptyWalReopen(t *testing.T) {
 	dir := t.TempDir()
-	wal, err := OpenBadgerPersistence(dir)
+	wal, err := OpenBadgerPersistence(dir, nil)
 	assert.NilError(t, err)
 	wal.Close()
 
-	wal, err = OpenBadgerPersistence(dir)
+	wal, err = OpenBadgerPersistence(dir, nil)
 	assert.NilError(t, err)
 	defer wal.Close()
 
@@ -37,14 +36,15 @@ func TestWalEmptyWalReopen(t *testing.T) {
 	state, err := wal.RetrieveState()
 	assert.NilError(t, err)
 	testutil.AssertNil(t, state)
-	snapshot, err := wal.RetrieveSnapshot()
+
+	snapshot, err := wal.LastSnapshotMetadata()
 	assert.NilError(t, err)
 	testutil.AssertNil(t, snapshot)
 }
 
 func TestWalAppendSingleEntry(t *testing.T) {
 	dir := t.TempDir()
-	w, err := OpenBadgerPersistence(dir)
+	w, err := OpenBadgerPersistence(dir, nil)
 	assert.NilError(t, err)
 	defer w.Close()
 
@@ -77,7 +77,7 @@ func TestWalAppendSingleEntry(t *testing.T) {
 
 func TestWalAppendMultipleEntries(t *testing.T) {
 	dir := t.TempDir()
-	w, err := OpenBadgerPersistence(dir)
+	w, err := OpenBadgerPersistence(dir, nil)
 	assert.NilError(t, err)
 	defer w.Close()
 
@@ -109,7 +109,7 @@ func TestWalAppendMultipleEntries(t *testing.T) {
 
 func TestWalGetEntriesFromMiddle(t *testing.T) {
 	dir := t.TempDir()
-	w, err := OpenBadgerPersistence(dir)
+	w, err := OpenBadgerPersistence(dir, nil)
 	assert.NilError(t, err)
 	defer w.Close()
 
@@ -143,7 +143,7 @@ func TestWalGetEntriesFromMiddle(t *testing.T) {
 
 func TestWalSetState(t *testing.T) {
 	dir := t.TempDir()
-	w, err := OpenBadgerPersistence(dir)
+	w, err := OpenBadgerPersistence(dir, nil)
 	assert.NilError(t, err)
 	defer w.Close()
 
@@ -175,7 +175,7 @@ func TestWalSetState(t *testing.T) {
 
 func TestWalTruncateEntries(t *testing.T) {
 	dir := t.TempDir()
-	w, err := OpenBadgerPersistence(dir)
+	w, err := OpenBadgerPersistence(dir, nil)
 	assert.NilError(t, err)
 	defer w.Close()
 
@@ -219,7 +219,7 @@ func TestWalTruncateEntries(t *testing.T) {
 
 func TestWalReopen(t *testing.T) {
 	dir := t.TempDir()
-	w1, err := OpenBadgerPersistence(dir)
+	w1, err := OpenBadgerPersistence(dir, nil)
 	assert.NilError(t, err)
 
 	state := &pb.PersistedState{
@@ -239,7 +239,7 @@ func TestWalReopen(t *testing.T) {
 	w1.Close()
 
 	// Reopen.
-	w2, err := OpenBadgerPersistence(dir)
+	w2, err := OpenBadgerPersistence(dir, nil)
 	assert.NilError(t, err)
 	defer w2.Close()
 
@@ -260,7 +260,7 @@ func TestWalReopen(t *testing.T) {
 
 func TestWalErrorCases(t *testing.T) {
 	dir := t.TempDir()
-	w, err := OpenBadgerPersistence(dir)
+	w, err := OpenBadgerPersistence(dir, nil)
 	defer w.Close()
 	assert.NilError(t, err)
 
@@ -276,7 +276,7 @@ func TestWalErrorCases(t *testing.T) {
 
 func TestWalOverwriteState(t *testing.T) {
 	dir := t.TempDir()
-	w, err := OpenBadgerPersistence(dir)
+	w, err := OpenBadgerPersistence(dir, nil)
 	assert.NilError(t, err)
 	defer w.Close()
 
@@ -307,7 +307,7 @@ func TestWalOverwriteState(t *testing.T) {
 	w.Close()
 	assert.NilError(t, err)
 
-	w2, err := OpenBadgerPersistence(dir)
+	w2, err := OpenBadgerPersistence(dir, nil)
 	assert.NilError(t, err)
 	defer w2.Close()
 
@@ -319,7 +319,7 @@ func TestWalOverwriteState(t *testing.T) {
 
 func TestWalTruncateAfterStateUpdate(t *testing.T) {
 	dir := t.TempDir()
-	w1, err := OpenBadgerPersistence(dir)
+	w1, err := OpenBadgerPersistence(dir, nil)
 	assert.NilError(t, err)
 	defer w1.Close()
 
@@ -342,7 +342,7 @@ func TestWalTruncateAfterStateUpdate(t *testing.T) {
 	w1.Close()
 
 	// Reopen.
-	w2, err := OpenBadgerPersistence(dir)
+	w2, err := OpenBadgerPersistence(dir, nil)
 	assert.NilError(t, err)
 	defer w2.Close()
 
@@ -352,7 +352,7 @@ func TestWalTruncateAfterStateUpdate(t *testing.T) {
 
 func TestWalAppendAfterTruncating(t *testing.T) {
 	dir := t.TempDir()
-	w, err := OpenBadgerPersistence(dir)
+	w, err := OpenBadgerPersistence(dir, nil)
 	assert.NilError(t, err)
 	defer w.Close()
 
@@ -395,15 +395,15 @@ func fileExists(path string) bool {
 
 func TestWalSaveAndRetrieveSnapshot(t *testing.T) {
 	dir := t.TempDir()
-	w, err := OpenBadgerPersistence(dir)
+	w, err := OpenBadgerPersistence(dir, nil)
 	assert.NilError(t, err)
 	defer w.Close()
 
-	snapshot, err := w.RetrieveSnapshot()
+	retrievedMetadata, err := w.LastSnapshotMetadata()
 	assert.NilError(t, err)
-	assert.Assert(t, snapshot == nil)
+	assert.Assert(t, retrievedMetadata == nil)
 
-	snapshot = graft.NewSnapshot(&pb.SnapshotMetadata{
+	metadata := &pb.SnapshotMetadata{
 		LastAppliedIndex: 1,
 		LastAppliedTerm:  1,
 		ConfigUpdate: &pb.ConfigUpdate{
@@ -421,23 +421,36 @@ func TestWalSaveAndRetrieveSnapshot(t *testing.T) {
 			},
 			Phase: pb.ConfigUpdate_LEARNING,
 		},
-	}, []byte("Pikachu"))
-	err = w.SaveSnapshot(snapshot)
+	}
+	writer, err := w.CreateSnapshot(metadata)
 	assert.NilError(t, err)
 
-	retrievedSnapshot, err := w.RetrieveSnapshot()
+	n, err := writer.WriteAt([]byte("Pikachu"), 0)
 	assert.NilError(t, err)
-	assert.Assert(t, proto.Equal(retrievedSnapshot.Metadata(), snapshot.Metadata()))
-	assert.Equal(t, string(retrievedSnapshot.Data()), string(snapshot.Data()))
+	assert.Equal(t, n, 7)
+
+	_, err = writer.Commit()
+	assert.NilError(t, err)
+
+	metadata.Size = int64(7)
+	retrievedMetadata, err = w.LastSnapshotMetadata()
+	assert.NilError(t, err)
+	assert.Assert(t, proto.Equal(retrievedMetadata, metadata))
+
+	snapshot, err := w.OpenSnapshot(metadata)
+	assert.NilError(t, err)
+
+	retrievedData, err := snapshot.ReadAll()
+	assert.Equal(t, string(retrievedData), "Pikachu")
 }
 
 func TestWalRetrieveSnapshotOnReopen(t *testing.T) {
 	dir := t.TempDir()
-	w1, err := OpenBadgerPersistence(dir)
+	w1, err := OpenBadgerPersistence(dir, nil)
 	assert.NilError(t, err)
 	defer w1.Close()
 
-	snapshot := graft.NewSnapshot(&pb.SnapshotMetadata{
+	metadata := &pb.SnapshotMetadata{
 		LastAppliedIndex: 1,
 		LastAppliedTerm:  1,
 		ConfigUpdate: &pb.ConfigUpdate{
@@ -455,24 +468,38 @@ func TestWalRetrieveSnapshotOnReopen(t *testing.T) {
 			},
 			Phase: pb.ConfigUpdate_LEARNING,
 		},
-	}, []byte("Pikachu"))
-	err = w1.SaveSnapshot(snapshot)
+	}
+
+	writer, err := w1.CreateSnapshot(metadata)
+	assert.NilError(t, err)
+
+	n, err := writer.WriteAt([]byte("Pikachu"), 0)
+	assert.NilError(t, err)
+	assert.Equal(t, n, 7)
+
+	_, err = writer.Commit()
 	assert.NilError(t, err)
 
 	w1.Close()
 
-	w2, err := OpenBadgerPersistence(dir)
+	w2, err := OpenBadgerPersistence(dir, nil)
 	assert.NilError(t, err)
 	defer w2.Close()
-	retrievedSnapshot, err := w2.RetrieveSnapshot()
+
+	retrievedMetadata, err := w2.LastSnapshotMetadata()
 	assert.NilError(t, err)
-	assert.Assert(t, proto.Equal(retrievedSnapshot.Metadata(), snapshot.Metadata()))
-	assert.Equal(t, string(retrievedSnapshot.Data()), string(snapshot.Data()))
+	assert.Assert(t, proto.Equal(retrievedMetadata, metadata))
+
+	snapshot, err := w2.OpenSnapshot(metadata)
+	assert.NilError(t, err)
+
+	retrievedData, err := snapshot.ReadAll()
+	assert.Equal(t, string(retrievedData), "Pikachu")
 }
 
 func TestWalTruncateEntriesTo(t *testing.T) {
 	dir := t.TempDir()
-	w, err := OpenBadgerPersistence(dir)
+	w, err := OpenBadgerPersistence(dir, nil)
 	assert.NilError(t, err)
 	defer w.Close()
 
@@ -515,7 +542,7 @@ func TestWalTruncateEntriesTo(t *testing.T) {
 
 func TestWalFirstAndLastEntryIndex(t *testing.T) {
 	dir := t.TempDir()
-	w, err := OpenBadgerPersistence(dir)
+	w, err := OpenBadgerPersistence(dir, nil)
 	assert.NilError(t, err)
 	defer w.Close()
 

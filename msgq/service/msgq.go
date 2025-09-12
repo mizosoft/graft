@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/gob"
 	"fmt"
+	"github.com/mizosoft/graft"
 	"github.com/mizosoft/graft/infra/server"
 	msgq2 "github.com/mizosoft/graft/msgq/api"
 	"go.uber.org/zap"
@@ -46,18 +47,19 @@ func (m *msgq) Apply(command *server.Command) any {
 	}
 }
 
-func (m *msgq) Restore(snapshot []byte) {
+func (m *msgq) Restore(snapshot graft.Snapshot) error {
 	m.mut.Lock()
 	defer m.mut.Unlock()
 
 	var queues map[string][]msgq2.Message
-	decoder := gob.NewDecoder(bytes.NewReader(snapshot))
+	decoder := gob.NewDecoder(snapshot.Reader())
 	err := decoder.Decode(&queues)
 	if err != nil {
-		panic(err)
+		return err
 	}
 	m.redundantOperations = 0
 	m.queues = queues
+	return nil
 }
 
 func (m *msgq) ShouldSnapshot() bool {

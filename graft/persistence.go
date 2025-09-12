@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/mizosoft/graft/pb"
 	"io"
+	"os"
 )
 
 var (
@@ -69,13 +70,17 @@ type Persistence interface {
 
 	OpenSnapshot(metadata *pb.SnapshotMetadata) (Snapshot, error)
 
-	NewSnapshot(metadata *pb.SnapshotMetadata) (SnapshotWriter, error)
+	CreateSnapshot(metadata *pb.SnapshotMetadata) (SnapshotWriter, error)
 }
 
 type Snapshot interface {
+	io.Closer
+
 	Metadata() *pb.SnapshotMetadata
 
-	Data() []byte
+	ReadAll() ([]byte, error)
+
+	Reader() io.Reader
 }
 
 type SnapshotWriter interface {
@@ -86,20 +91,35 @@ type SnapshotWriter interface {
 }
 
 type snapshot struct {
-	metadata *pb.SnapshotMetadata
-	data     []byte
+	metadata   *pb.SnapshotMetadata
+	data       []byte
+	lazyReader io.Reader
 }
 
 func (s *snapshot) Metadata() *pb.SnapshotMetadata {
 	return s.metadata
 }
 
-func (s *snapshot) Data() []byte {
-	return s.data
+func (s *snapshot) ReadAll() ([]byte, error) {
+	return s.data, nil
 }
 
-func NewSnapshot(metadata *pb.SnapshotMetadata, data []byte) Snapshot {
-	return &snapshot{metadata, data}
+func (s *snapshot) Reader() io.Reader {
+	if s.lazyReader == nil {
+		s.lazyReader = bytes.NewReader(s.data)
+	}
+	return s.lazyReader
+}
+
+func (s *snapshot) Close() error {
+	return nil
+}
+
+func NewMemorySnapshot(metadata *pb.SnapshotMetadata, data []byte) Snapshot {
+	return &snapshot{
+		metadata: metadata,
+		data:     data,
+	}
 }
 
 func MemoryPersistence() Persistence {
@@ -112,127 +132,127 @@ type memoryPersistence struct {
 	snapshot Snapshot
 }
 
-func (m *memoryPersistence) RetrieveState() (*pb.PersistedState, error) {
-	return m.state, nil
+func (w *memoryPersistence) RetrieveState() (*pb.PersistedState, error) {
+	return w.state, nil
 }
 
-func (m *memoryPersistence) SaveState(state *pb.PersistedState) error {
-	m.state = state
+func (w *memoryPersistence) SaveState(state *pb.PersistedState) error {
+	w.state = state
 	return nil
 }
 
-func (m *memoryPersistence) Append(state *pb.PersistedState, entries []*pb.LogEntry) (int64, error) {
-	m.state = state
-	nextIndex := len(m.log)
+func (w *memoryPersistence) Append(state *pb.PersistedState, entries []*pb.LogEntry) (int64, error) {
+	w.state = state
+	nextIndex := len(w.log)
 	for _, entry := range entries {
 		entry.Index = int64(nextIndex)
 		nextIndex++
 	}
-	m.log = append(m.log, entries...)
+	w.log = append(w.log, entries...)
 	return int64(nextIndex), nil
 }
 
-func (m *memoryPersistence) TruncateEntriesFrom(index int64) error {
-	m.log = m.log[:index]
+func (w *memoryPersistence) TruncateEntriesFrom(index int64) error {
+	w.log = w.log[:index]
 	return nil
 }
 
-func (m *memoryPersistence) TruncateEntriesTo(index int64) error {
-	m.log = m.log[index+1:]
+func (w *memoryPersistence) TruncateEntriesTo(index int64) error {
+	w.log = w.log[index+1:]
 	return nil
 }
 
-func (m *memoryPersistence) EntryCount() int64 {
-	return int64(len(m.log))
+func (w *memoryPersistence) EntryCount() int64 {
+	return int64(len(w.log))
 }
 
-func (m *memoryPersistence) GetEntry(index int64) (*pb.LogEntry, error) {
-	if index >= m.EntryCount() {
-		return nil, IndexOutOfRangeWithCount(index, m.EntryCount())
+func (w *memoryPersistence) GetEntry(index int64) (*pb.LogEntry, error) {
+	if index >= w.EntryCount() {
+		return nil, IndexOutOfRangeWithCount(index, w.EntryCount())
 	}
-	return m.log[index], nil
+	return w.log[index], nil
 }
 
-func (m *memoryPersistence) GetEntryTerm(index int64) (int64, error) {
-	e, err := m.GetEntry(index)
+func (w *memoryPersistence) GetEntryTerm(index int64) (int64, error) {
+	e, err := w.GetEntry(index)
 	if err != nil {
 		return 0, err
 	}
 	return e.Term, nil
 }
 
-func (m *memoryPersistence) GetEntriesFrom(index int64) ([]*pb.LogEntry, error) {
-	if index >= m.EntryCount() {
-		panic(IndexOutOfRangeWithCount(index, m.EntryCount()))
+func (w *memoryPersistence) GetEntriesFrom(index int64) ([]*pb.LogEntry, error) {
+	if index >= w.EntryCount() {
+		panic(IndexOutOfRangeWithCount(index, w.EntryCount()))
 	}
-	return m.log[index:], nil
+	return w.log[index:], nil
 }
 
-func (m *memoryPersistence) GetEntries(from, to int64) ([]*pb.LogEntry, error) {
-	firstIndex, _ := m.FirstEntryIndex()
+func (w *memoryPersistence) GetEntries(from, to int64) ([]*pb.LogEntry, error) {
+	firstIndex, _ := w.FirstEntryIndex()
 	if from < firstIndex {
 		return nil, IndexOutOfRange(firstIndex)
 	}
 
-	lastIndex, _ := m.LastEntryIndex()
+	lastIndex, _ := w.LastEntryIndex()
 	if to > lastIndex {
 		return nil, IndexOutOfRange(firstIndex)
 	}
 
-	return m.log[from:to], nil
+	return w.log[from:to], nil
 }
 
-func (m *memoryPersistence) headEntry() *pb.LogEntry {
-	if len(m.log) == 0 {
+func (w *memoryPersistence) headEntry() *pb.LogEntry {
+	if len(w.log) == 0 {
 		return nil
 	}
-	return m.log[0]
+	return w.log[0]
 }
 
-func (m *memoryPersistence) tailEntry() *pb.LogEntry {
-	lastIndex := len(m.log) - 1
+func (w *memoryPersistence) tailEntry() *pb.LogEntry {
+	lastIndex := len(w.log) - 1
 	if lastIndex < 0 {
 		return nil
 	}
-	return m.log[lastIndex]
+	return w.log[lastIndex]
 }
 
-func (m *memoryPersistence) FirstEntryIndex() (int64, error) {
-	entry := m.headEntry()
+func (w *memoryPersistence) FirstEntryIndex() (int64, error) {
+	entry := w.headEntry()
 	if entry == nil {
 		return -1, nil
 	}
 	return entry.Index, nil
 }
 
-func (m *memoryPersistence) LastEntryIndex() (int64, error) {
-	entry := m.tailEntry()
+func (w *memoryPersistence) LastEntryIndex() (int64, error) {
+	entry := w.tailEntry()
 	if entry == nil {
 		return -1, nil
 	}
 	return entry.Index, nil
 }
 
-func (m *memoryPersistence) LastSnapshotMetadata() (*pb.SnapshotMetadata, error) {
-	if m.snapshot == nil {
+func (w *memoryPersistence) LastSnapshotMetadata() (*pb.SnapshotMetadata, error) {
+	if w.snapshot == nil {
 		return nil, nil
 	}
-	return m.snapshot.Metadata(), nil
+	return w.snapshot.Metadata(), nil
 }
 
-func (m *memoryPersistence) OpenSnapshot(metadata *pb.SnapshotMetadata) (Snapshot, error) {
-	if m.snapshot == nil {
+func (w *memoryPersistence) OpenSnapshot(metadata *pb.SnapshotMetadata) (Snapshot, error) {
+	if w.snapshot == nil {
 		return nil, ErrNoSuchSnapshot
 	}
-	if metadata.LastAppliedIndex != m.snapshot.Metadata().LastAppliedIndex ||
-		metadata.LastAppliedTerm != m.snapshot.Metadata().LastAppliedTerm {
+	if metadata.LastAppliedIndex != w.snapshot.Metadata().LastAppliedIndex ||
+		metadata.LastAppliedTerm != w.snapshot.Metadata().LastAppliedTerm {
 		return nil, ErrNoSuchSnapshot
 	}
-	return m.snapshot, nil
+	return w.snapshot, nil
 }
 
-func (m *memoryPersistence) NewSnapshot(metadata *pb.SnapshotMetadata) (SnapshotWriter, error) {
-	return &memorySnapshotWriter{m: m, metadata: metadata, buffer: &bytes.Buffer{}}, nil
+func (w *memoryPersistence) CreateSnapshot(metadata *pb.SnapshotMetadata) (SnapshotWriter, error) {
+	return &memorySnapshotWriter{m: w, metadata: metadata, buffer: &bytes.Buffer{}}, nil
 }
 
 type memorySnapshotWriter struct {
@@ -265,7 +285,7 @@ func (w *memorySnapshotWriter) Commit() (*pb.SnapshotMetadata, error) {
 	}
 
 	w.metadata.Size = int64(w.buffer.Len())
-	snapshot := NewSnapshot(w.metadata, w.buffer.Bytes())
+	snapshot := NewMemorySnapshot(w.metadata, w.buffer.Bytes())
 	w.m.snapshot = snapshot
 	w.closed = true
 	return w.metadata, nil
@@ -281,4 +301,38 @@ func (w *memorySnapshotWriter) Close() error {
 
 func (w *memoryPersistence) Close() error {
 	return nil
+}
+
+func SnapshotFilename(metadata *pb.SnapshotMetadata) string {
+	return fmt.Sprintf("snap_%d_%d.tmp", metadata.LastAppliedIndex, metadata.LastAppliedTerm)
+}
+
+func NewFileSnapshot(metadata *pb.SnapshotMetadata, path string) (Snapshot, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	return &fileSnapshot{f: f, metadata: metadata}, nil
+}
+
+type fileSnapshot struct {
+	f        *os.File
+	metadata *pb.SnapshotMetadata
+	closed   bool
+}
+
+func (b *fileSnapshot) Close() error {
+	return b.f.Close()
+}
+
+func (b *fileSnapshot) Metadata() *pb.SnapshotMetadata {
+	return b.metadata
+}
+
+func (b *fileSnapshot) ReadAll() ([]byte, error) {
+	return io.ReadAll(b.f)
+}
+
+func (b *fileSnapshot) Reader() io.Reader {
+	return b.f
 }

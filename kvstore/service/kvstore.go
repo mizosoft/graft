@@ -3,6 +3,7 @@ package service
 import (
 	"bytes"
 	"encoding/gob"
+	"github.com/mizosoft/graft"
 	"github.com/mizosoft/graft/infra/server"
 	kvstore2 "github.com/mizosoft/graft/kvstore2/api"
 	"go.uber.org/zap"
@@ -56,18 +57,19 @@ func (s *kvstore) Apply(command *server.Command) any {
 	}
 }
 
-func (s *kvstore) Restore(snapshot []byte) {
+func (s *kvstore) Restore(snapshot graft.Snapshot) error {
 	s.mut.Lock()
 	defer s.mut.Unlock()
 
 	var mp map[string]string
-	decoder := gob.NewDecoder(bytes.NewReader(snapshot))
+	decoder := gob.NewDecoder(snapshot.Reader())
 	err := decoder.Decode(&mp)
 	if err != nil {
-		panic(err)
+		return err
 	}
 	s.redundantOperations = 0
 	s.data = mp
+	return nil
 }
 
 func (s *kvstore) ShouldSnapshot() bool {
