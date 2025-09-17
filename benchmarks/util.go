@@ -1,13 +1,14 @@
 package benchmarks
 
 import (
+	"testing"
+	"time"
+
 	"github.com/mizosoft/graft"
 	"github.com/mizosoft/graft/infra/server"
 	"github.com/mizosoft/graft/kvstore2/client"
 	"github.com/mizosoft/graft/kvstore2/service"
 	"go.uber.org/zap"
-	"testing"
-	"time"
 )
 
 func newClusterClient(b *testing.B, nodeCount int, batchInterval time.Duration) (*server.Cluster[*service.KvService], *client.KvClient) {

@@ -2,10 +2,11 @@ package benchmarks
 
 import (
 	"fmt"
-	"github.com/edsrzf/mmap-go"
 	"math/rand"
 	"os"
 	"testing"
+
+	"github.com/edsrzf/mmap-go"
 )
 
 func BenchmarkWriteWithFsync(b *testing.B) {

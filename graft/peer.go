@@ -1,9 +1,10 @@
 package graft
 
 import (
-	"go.uber.org/zap"
 	"sync"
 	"time"
+
+	"go.uber.org/zap"
 
 	"github.com/mizosoft/graft/pb"
 	"google.golang.org/grpc"

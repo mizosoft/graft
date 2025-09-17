@@ -3,11 +3,12 @@ package main
 import (
 	"bufio"
 	"flag"
+	"os"
+	"strings"
+
 	"github.com/mizosoft/graft"
 	"github.com/mizosoft/graft/msgq/service"
 	"go.uber.org/zap"
-	"os"
-	"strings"
 )
 
 func main() {

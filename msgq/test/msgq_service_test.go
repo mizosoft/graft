@@ -2,14 +2,15 @@ package test
 
 import (
 	"fmt"
+	"strconv"
+	"testing"
+
 	"github.com/mizosoft/graft"
 	"github.com/mizosoft/graft/infra/server"
 	"github.com/mizosoft/graft/msgq/client"
 	"github.com/mizosoft/graft/msgq/service"
 	"go.uber.org/zap"
 	"gotest.tools/v3/assert"
-	"strconv"
-	"testing"
 )
 
 func TestMsgqServiceEnqueueDequeAutoAck(t *testing.T) {

@@ -4,9 +4,10 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"github.com/mizosoft/graft/pb"
 	"io"
 	"os"
+
+	"github.com/mizosoft/graft/pb"
 )
 
 var (

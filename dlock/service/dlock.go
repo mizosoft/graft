@@ -3,13 +3,14 @@ package service
 import (
 	"bytes"
 	"encoding/gob"
+	"sync"
+	"sync/atomic"
+	"time"
+
 	"github.com/mizosoft/graft"
 	dlock2 "github.com/mizosoft/graft/dlock/api"
 	"github.com/mizosoft/graft/infra/server"
 	"go.uber.org/zap"
-	"sync"
-	"sync/atomic"
-	"time"
 )
 
 type CommandType int

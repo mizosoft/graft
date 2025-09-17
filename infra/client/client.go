@@ -6,13 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/mizosoft/graft"
-	"github.com/mizosoft/graft/infra/api"
 	"io"
 	"net/http"
 	"net/url"
 	"sync"
 	"time"
+
+	"github.com/mizosoft/graft"
+	"github.com/mizosoft/graft/infra/api"
 )
 
 type Client struct {

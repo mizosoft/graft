@@ -2,6 +2,11 @@ package test
 
 import (
 	"fmt"
+	"math/rand"
+	"sync"
+	"testing"
+	"time"
+
 	"github.com/mizosoft/graft"
 	"github.com/mizosoft/graft/dlock/client"
 	"github.com/mizosoft/graft/dlock/service"
@@ -9,10 +14,6 @@ import (
 	"github.com/mizosoft/graft/infra/server"
 	"go.uber.org/zap"
 	"gotest.tools/v3/assert"
-	"math/rand"
-	"sync"
-	"testing"
-	"time"
 )
 
 func TestDlockServiceLockWithExpiry(t *testing.T) {

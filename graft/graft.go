@@ -4,13 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"go.uber.org/zap"
 	"io"
 	"log"
 	"net"
 	"slices"
 	"sync"
 	"time"
+
+	"go.uber.org/zap"
 
 	"github.com/mizosoft/graft/pb"
 	"google.golang.org/grpc"

@@ -2,14 +2,15 @@ package graft
 
 import (
 	"fmt"
-	"github.com/mizosoft/graft/pb"
-	"google.golang.org/protobuf/proto"
 	"math/rand"
 	"os"
 	"path"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/mizosoft/graft/pb"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/mizosoft/graft/testutil"
 	"gotest.tools/v3/assert"

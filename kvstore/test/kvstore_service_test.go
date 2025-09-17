@@ -2,6 +2,8 @@ package test
 
 import (
 	"fmt"
+	"testing"
+
 	"github.com/mizosoft/graft"
 	"github.com/mizosoft/graft/infra/server"
 	"github.com/mizosoft/graft/kvstore2/client"
@@ -9,7 +11,6 @@ import (
 	"github.com/mizosoft/graft/testutil"
 	"go.uber.org/zap"
 	"gotest.tools/v3/assert"
-	"testing"
 )
 
 func TestKvServicePut(t *testing.T) {

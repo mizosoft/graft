@@ -2,11 +2,12 @@ package client
 
 import (
 	"errors"
-	"github.com/mizosoft/graft/dlock/api"
-	"github.com/mizosoft/graft/infra/client"
 	"math"
 	"math/rand"
 	"time"
+
+	"github.com/mizosoft/graft/dlock/api"
+	"github.com/mizosoft/graft/infra/client"
 )
 
 type DlockClient struct {

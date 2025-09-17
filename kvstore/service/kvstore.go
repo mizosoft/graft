@@ -3,12 +3,13 @@ package service
 import (
 	"bytes"
 	"encoding/gob"
+	"sync"
+	"sync/atomic"
+
 	"github.com/mizosoft/graft"
 	"github.com/mizosoft/graft/infra/server"
 	kvstore2 "github.com/mizosoft/graft/kvstore2/api"
 	"go.uber.org/zap"
-	"sync"
-	"sync/atomic"
 )
 
 type CommandType int

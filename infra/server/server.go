@@ -6,15 +6,16 @@ import (
 	"encoding/gob"
 	"encoding/json"
 	"errors"
+	"io"
+	"net/http"
+	"sync/atomic"
+	"time"
+
 	"github.com/google/uuid"
 	"github.com/mizosoft/graft"
 	"github.com/mizosoft/graft/infra/api"
 	"github.com/mizosoft/graft/pb"
 	"go.uber.org/zap"
-	"io"
-	"net/http"
-	"sync/atomic"
-	"time"
 )
 
 type Command struct {

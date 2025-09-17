@@ -2,10 +2,11 @@ package benchmarks
 
 import (
 	"fmt"
-	"github.com/mizosoft/graft"
-	"github.com/mizosoft/graft/pb"
 	"math/rand"
 	"testing"
+
+	"github.com/mizosoft/graft"
+	"github.com/mizosoft/graft/pb"
 )
 
 //func BenchmarkWalPersistence(b *testing.B) {

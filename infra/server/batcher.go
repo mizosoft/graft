@@ -1,9 +1,10 @@
 package server
 
 import (
-	"github.com/mizosoft/graft"
 	"sync"
 	"time"
+
+	"github.com/mizosoft/graft"
 )
 
 type batcher struct {

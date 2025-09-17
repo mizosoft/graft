@@ -5,15 +5,16 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"github.com/edsrzf/mmap-go"
-	"github.com/mizosoft/graft/pb"
-	"go.uber.org/zap"
-	"google.golang.org/protobuf/proto"
 	"hash/crc32"
 	"io"
 	"os"
 	"path"
 	"sort"
+
+	"github.com/edsrzf/mmap-go"
+	"github.com/mizosoft/graft/pb"
+	"go.uber.org/zap"
+	"google.golang.org/protobuf/proto"
 )
 
 const (

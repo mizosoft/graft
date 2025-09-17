@@ -3,13 +3,14 @@ package service
 import (
 	"encoding/gob"
 	"fmt"
+	"net/http"
+	"time"
+
 	"github.com/google/uuid"
 	"github.com/mizosoft/graft"
 	"github.com/mizosoft/graft/infra/server"
 	"github.com/mizosoft/graft/msgq/api"
 	"go.uber.org/zap"
-	"net/http"
-	"time"
 )
 
 type MsgqService struct {
