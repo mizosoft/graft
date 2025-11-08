@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"slices"
 	"sync"
@@ -24,9 +23,9 @@ const UnknownLeader = "UNKNOWN"
 
 type state int
 
-// TODO add stateUninitialized
 const (
-	stateFollower state = iota
+	stateUninitialized state = iota
+	stateFollower
 	stateCandidate
 	stateLeader
 	stateDead
@@ -38,19 +37,13 @@ var (
 )
 
 func (s state) String() string {
-	switch s {
-	case stateFollower:
-		return "Follower"
-	case stateCandidate:
-		return "Candidate"
-	case stateLeader:
-		return "Leader"
-	case stateDead:
-		return "Dead"
-	default:
-		log.Panicf("Unknown state: %d", int(s))
-		return "" // Unreachable
-	}
+	return [...]string{
+		stateUninitialized: "New",
+		stateFollower:      "Follower",
+		stateCandidate:     "Candidate",
+		stateLeader:        "Leader",
+		stateDead:          "Dead",
+	}[s]
 }
 
 // TODO make this as default, allow users to override.
@@ -72,24 +65,37 @@ type Graft struct {
 	_ uncopyable
 
 	raftState
-	address                   string
-	leaderId                  string
-	peers                     map[string]*peer
-	electionTimer             *periodicTimer
-	heartbeatTimer            *periodicTimer
-	server                    server
-	grpcServer                *grpc.Server
-	mut                       sync.Mutex
-	applyChan                 chan any
-	electionChan              chan int64
-	heartbeatChan             chan struct{}
-	broadcastChans            map[string]*broadcastChannel
-	initialized               bool
-	latestConfigUpdate        *pb.ConfigUpdate // Currently active update entry. Might not have been committed yet.
-	lastCommittedConfigUpdate *pb.ConfigUpdate // Last update committed to raft log.
-	lastAppliedConfigUpdate   *pb.ConfigUpdate // Last update applied to the state machine.
-	latestConfigUpdateIndex   int64            // -1 if no update has been applied (using static configuration).
-	leaving                   bool             // Set to true when a leader is not part of the new configuration and should be leaving when the configuration is committed.
+	address        string
+	leaderId       string
+	peers          map[string]*peer
+	electionTimer  *periodicTimer
+	heartbeatTimer *periodicTimer
+	server         server
+	grpcServer     *grpc.Server
+	mut            sync.Mutex
+	applyChan      chan any
+	electionChan   chan int64
+	heartbeatChan  chan struct{}
+	broadcastChans map[string]*broadcastChannel
+
+	// The currently active config update. Might not have been committed yet.
+	lastConfigUpdate *pb.ConfigUpdate
+
+	// The last config update committed to the raft log.
+	lastCommittedConfigUpdate *pb.ConfigUpdate
+
+	// The last config update applied to the state machine.
+	lastAppliedConfigUpdate *pb.ConfigUpdate
+
+	// The config update to initialize this node with. It is not appended to the log.
+	startingConfigUpdate *pb.ConfigUpdate
+
+	// Index of lastConfigUpdate in the log. -1 if no update has been applied, or a synthetic one is applied with startingConfigUpdate.
+	lastConfigUpdateIndex int64
+
+	// Whether the current node is a leader and is not part of the new configuration and should leave when the configuration is committed.
+	leaving bool
+
 	// TODO we need some sort of a timeout for this.
 	snapshotWriter     SnapshotWriter // Writer for the currently streaming snapshot.
 	lastHeartbeatTime  time.Time
@@ -111,23 +117,6 @@ func (g *Graft) String() string {
 		g.state, g.currentTerm, g.votedFor, g.commitIndex, g.lastApplied, g.leaderId, g.Persistence.EntryCount())
 }
 
-type Config struct {
-	Id                        string
-	Addresses                 map[string]string
-	ElectionTimeoutLowMillis  int
-	ElectionTimeoutHighMillis int
-	HeartbeatMillis           int
-	Persistence               Persistence
-	Logger                    *zap.Logger
-}
-
-func (c *Config) LoggerOrNoop() *zap.Logger {
-	if c.Logger != nil {
-		return c.Logger
-	}
-	return zap.NewNop()
-}
-
 func New(config Config) (*Graft, error) {
 	if config.Id == UnknownLeader {
 		return nil, fmt.Errorf("sever ID cannot be %s", UnknownLeader)
@@ -136,19 +125,19 @@ func New(config Config) (*Graft, error) {
 	g := &Graft{
 		Id: config.Id,
 		raftState: raftState{
-			state:       stateFollower,
-			currentTerm: 0,
+			state:       stateUninitialized,
+			currentTerm: -1,
 			votedFor:    UnknownLeader,
 			commitIndex: -1,
 			lastApplied: -1,
 		},
-		leaderId:                UnknownLeader,
-		address:                 config.Addresses[config.Id],
-		latestConfigUpdateIndex: -1,
-		minElectionTimeout:      time.Duration(config.ElectionTimeoutLowMillis) * time.Millisecond,
+		leaderId:              UnknownLeader,
+		address:               config.Addresses[config.Id],
+		lastConfigUpdateIndex: -1,
+		minElectionTimeout:    time.Duration(config.ElectionTimeoutMillis.Low) * time.Millisecond,
 		electionTimer: newRandomizedTimer(
-			time.Duration(config.ElectionTimeoutLowMillis)*time.Millisecond,
-			time.Duration(config.ElectionTimeoutHighMillis)*time.Millisecond),
+			time.Duration(config.ElectionTimeoutMillis.Low)*time.Millisecond,
+			time.Duration(config.ElectionTimeoutMillis.High)*time.Millisecond),
 		heartbeatTimer:    newTimer(time.Duration(config.HeartbeatMillis) * time.Millisecond),
 		server:            server{},
 		applyChan:         make(chan any, 1024), // Buffer the channel so that a slow client doesn't immediately block workflow.
@@ -156,8 +145,11 @@ func New(config Config) (*Graft, error) {
 		heartbeatChan:     make(chan struct{}),
 		broadcastChans:    make(map[string]*broadcastChannel),
 		peers:             make(map[string]*peer),
-		lastHeartbeatTime: time.Now().Add(-time.Duration(config.ElectionTimeoutLowMillis) * time.Millisecond),
-		logger:            config.LoggerOrNoop().With(zap.String("name", "Graft"), zap.String("id", config.Id)).Sugar(),
+		lastHeartbeatTime: time.Now().Add(-time.Duration(config.ElectionTimeoutMillis.Low) * time.Millisecond), // Start with an expiring heartbeat.
+		startingConfigUpdate: &pb.ConfigUpdate{
+			Phase: pb.ConfigUpdate_APPLIED,
+		},
+		logger: config.LoggerOrNoop().With(zap.String("name", "Graft"), zap.String("id", config.Id)).Sugar(),
 
 		Persistence: config.Persistence,
 		Restore: func(snapshot Snapshot) error {
@@ -174,16 +166,12 @@ func New(config Config) (*Graft, error) {
 		},
 	}
 
-	initialConfigUpdate := &pb.ConfigUpdate{
-		Phase: pb.ConfigUpdate_APPLIED,
-	}
 	for id, addr := range config.Addresses {
-		initialConfigUpdate.New = append(initialConfigUpdate.New, &pb.NodeConfig{
+		g.startingConfigUpdate.New = append(g.startingConfigUpdate.New, &pb.NodeConfig{
 			Id:      id,
 			Address: addr,
 		})
 	}
-	g.unguardedInitConfigUpdate(initialConfigUpdate, -1)
 
 	return g, nil
 }
@@ -194,35 +182,15 @@ func (g *Graft) GetCurrentTerm() int64 {
 	return g.currentTerm
 }
 
-func (g *Graft) ListenAndServe() error {
-	if err := g.Initialize(); err != nil {
-		return err
-	}
-
-	listener, err := net.Listen("tcp", g.address)
-	if err != nil {
-		return err
-	}
-
-	g.logger.Infof("Listening on %v", listener.Addr())
-
-	g.grpcServer = grpc.NewServer(
-		grpc.UnaryInterceptor(
-			func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (resp any, err error) {
-				return handler(context.WithValue(ctx, graftKey{}, g), req)
-			}))
-	pb.RegisterRaftServer(g.grpcServer, &g.server)
-	return g.grpcServer.Serve(listener)
-}
-
 func (g *Graft) Initialize() error {
 	g.mut.Lock()
 	defer g.mut.Unlock()
 
-	if g.initialized {
+	if g.state != stateUninitialized {
 		return nil
 	}
-	g.initialized = true
+
+	g.unguardedInitConfigUpdate(g.startingConfigUpdate, -1)
 
 	go g.applyWorker()
 	go g.electionWorker()
@@ -295,6 +263,27 @@ func (g *Graft) Initialize() error {
 	return nil
 }
 
+func (g *Graft) ListenAndServe() error {
+	if err := g.Initialize(); err != nil {
+		return err
+	}
+
+	listener, err := net.Listen("tcp", g.address)
+	if err != nil {
+		return err
+	}
+
+	g.logger.Infof("Listening on %v", listener.Addr())
+
+	g.grpcServer = grpc.NewServer(
+		grpc.UnaryInterceptor(
+			func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (resp any, err error) {
+				return handler(context.WithValue(ctx, graftKey, g), req)
+			}))
+	pb.RegisterRaftServer(g.grpcServer, &g.server)
+	return g.grpcServer.Serve(listener)
+}
+
 func (g *Graft) Close() {
 	g.mut.Lock()
 	defer g.mut.Unlock()
@@ -324,7 +313,7 @@ func (g *Graft) Close() {
 }
 
 func (g *Graft) unguardedCountMajority(condition func(*peer) bool) bool {
-	switch g.latestConfigUpdate.Phase {
+	switch g.lastConfigUpdate.Phase {
 	case pb.ConfigUpdate_LEARNING:
 		satisfiedCount := 1 // Count self.
 		learnerCount := 0
@@ -342,21 +331,21 @@ func (g *Graft) unguardedCountMajority(condition func(*peer) bool) bool {
 	case pb.ConfigUpdate_JOINT:
 		// Make sure we satisfy the two majorities.
 
-		count1 := len(g.latestConfigUpdate.Old)
-		count2 := len(g.latestConfigUpdate.New)
+		count1 := len(g.lastConfigUpdate.Old)
+		count2 := len(g.lastConfigUpdate.New)
 
 		satisfiedCount1 := 1 // Count self.
 		satisfiedCount2 := 0
-		if in(g.Id, g.latestConfigUpdate.New) {
+		if in(g.Id, g.lastConfigUpdate.New) {
 			satisfiedCount2++
 		}
 
 		for _, p := range g.peers {
 			if condition(p) {
-				if in(p.id, g.latestConfigUpdate.Old) {
+				if in(p.id, g.lastConfigUpdate.Old) {
 					satisfiedCount1++
 				}
-				if in(p.id, g.latestConfigUpdate.New) && condition(p) {
+				if in(p.id, g.lastConfigUpdate.New) && condition(p) {
 					satisfiedCount2++
 				}
 
@@ -368,7 +357,7 @@ func (g *Graft) unguardedCountMajority(condition func(*peer) bool) bool {
 	case pb.ConfigUpdate_APPLIED:
 		count := len(g.peers)
 		satisfiedCount := 0
-		if in(g.Id, g.latestConfigUpdate.New) {
+		if in(g.Id, g.lastConfigUpdate.New) {
 			count++
 			satisfiedCount++
 		}
@@ -520,6 +509,8 @@ func (g *Graft) runElection(timeoutTerm int64) {
 		return
 	case stateCandidate, stateFollower:
 		// Continue election.
+	case stateUninitialized:
+		panic("Running elections when not yet initialized")
 	}
 
 	g.unguardedTransitionToCandidate()
@@ -974,18 +965,18 @@ func (g *Graft) unguardedFlushCommittedEntries() {
 }
 
 func (g *Graft) unguardedUpdateCommitIndex(newCommitIndex int64) {
-	if g.latestConfigUpdateIndex >= 0 && newCommitIndex >= g.latestConfigUpdateIndex {
-		g.lastCommittedConfigUpdate = g.latestConfigUpdate
+	if g.lastConfigUpdateIndex >= 0 && newCommitIndex >= g.lastConfigUpdateIndex {
+		g.lastCommittedConfigUpdate = g.lastConfigUpdate
 	}
 	g.commitIndex = newCommitIndex
 }
 
 func (g *Graft) unguardedContinueConfigUpdate() {
-	if g.latestConfigUpdateIndex < 0 || g.commitIndex < g.latestConfigUpdateIndex {
+	if g.lastConfigUpdateIndex < 0 || g.commitIndex < g.lastConfigUpdateIndex {
 		return
 	}
 
-	switch g.latestConfigUpdate.Phase {
+	switch g.lastConfigUpdate.Phase {
 	case pb.ConfigUpdate_LEARNING:
 		hasLearners := false
 		for _, p := range g.peers {
@@ -996,14 +987,14 @@ func (g *Graft) unguardedContinueConfigUpdate() {
 		}
 
 		if !hasLearners {
-			update := cloneMsg(g.latestConfigUpdate)
+			update := cloneMsg(g.lastConfigUpdate)
 			update.Phase = pb.ConfigUpdate_JOINT
 			if err := g.unguardedAppendConfigUpdate(update); err != nil {
 				panic(err)
 			}
 		}
 	case pb.ConfigUpdate_JOINT:
-		update := cloneMsg(g.latestConfigUpdate)
+		update := cloneMsg(g.lastConfigUpdate)
 		update.Phase = pb.ConfigUpdate_APPLIED
 		if err := g.unguardedAppendConfigUpdate(update); err != nil {
 			panic(err)
@@ -1370,8 +1361,8 @@ func (g *Graft) unguardedAppendConfigUpdate(update *pb.ConfigUpdate) error {
 func (g *Graft) unguardedInitConfigUpdate(update *pb.ConfigUpdate, updateIndex int64) {
 	g.logger.Info("Applying ConfigUpdate", zap.Any("update", update), zap.Stringer("state", g))
 
-	g.latestConfigUpdate = update
-	g.latestConfigUpdateIndex = updateIndex
+	g.lastConfigUpdate = update
+	g.lastConfigUpdateIndex = updateIndex
 
 	// If the leader is not in the new configuration, make it step down when the configuration is committed.
 	if g.state == stateLeader && update.Phase == pb.ConfigUpdate_APPLIED && !in(g.Id, update.New) {
@@ -1428,7 +1419,7 @@ func (g *Graft) unguardedInitConfigUpdate(update *pb.ConfigUpdate, updateIndex i
 			delete(g.broadcastChans, p.id)
 		} else {
 			newBroadcastChans[p.id] = newBroadcastChannel()
-			if g.initialized {
+			if g.state != stateUninitialized {
 				go g.broadcastWorker(p, newBroadcastChans[p.id])
 			}
 		}
@@ -1526,7 +1517,7 @@ func (g *Graft) ConfigUpdate(id string, addedNodes map[string]string, removedNod
 
 	update := &pb.ConfigUpdate{
 		Id:  id,
-		Old: g.latestConfigUpdate.New,
+		Old: g.lastConfigUpdate.New,
 	}
 
 	for id, address := range existingNodes {
@@ -1573,7 +1564,7 @@ func (g *Graft) Config() map[string]string {
 	defer g.mut.Unlock()
 
 	config := make(map[string]string)
-	for _, nodeConfig := range g.latestConfigUpdate.New {
+	for _, nodeConfig := range g.lastConfigUpdate.New {
 		config[nodeConfig.Id] = nodeConfig.Address
 	}
 	return config

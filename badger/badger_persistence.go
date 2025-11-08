@@ -4,13 +4,14 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"os"
+	"path"
+
 	"github.com/dgraph-io/badger/v4"
 	"github.com/mizosoft/graft"
 	"github.com/mizosoft/graft/pb"
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
-	"os"
-	"path"
 )
 
 const (

@@ -186,11 +186,10 @@ func TestKvServiceFailOver(t *testing.T) {
 func NewClusterClient(t *testing.T, nodeCount int) (*server.Cluster[*service.KvService], *client.KvClient) {
 	cluster, err := server.StartLocalCluster[*service.KvService](
 		server.ClusterConfig[*service.KvService]{
-			Dir:                       t.TempDir(),
-			NodeCount:                 nodeCount,
-			HeartbeatMillis:           50,
-			ElectionTimeoutLowMillis:  150,
-			ElectionTimeoutHighMillis: 300,
+			Dir:                   t.TempDir(),
+			NodeCount:             nodeCount,
+			HeartbeatMillis:       50,
+			ElectionTimeoutMillis: graft.IntRange{Low: 150, High: 300},
 			ServiceFactory: func(address string, config graft.Config) (*service.KvService, error) {
 				return service.NewKvService(address, 0, config)
 			},

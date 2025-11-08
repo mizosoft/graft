@@ -11,10 +11,10 @@ type server struct {
 	pb.UnimplementedRaftServer
 }
 
-type graftKey struct{}
+var graftKey = struct{}{}
 
 func (s *server) RequestVote(ctx context.Context, request *pb.RequestVoteRequest) (*pb.RequestVoteResponse, error) {
-	g, ok := ctx.Value(graftKey{}).(*Graft)
+	g, ok := ctx.Value(graftKey).(*Graft)
 	if !ok {
 		panic("unable to find Graft instance in context")
 	}
@@ -22,7 +22,7 @@ func (s *server) RequestVote(ctx context.Context, request *pb.RequestVoteRequest
 }
 
 func (s *server) AppendEntries(ctx context.Context, request *pb.AppendEntriesRequest) (*pb.AppendEntriesResponse, error) {
-	g, ok := ctx.Value(graftKey{}).(*Graft)
+	g, ok := ctx.Value(graftKey).(*Graft)
 	if !ok {
 		panic("unable to find Graft instance in context")
 	}
@@ -30,7 +30,7 @@ func (s *server) AppendEntries(ctx context.Context, request *pb.AppendEntriesReq
 }
 
 func (s *server) InstallSnapshot(stream grpc.ClientStreamingServer[pb.SnapshotRequest, pb.SnapshotResponse]) error {
-	g, ok := stream.Context().Value(graftKey{}).(*Graft)
+	g, ok := stream.Context().Value(graftKey).(*Graft)
 	if !ok {
 		panic("unable to find Graft instance in context")
 	}

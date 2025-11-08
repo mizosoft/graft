@@ -90,11 +90,10 @@ func TestMsgqServiceFailover(t *testing.T) {
 func NewClusterClient(t *testing.T, nodeCount int) (*server.Cluster[*service.MsgqService], *client.MsgqClient) {
 	cluster, err := server.StartLocalCluster[*service.MsgqService](
 		server.ClusterConfig[*service.MsgqService]{
-			Dir:                       t.TempDir(),
-			NodeCount:                 nodeCount,
-			HeartbeatMillis:           50,
-			ElectionTimeoutLowMillis:  150,
-			ElectionTimeoutHighMillis: 300,
+			Dir:                   t.TempDir(),
+			NodeCount:             nodeCount,
+			HeartbeatMillis:       50,
+			ElectionTimeoutMillis: graft.IntRange{Low: 150, High: 300},
 			ServiceFactory: func(address string, config graft.Config) (*service.MsgqService, error) {
 				return service.NewMsgqService(address, 0, config)
 			},

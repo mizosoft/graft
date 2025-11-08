@@ -651,11 +651,10 @@ func NewClusterClient(t *testing.T, nodeCount int, clock infra.Clock) (*server.C
 	assert.NilError(t, err)
 	cluster, err := server.StartLocalCluster[*service.DlockService](
 		server.ClusterConfig[*service.DlockService]{
-			Dir:                       t.TempDir(),
-			NodeCount:                 nodeCount,
-			HeartbeatMillis:           50,
-			ElectionTimeoutLowMillis:  150,
-			ElectionTimeoutHighMillis: 300,
+			Dir:                   t.TempDir(),
+			NodeCount:             nodeCount,
+			HeartbeatMillis:       50,
+			ElectionTimeoutMillis: graft.IntRange{150, 300},
 			ServiceFactory: func(address string, config graft.Config) (*service.DlockService, error) {
 				return service.NewDlockService(address, 0, clock, config)
 			},

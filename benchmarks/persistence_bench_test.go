@@ -9,32 +9,6 @@ import (
 	"github.com/mizosoft/graft/pb"
 )
 
-//func BenchmarkWalPersistence(b *testing.B) {
-//	cluster, store := newClusterClientWithWalPersistence(b, 3, 0)
-//	defer cluster.Shutdown()
-//
-//	b.ResetTimer()
-//	for i := 0; ji < b.N; i++ {
-//		_, _, err := store.Put("k", "v")
-//		if err != nil {
-//			b.Fatalf("put error: %v", err)
-//		}
-//	}
-//}
-//
-//func BenchmarkBadgerPersistence(b *testing.B) {
-//	cluster, store := newClusterClient(b, 3, 0)
-//	defer cluster.Shutdown()
-//
-//	b.ResetTimer()
-//	for i := 0; i < b.N; i++ {
-//		_, _, err := store.Put("k", "v")
-//		if err != nil {
-//			b.Fatalf("put error: %v", err)
-//		}
-//	}
-//}
-
 func BenchmarkWalAppend(b *testing.B) {
 	for _, memoryMapped := range []bool{false, true} {
 		b.Run(fmt.Sprintf("memoryMapped=%t", memoryMapped), func(b *testing.B) {

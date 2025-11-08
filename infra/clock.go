@@ -8,10 +8,12 @@ type Clock interface {
 
 type systemClock struct{}
 
-func (s *systemClock) Now() time.Time {
+func (s systemClock) Now() time.Time {
 	return time.Now().UTC()
 }
 
+var sysClock systemClock
+
 func SystemClock() Clock {
-	return &systemClock{}
+	return sysClock
 }

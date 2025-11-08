@@ -70,16 +70,15 @@ func (n *node[T]) Shutdown() error {
 }
 
 type NodeConfig[T Service] struct {
-	Dir                       string
-	Id                        string
-	Address                   string
-	GraftAddresses            map[string]string
-	Logger                    *zap.Logger
-	HeartbeatMillis           int
-	ElectionTimeoutLowMillis  int
-	ElectionTimeoutHighMillis int
-	ServiceFactory            func(address string, config graft.Config) (T, error)
-	PersistenceFactory        func(dir string) (graft.Persistence, error)
+	Dir                   string
+	Id                    string
+	Address               string
+	GraftAddresses        map[string]string
+	Logger                *zap.Logger
+	HeartbeatMillis       int
+	ElectionTimeoutMillis graft.IntRange
+	ServiceFactory        func(address string, config graft.Config) (T, error)
+	PersistenceFactory    func(dir string) (graft.Persistence, error)
 }
 
 func newNode[T Service](config NodeConfig[T]) (*node[T], error) {
@@ -89,13 +88,12 @@ func newNode[T Service](config NodeConfig[T]) (*node[T], error) {
 	}
 
 	service, err := config.ServiceFactory(config.Address, graft.Config{
-		Id:                        config.Id,
-		Addresses:                 config.GraftAddresses,
-		ElectionTimeoutLowMillis:  config.ElectionTimeoutLowMillis,
-		ElectionTimeoutHighMillis: config.ElectionTimeoutHighMillis,
-		HeartbeatMillis:           config.HeartbeatMillis,
-		Persistence:               persistence,
-		Logger:                    config.Logger,
+		Id:                    config.Id,
+		Addresses:             config.GraftAddresses,
+		ElectionTimeoutMillis: config.ElectionTimeoutMillis,
+		HeartbeatMillis:       config.HeartbeatMillis,
+		Persistence:           persistence,
+		Logger:                config.Logger,
 	})
 	if err != nil {
 		return nil, err
@@ -154,14 +152,13 @@ func (c *Cluster[T]) Shutdown() {
 }
 
 type ClusterConfig[T Service] struct {
-	Dir                       string
-	NodeCount                 int
-	HeartbeatMillis           int
-	ElectionTimeoutLowMillis  int
-	ElectionTimeoutHighMillis int
-	ServiceFactory            func(address string, config graft.Config) (T, error)
-	PersistenceFactory        func(dir string) (graft.Persistence, error)
-	Logger                    *zap.Logger
+	Dir                   string
+	NodeCount             int
+	HeartbeatMillis       int
+	ElectionTimeoutMillis graft.IntRange
+	ServiceFactory        func(address string, config graft.Config) (T, error)
+	PersistenceFactory    func(dir string) (graft.Persistence, error)
+	Logger                *zap.Logger
 }
 
 func StartLocalCluster[T Service](config ClusterConfig[T]) (*Cluster[T], error) {
@@ -195,16 +192,15 @@ func StartLocalCluster[T Service](config ClusterConfig[T]) (*Cluster[T], error) 
 		}
 
 		n, err := newNode(NodeConfig[T]{
-			Dir:                       dir,
-			Id:                        id,
-			Address:                   "127.0.0.1:" + strconv.Itoa(1569+i),
-			GraftAddresses:            graftAddresses,
-			Logger:                    config.Logger,
-			HeartbeatMillis:           config.HeartbeatMillis,
-			ElectionTimeoutLowMillis:  config.ElectionTimeoutLowMillis,
-			ElectionTimeoutHighMillis: config.ElectionTimeoutHighMillis,
-			ServiceFactory:            config.ServiceFactory,
-			PersistenceFactory:        config.PersistenceFactory,
+			Dir:                   dir,
+			Id:                    id,
+			Address:               "127.0.0.1:" + strconv.Itoa(1569+i),
+			GraftAddresses:        graftAddresses,
+			Logger:                config.Logger,
+			HeartbeatMillis:       config.HeartbeatMillis,
+			ElectionTimeoutMillis: config.ElectionTimeoutMillis,
+			ServiceFactory:        config.ServiceFactory,
+			PersistenceFactory:    config.PersistenceFactory,
 		})
 		if err != nil {
 			return nil, err
