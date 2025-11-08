@@ -68,14 +68,13 @@ type Graft struct {
 	address        string
 	leaderId       string
 	peers          map[string]*peer
-	electionTimer  *periodicTimer
-	heartbeatTimer *periodicTimer
+	electionTimer  *eventTimer[int64]
+	heartbeatTimer *eventTimer[struct{}]
 	server         server
 	grpcServer     *grpc.Server
 	mut            sync.Mutex
 	applyChan      chan any
-	electionChan   chan int64
-	heartbeatChan  chan struct{}
+	deadChan       chan struct{}
 	broadcastChans map[string]*broadcastChannel
 
 	// The currently active config update. Might not have been committed yet.
@@ -135,17 +134,12 @@ func New(config Config) (*Graft, error) {
 		address:               config.Addresses[config.Id],
 		lastConfigUpdateIndex: -1,
 		minElectionTimeout:    time.Duration(config.ElectionTimeoutMillis.Low) * time.Millisecond,
-		electionTimer: newRandomizedTimer(
-			time.Duration(config.ElectionTimeoutMillis.Low)*time.Millisecond,
-			time.Duration(config.ElectionTimeoutMillis.High)*time.Millisecond),
-		heartbeatTimer:    newTimer(time.Duration(config.HeartbeatMillis) * time.Millisecond),
-		server:            server{},
-		applyChan:         make(chan any, 1024), // Buffer the channel so that a slow client doesn't immediately block workflow.
-		electionChan:      make(chan int64),
-		heartbeatChan:     make(chan struct{}),
-		broadcastChans:    make(map[string]*broadcastChannel),
-		peers:             make(map[string]*peer),
-		lastHeartbeatTime: time.Now().Add(-time.Duration(config.ElectionTimeoutMillis.Low) * time.Millisecond), // Start with an expiring heartbeat.
+		server:                server{},
+		applyChan:             make(chan any, 1024), // Buffer the channel so that a slow client doesn't immediately block workflow.
+		deadChan:              make(chan struct{}),
+		broadcastChans:        make(map[string]*broadcastChannel),
+		peers:                 make(map[string]*peer),
+		lastHeartbeatTime:     time.Now().Add(-time.Duration(config.ElectionTimeoutMillis.Low) * time.Millisecond), // Start with an expiring heartbeat.
 		startingConfigUpdate: &pb.ConfigUpdate{
 			Phase: pb.ConfigUpdate_APPLIED,
 		},
@@ -165,6 +159,16 @@ func New(config Config) (*Graft, error) {
 			return nil
 		},
 	}
+
+	g.electionTimer = newRandomizedTimer[int64](
+		time.Duration(config.ElectionTimeoutMillis.Low)*time.Millisecond,
+		time.Duration(config.ElectionTimeoutMillis.High)*time.Millisecond,
+		g.GetCurrentTerm)
+	g.heartbeatTimer = newTimer[struct{}](
+		time.Duration(config.HeartbeatMillis)*time.Millisecond,
+		func() struct{} {
+			return struct{}{}
+		})
 
 	for id, addr := range config.Addresses {
 		g.startingConfigUpdate.New = append(g.startingConfigUpdate.New, &pb.NodeConfig{
@@ -190,22 +194,6 @@ func (g *Graft) Initialize() error {
 		return nil
 	}
 
-	g.unguardedInitConfigUpdate(g.startingConfigUpdate, -1)
-
-	go g.applyWorker()
-	go g.electionWorker()
-	go g.heartbeatWorker()
-	for _, peer := range g.peers {
-		go g.broadcastWorker(peer, g.broadcastChans[peer.id])
-	}
-
-	g.electionTimer.start(func() {
-		g.electionChan <- g.GetCurrentTerm()
-	})
-	g.heartbeatTimer.start(func() {
-		g.heartbeatChan <- struct{}{}
-	})
-
 	state, err := g.Persistence.RetrieveState()
 	if err != nil {
 		return err
@@ -225,6 +213,8 @@ func (g *Graft) Initialize() error {
 	g.unguardedTransitionToFollower(state.CurrentTerm)
 	g.votedFor = state.VotedFor
 	g.commitIndex = state.CommitIndex
+
+	g.unguardedInitConfigUpdate(g.startingConfigUpdate, -1)
 
 	// Publish snapshot to applyChan if there is one.
 	metadata, err := g.Persistence.LastSnapshotMetadata()
@@ -252,14 +242,22 @@ func (g *Graft) Initialize() error {
 
 		for _, e := range entries {
 			if e.Type == pb.LogEntry_CONFIG {
-				var update *pb.ConfigUpdate
-				protoUnmarshal(e.Data, update)
-				g.unguardedInitConfigUpdate(update, e.Index)
+				var update pb.ConfigUpdate
+				protoUnmarshal(e.Data, &update)
+				g.unguardedInitConfigUpdate(&update, e.Index)
 			}
 		}
 
 		g.applyChan <- entries
 	}
+
+	go g.applyWorker()
+	go g.electionWorker()
+	go g.heartbeatWorker()
+	for _, peer := range g.peers {
+		go g.broadcastWorker(peer, g.broadcastChans[peer.id])
+	}
+
 	return nil
 }
 
@@ -293,12 +291,10 @@ func (g *Graft) Close() {
 	}
 	g.state = stateDead
 
-	g.heartbeatTimer.stop()
 	g.electionTimer.stop()
+	g.heartbeatTimer.stop()
 
 	close(g.applyChan)
-	close(g.electionChan)
-	close(g.heartbeatChan)
 	for _, ch := range g.broadcastChans {
 		ch.close()
 	}
@@ -466,7 +462,7 @@ func (g *Graft) applyCommands(commandEntries []*pb.LogEntry) {
 
 		if shouldSnapshot {
 			metadata := &pb.SnapshotMetadata{
-				LastAppliedIndex: g.lastApplied,
+				LastAppliedIndex: commandEntries[len(commandEntries)-1].Index,
 				LastAppliedTerm:  commandEntries[len(commandEntries)-1].Term,
 			}
 
@@ -474,7 +470,7 @@ func (g *Graft) applyCommands(commandEntries []*pb.LogEntry) {
 			if err != nil {
 				panic(err)
 			}
-			defer g.snapshotWriter.Close()
+			defer writer.Close()
 
 			if err := g.Snapshot(&sequentialSnapshotWriter{base: writer}); err != nil {
 				panic(err)
@@ -490,7 +486,7 @@ func (g *Graft) applyCommands(commandEntries []*pb.LogEntry) {
 }
 
 func (g *Graft) electionWorker() {
-	for timeoutTerm := range g.electionChan {
+	for timeoutTerm := range g.electionTimer.C {
 		g.runElection(timeoutTerm)
 	}
 }
@@ -585,7 +581,7 @@ func (g *Graft) runElection(timeoutTerm int64) {
 }
 
 func (g *Graft) heartbeatWorker() {
-	for range g.heartbeatChan {
+	for range g.heartbeatTimer.C {
 		g.runHeartbeat()
 	}
 }
@@ -645,28 +641,24 @@ func (g *Graft) createAppendEntriesOrSnapshotRequest(p *peer) proto.Message {
 		if err != nil {
 			panic(err)
 		}
-		if p.nextIndex > 0 && (metadata == nil || p.nextIndex <= metadata.LastAppliedIndex) {
+		if p.nextIndex > 0 && (metadata == nil || p.nextIndex > metadata.LastAppliedIndex+1) {
 			g.logger.Panicf(
-				"Invalid nextIndex: {%s}.nextIndex=%d, firstIndex=%d, lastIndex=%d, metadata=%v",
+				"Invalid nextIndex: (%s).nextIndex=%d, firstIndex=%d, lastIndex=%d, snapshotMetadata={%v}",
 				p.id, p.nextIndex, firstIndex, lastIndex, metadata)
 		}
 	}
 
-	if metadata != nil {
-		snapshot, err := g.Persistence.OpenSnapshot(metadata)
-		if err != nil {
-			panic(err)
-		}
+	if metadata != nil && p.nextIndex == metadata.LastAppliedIndex+1 {
 		return &pb.SnapshotRequest{
 			Term:     g.currentTerm,
 			LeaderId: g.Id,
-			Metadata: snapshot.Metadata(),
+			Metadata: metadata,
 			// Data, Offset & Done are filled later.
 		}
 	}
 
 	if p.nextIndex > lastIndex+1 {
-		g.logger.Panicf("Invalid nextIndex: {%s}.nextIndex=%d, lastIndex=%d", p.id, p.nextIndex, lastIndex)
+		g.logger.Panicf("Invalid nextIndex: (%s).nextIndex=%d, lastIndex=%d", p.id, p.nextIndex, lastIndex)
 	}
 
 	request := &pb.AppendEntriesRequest{
@@ -930,7 +922,7 @@ func (g *Graft) unguardedTransitionToFollower(term int64) {
 
 	g.state = stateFollower
 	g.currentTerm = term
-	g.votedFor = ""
+	g.votedFor = UnknownLeader
 	g.electionTimer.reset()
 	g.heartbeatTimer.pause() // If we were a leader.
 }
@@ -1095,7 +1087,7 @@ func (g *Graft) requestVote(request *pb.RequestVoteRequest) (*pb.RequestVoteResp
 		electionTimerIsReset = true
 	}
 
-	grantVote := (g.votedFor == "" || g.votedFor == request.CandidateId) && g.unguardedIsCandidateLogUpToDate(request)
+	grantVote := (g.votedFor == UnknownLeader || g.votedFor == request.CandidateId) && g.unguardedIsCandidateLogUpToDate(request)
 	if grantVote {
 		g.votedFor = request.CandidateId
 		if !electionTimerIsReset {

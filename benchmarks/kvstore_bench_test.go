@@ -38,7 +38,10 @@ func BenchmarkKvStorePutMultithreaded(b *testing.B) {
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			store.Put("k", "v")
+			_, _, err := store.Put("k", "v")
+			if err != nil {
+				b.Fatalf("put error: %v", err)
+			}
 		}
 	})
 }
@@ -50,7 +53,10 @@ func BenchmarkKvStorePutMultithreadedWithBatching(b *testing.B) {
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			store.Put("k", "v")
+			_, _, err := store.Put("k", "v")
+			if err != nil {
+				b.Fatalf("put error: %v", err)
+			}
 		}
 	})
 }
