@@ -662,112 +662,6 @@ func TestWalTruncateMultipleSegments(t *testing.T) {
 	}
 }
 
-func TestWalHeadEntry(t *testing.T) {
-	for _, memoryMapped := range []bool{false, true} {
-		t.Run(fmt.Sprintf("MemoryMapped=%t", memoryMapped), func(t *testing.T) {
-			dir := t.TempDir()
-			w, err := openWal(WalOptions{
-				Dir:          dir,
-				MemoryMapped: memoryMapped,
-				SegmentSize:  512,
-			})
-			assert.NilError(t, err)
-			defer w.Close()
-
-			entry, err := w.HeadEntry()
-			assert.NilError(t, err)
-			testutil.AssertNil(t, entry)
-
-			entries := []*pb.LogEntry{
-				{Term: 1, Data: []byte("cmd1")},
-				{Term: 2, Data: []byte("cmd2")},
-			}
-
-			lastIndex, err := w.Append(nil, entries)
-			assert.NilError(t, err)
-			assert.Equal(t, lastIndex, int64(2))
-
-			entry, err = w.HeadEntry()
-			assert.NilError(t, err)
-			assert.Equal(t, entry.Index, int64(0))
-			assert.Assert(t, proto.Equal(entry, entries[0]))
-		})
-	}
-}
-
-func TestWalTailEntry(t *testing.T) {
-	for _, memoryMapped := range []bool{false, true} {
-		t.Run(fmt.Sprintf("MemoryMapped=%t", memoryMapped), func(t *testing.T) {
-			dir := t.TempDir()
-			w, err := openWal(WalOptions{
-				Dir:          dir,
-				MemoryMapped: memoryMapped,
-				SegmentSize:  512,
-			})
-			assert.NilError(t, err)
-			defer w.Close()
-
-			entry, err := w.TailEntry()
-			assert.NilError(t, err)
-			testutil.AssertNil(t, entry)
-
-			entries := []*pb.LogEntry{
-				{Term: 1, Data: []byte("cmd1")},
-				{Term: 2, Data: []byte("cmd2")},
-			}
-
-			lastIndex, err := w.Append(nil, entries)
-			assert.NilError(t, err)
-			assert.Equal(t, lastIndex, int64(2))
-
-			entry, err = w.TailEntry()
-			assert.NilError(t, err)
-			assert.Assert(t, proto.Equal(entry, entries[1]))
-			assert.Equal(t, entry.Index, int64(1))
-		})
-	}
-}
-
-func TestWalTailEntryWithEmptySegments(t *testing.T) {
-	for _, memoryMapped := range []bool{false, true} {
-		t.Run(fmt.Sprintf("MemoryMapped=%t", memoryMapped), func(t *testing.T) {
-			dir := t.TempDir()
-			w, err := openWal(WalOptions{
-				Dir:          dir,
-				MemoryMapped: memoryMapped,
-				SegmentSize:  512,
-			})
-			assert.NilError(t, err)
-			defer w.Close()
-
-			entry, err := w.TailEntry()
-			assert.NilError(t, err)
-			testutil.AssertNil(t, entry)
-
-			entries := []*pb.LogEntry{
-				{Term: 1, Data: []byte("cmd1")},
-				{Term: 1, Data: []byte("cmd2")},
-			}
-			lastIndex, err := w.Append(nil, entries)
-			assert.NilError(t, err)
-			assert.Equal(t, lastIndex, int64(2))
-
-			// Create a couple of segments without entries at the end.
-			for i := range 50 {
-				err = w.SaveState(&pb.PersistedState{CurrentTerm: int64(i), VotedFor: "s1", CommitIndex: 0})
-				assert.NilError(t, err)
-			}
-
-			assert.Assert(t, len(w.segments) > 2, len(w.segments))
-
-			entry, err = w.TailEntry()
-			assert.NilError(t, err)
-			assert.Assert(t, proto.Equal(entry, entries[1]))
-			assert.Equal(t, entry.Index, int64(1))
-		})
-	}
-}
-
 // TODO may want to move to testutil.
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
@@ -973,8 +867,8 @@ func TestWalSaveAndRetrieveSnapshot(t *testing.T) {
 
 			data := []byte("Pikachu")
 			metadata := &pb.SnapshotMetadata{
-				LastAppliedIndex: 1,
-				LastAppliedTerm:  1,
+				LastIncludedIndex: 1,
+				LastIncludedTerm:  1,
 				ConfigUpdate: &pb.ConfigUpdate{
 					Old: []*pb.NodeConfig{
 						{
@@ -1037,8 +931,8 @@ func TestWalDiscardedSnapshot(t *testing.T) {
 			defer w.Close()
 
 			writer, err := w.CreateSnapshot(&pb.SnapshotMetadata{
-				LastAppliedIndex: 1,
-				LastAppliedTerm:  1,
+				LastIncludedIndex: 1,
+				LastIncludedTerm:  1,
 				ConfigUpdate: &pb.ConfigUpdate{
 					Old: []*pb.NodeConfig{
 						{
@@ -1084,8 +978,8 @@ func TestWalDiscardedSnapshotAfterCommittedSnapshot(t *testing.T) {
 			defer w.Close()
 
 			metadata1 := &pb.SnapshotMetadata{
-				LastAppliedIndex: 1,
-				LastAppliedTerm:  1,
+				LastIncludedIndex: 1,
+				LastIncludedTerm:  1,
 				ConfigUpdate: &pb.ConfigUpdate{
 					Old: []*pb.NodeConfig{
 						{
@@ -1121,7 +1015,7 @@ func TestWalDiscardedSnapshotAfterCommittedSnapshot(t *testing.T) {
 			assert.Equal(t, string(retrievedData), "abc")
 
 			metadata2 := cloneMsg(metadata1)
-			metadata2.LastAppliedIndex, metadata2.LastAppliedTerm = 2, 2
+			metadata2.LastIncludedIndex, metadata2.LastIncludedTerm = 2, 2
 			writer2, err := w.CreateSnapshot(metadata1)
 			assert.NilError(t, err)
 
@@ -1162,8 +1056,8 @@ func TestWalRetrieveSnapshotOnReopen(t *testing.T) {
 			defer w1.Close()
 
 			metadata := &pb.SnapshotMetadata{
-				LastAppliedIndex: 1,
-				LastAppliedTerm:  1,
+				LastIncludedIndex: 1,
+				LastIncludedTerm:  1,
 				ConfigUpdate: &pb.ConfigUpdate{
 					Old: []*pb.NodeConfig{
 						{

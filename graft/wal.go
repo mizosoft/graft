@@ -10,6 +10,7 @@ import (
 	"os"
 	"path"
 	"sort"
+	"sync"
 
 	"github.com/edsrzf/mmap-go"
 	"github.com/mizosoft/graft/pb"
@@ -121,6 +122,7 @@ type wal struct {
 	lastState            *pb.PersistedState
 	lastSnapshotMetadata *pb.SnapshotMetadata
 	cache                *entryCache
+	mut                  sync.RWMutex
 	logger               *zap.SugaredLogger
 }
 
@@ -695,6 +697,8 @@ func (w *wal) decodeRecord(recordBytes []byte) (*pb.WalRecord, error) {
 }
 
 func (w *wal) RetrieveState() (*pb.PersistedState, error) {
+	w.mut.RLock()
+	defer w.mut.RUnlock()
 	return w.lastState, nil
 }
 
@@ -707,6 +711,9 @@ func (w *wal) saveState(state *pb.PersistedState) error {
 }
 
 func (w *wal) SaveState(state *pb.PersistedState) error {
+	w.mut.Lock()
+	defer w.mut.Unlock()
+
 	if w.closed {
 		return ErrClosed
 	}
@@ -718,6 +725,9 @@ func (w *wal) SaveState(state *pb.PersistedState) error {
 }
 
 func (w *wal) Append(state *pb.PersistedState, entries []*pb.LogEntry) (int64, error) {
+	w.mut.Lock()
+	defer w.mut.Unlock()
+
 	if w.closed {
 		return 0, ErrClosed
 	}
@@ -893,6 +903,9 @@ func (w *wal) appendSegment() error {
 }
 
 func (w *wal) TruncateEntriesFrom(index int64) error {
+	w.mut.Lock()
+	defer w.mut.Unlock()
+
 	if w.closed {
 		return ErrClosed
 	}
@@ -932,9 +945,14 @@ func (w *wal) TruncateEntriesFrom(index int64) error {
 }
 
 func (w *wal) TruncateEntriesTo(index int64) error {
+	w.mut.Lock()
+	defer w.mut.Unlock()
+
 	if w.closed {
 		return ErrClosed
 	}
+
+	w.logger.Info("TruncateEntriesTo ", index, " ", w.dir)
 
 	segIndex, err := w.findSegment(index)
 	if err != nil {
@@ -962,6 +980,7 @@ func (w *wal) TruncateEntriesTo(index int64) error {
 		}
 		w.segments = w.segments[1:]
 	}
+
 	if w.cache.firstIndex() >= 0 && index >= w.cache.firstIndex() {
 		w.cache.truncateTo(index)
 	}
@@ -981,6 +1000,9 @@ func (w *wal) TruncateEntriesTo(index int64) error {
 }
 
 func (w *wal) EntryCount() int64 {
+	w.mut.RLock()
+	defer w.mut.RUnlock()
+
 	count := int64(0)
 	for _, seg := range w.segments {
 		count += int64(seg.entryCount())
@@ -989,6 +1011,9 @@ func (w *wal) EntryCount() int64 {
 }
 
 func (w *wal) GetEntry(index int64) (*pb.LogEntry, error) {
+	w.mut.RLock()
+	defer w.mut.RUnlock()
+
 	if w.closed {
 		return nil, ErrClosed
 	}
@@ -1015,6 +1040,9 @@ func (w *wal) getEntry(index int64) (*pb.LogEntry, error) {
 }
 
 func (w *wal) GetEntryTerm(index int64) (int64, error) {
+	w.mut.RLock()
+	defer w.mut.RUnlock()
+
 	e, err := w.GetEntry(index)
 	if err != nil {
 		return 0, err
@@ -1024,6 +1052,9 @@ func (w *wal) GetEntryTerm(index int64) (int64, error) {
 }
 
 func (w *wal) GetEntries(from, to int64) ([]*pb.LogEntry, error) {
+	w.mut.RLock()
+	defer w.mut.RUnlock()
+
 	if from > to {
 		return nil, fmt.Errorf("from (%d) must be smaller than or equal to (%d)", from, to)
 	}
@@ -1089,45 +1120,10 @@ func (w *wal) getEntries(from, to int64) ([]*pb.LogEntry, error) {
 	}
 }
 
-func (w *wal) HeadEntry() (*pb.LogEntry, error) {
-	if w.closed {
-		return nil, ErrClosed
-	}
-
-	// Search for the first segment from the start that has an entry.
-	for i := 0; i < len(w.segments); i++ {
-		seg := w.segments[i]
-		entry, err := seg.headEntry()
-		if err != nil {
-			return nil, err
-		}
-		if entry != nil {
-			return entry, nil
-		}
-	}
-	return nil, nil
-}
-
-func (w *wal) TailEntry() (*pb.LogEntry, error) {
-	if w.closed {
-		return nil, ErrClosed
-	}
-
-	// Search for the first segment from the end that has an entry.
-	for i := len(w.segments) - 1; i >= 0; i-- {
-		seg := w.segments[i]
-		entry, err := seg.tailEntry()
-		if err != nil {
-			return nil, err
-		}
-		if entry != nil {
-			return entry, err
-		}
-	}
-	return nil, nil
-}
-
 func (w *wal) GetEntriesFrom(from int64) ([]*pb.LogEntry, error) {
+	w.mut.RLock()
+	defer w.mut.RUnlock()
+
 	if w.closed {
 		return nil, ErrClosed
 	}
@@ -1177,6 +1173,9 @@ func (w *wal) saveSnapshotMetadata(metadata *pb.SnapshotMetadata) error {
 }
 
 func (w *wal) FirstEntryIndex() (int64, error) {
+	w.mut.RLock()
+	defer w.mut.RUnlock()
+
 	for _, seg := range w.segments {
 		if seg.entryCount() > 0 {
 			return seg.firstIndex, nil
@@ -1186,6 +1185,9 @@ func (w *wal) FirstEntryIndex() (int64, error) {
 }
 
 func (w *wal) LastEntryIndex() (int64, error) {
+	w.mut.RLock()
+	defer w.mut.RUnlock()
+
 	for i := len(w.segments) - 1; i >= 0; i-- {
 		seg := w.segments[i]
 		if seg.entryCount() > 0 {
@@ -1196,6 +1198,9 @@ func (w *wal) LastEntryIndex() (int64, error) {
 }
 
 func (w *wal) Close() error {
+	w.mut.Lock()
+	defer w.mut.Lock()
+
 	if w.closed {
 		return ErrClosed
 	}
@@ -1215,6 +1220,9 @@ func (w *wal) Close() error {
 }
 
 func (w *wal) LastSnapshotMetadata() (*pb.SnapshotMetadata, error) {
+	w.mut.RLock()
+	defer w.mut.RUnlock()
+
 	if w.closed {
 		return nil, ErrClosed
 	}
@@ -1222,6 +1230,9 @@ func (w *wal) LastSnapshotMetadata() (*pb.SnapshotMetadata, error) {
 }
 
 func (w *wal) OpenSnapshot(metadata *pb.SnapshotMetadata) (Snapshot, error) {
+	w.mut.RLock()
+	defer w.mut.RUnlock()
+
 	if w.closed {
 		return nil, ErrClosed
 	}
@@ -1230,20 +1241,24 @@ func (w *wal) OpenSnapshot(metadata *pb.SnapshotMetadata) (Snapshot, error) {
 	if myMetadata == nil {
 		return nil, ErrNoSuchSnapshot
 	}
-	if metadata.LastAppliedIndex != myMetadata.LastAppliedIndex ||
-		metadata.LastAppliedTerm != myMetadata.LastAppliedTerm {
+	if metadata.LastIncludedIndex != myMetadata.LastIncludedIndex ||
+		metadata.LastIncludedTerm != myMetadata.LastIncludedTerm {
 		return nil, ErrNoSuchSnapshot
 	}
 	return NewFileSnapshot(metadata, path.Join(w.dir, SnapshotFilename(metadata)))
 }
 
 func (w *wal) CreateSnapshot(metadata *pb.SnapshotMetadata) (SnapshotWriter, error) {
+	// We'll only need the exclusive lock when the snapshot is committed.
+	w.mut.RLock()
+	defer w.mut.RUnlock()
+
 	if w.closed {
 		return nil, ErrClosed
 	}
 
 	fpath := path.Join(w.dir, SnapshotFilename(metadata)+".tmp")
-	f, err := os.Create(fpath)
+	f, err := os.OpenFile(fpath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644) // Create atomically.
 	if err != nil {
 		return nil, err
 	}
@@ -1306,6 +1321,9 @@ func (s *fileSnapshotWriter) Commit() (*pb.SnapshotMetadata, error) {
 	if err := s.f.Close(); err != nil {
 		return nil, err
 	}
+
+	s.w.mut.Lock()
+	defer s.w.mut.Lock()
 
 	prevMetadata := s.w.lastSnapshotMetadata
 
