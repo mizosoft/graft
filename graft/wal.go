@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path"
+	"slices"
 	"sort"
 	"sync"
 
@@ -66,7 +67,7 @@ func (c *entryCache) getEntries(from, to int64) []*pb.LogEntry {
 	if from > to || from < c.firstIndex() || from > c.lastIndex() || to < c.firstIndex() || to > c.lastIndex() {
 		return nil
 	}
-	return c.data[from-c.firstIndex() : to-c.firstIndex()+1]
+	return slices.Clone(c.data[from-c.firstIndex() : to-c.firstIndex()+1])
 }
 
 func (c *entryCache) getAll() []*pb.LogEntry {
@@ -763,8 +764,7 @@ func (w *wal) Append(state *pb.PersistedState, entries []*pb.LogEntry) (int64, e
 			// then create a new one.
 			if len(offsets) > 1 {
 				writtenCount := offsets[len(offsets)-1]
-				data := append([]byte(nil), buf.Next(writtenCount)...) // Do a copy.
-				if err := w.tail().appendBytes(append(data, w.trailerRecord...)); err != nil {
+				if err := w.tail().appendBytes(copyAppend(buf.Next(writtenCount), w.trailerRecord...)); err != nil {
 					return 0, err
 				}
 				for _, offset := range offsets[:len(offsets)-1] {
@@ -792,7 +792,7 @@ func (w *wal) Append(state *pb.PersistedState, entries []*pb.LogEntry) (int64, e
 	// loop's invariant).
 	if len(offsets) > 0 {
 		writtenCount := buf.Len()
-		if err := w.tail().appendBytes(append(buf.Bytes(), w.trailerRecord...)); err != nil {
+		if err := w.tail().appendBytes(copyAppend(buf.Bytes(), w.trailerRecord...)); err != nil {
 			return 0, err
 		}
 		for _, offset := range offsets {
@@ -1389,7 +1389,7 @@ func (w *wal) appendRecord(recordType uint32, msg proto.Message) error {
 	if w.tail().lastOffset+int64(len(recordBytes)) > w.segmentSize-int64(len(w.trailerRecord)) {
 		return ErrLargeRecord
 	}
-	if err := w.tail().appendBytes(append(recordBytes, w.trailerRecord...)); err != nil {
+	if err := w.tail().appendBytes(copyAppend(recordBytes, w.trailerRecord...)); err != nil {
 		return err
 	}
 	if err := w.tail().sync(); err != nil {

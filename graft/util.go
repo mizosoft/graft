@@ -136,3 +136,8 @@ func cloneMsgs[T proto.Message](msgs []T) []T {
 func cloneMsg[T proto.Message](msg T) T {
 	return proto.Clone(msg).(T)
 }
+
+// Used when the assigned slice is different from the slice appended to.
+func copyAppend[T any](slice []T, elems ...T) []T {
+	return append(append([]T(nil), slice...), elems...)
+}
