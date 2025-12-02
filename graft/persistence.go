@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 
 	"github.com/mizosoft/graft/pb"
@@ -26,7 +27,7 @@ type IndexOutOfRangeError struct {
 func (e IndexOutOfRangeError) Error() string {
 	s := fmt.Sprintf("index out of range: [%d]", e.Index)
 	if e.Count >= 0 {
-		s += fmt.Sprintf(" %d", e.Count)
+		s += fmt.Sprintf("with count %d", e.Count)
 	}
 	return s
 }
@@ -245,8 +246,8 @@ func (w *memoryPersistence) OpenSnapshot(metadata *pb.SnapshotMetadata) (Snapsho
 	if w.snapshot == nil {
 		return nil, ErrNoSuchSnapshot
 	}
-	if metadata.LastAppliedIndex != w.snapshot.Metadata().LastAppliedIndex ||
-		metadata.LastAppliedTerm != w.snapshot.Metadata().LastAppliedTerm {
+	if metadata.LastIncludedIndex != w.snapshot.Metadata().LastIncludedIndex ||
+		metadata.LastIncludedTerm != w.snapshot.Metadata().LastIncludedTerm {
 		return nil, ErrNoSuchSnapshot
 	}
 	return w.snapshot, nil
@@ -305,7 +306,7 @@ func (w *memoryPersistence) Close() error {
 }
 
 func SnapshotFilename(metadata *pb.SnapshotMetadata) string {
-	return fmt.Sprintf("snap_%d_%d.tmp", metadata.LastAppliedIndex, metadata.LastAppliedTerm)
+	return fmt.Sprintf("snap_%d_%d.tmp", metadata.LastIncludedIndex, metadata.LastIncludedTerm)
 }
 
 func NewFileSnapshot(metadata *pb.SnapshotMetadata, path string) (Snapshot, error) {
@@ -336,4 +337,60 @@ func (b *fileSnapshot) ReadAll() ([]byte, error) {
 
 func (b *fileSnapshot) Reader() io.Reader {
 	return b.f
+}
+
+type EntryIterator interface {
+	Next() (*pb.LogEntry, error)
+}
+
+type batchedEntryIterator struct {
+	p                              Persistence
+	currEntryIndex, lastEntryIndex int64
+	maxBatchSize                   int
+	currBatch                      []*pb.LogEntry
+	currBatchIndex                 int
+	done                           bool
+}
+
+func (b *batchedEntryIterator) Next() (*pb.LogEntry, error) {
+	if b.currBatchIndex >= len(b.currBatch) {
+		if hasNext, err := b.refill(); err != nil {
+			return nil, err
+		} else if !hasNext {
+			return nil, nil
+		}
+	}
+
+	e := b.currBatch[b.currBatchIndex]
+	b.currBatchIndex++
+	return e, nil
+}
+
+func (b *batchedEntryIterator) refill() (bool, error) {
+	if b.currEntryIndex > b.lastEntryIndex {
+		return false, nil
+	}
+
+	batch, err := b.p.GetEntries(b.currEntryIndex, min(b.currEntryIndex+int64(b.maxBatchSize)-1, b.lastEntryIndex))
+	if err != nil {
+		return false, err
+	}
+
+	b.currBatch = batch
+	b.currBatchIndex = 0
+	b.currEntryIndex += int64(len(batch))
+	return true, nil
+}
+
+func NewEntryRangeIterator(persistence Persistence, from, to int64, maxBatchSize int) EntryIterator {
+	if from > to {
+		log.Panicf("Expected %d <= %d", from, to)
+	}
+
+	return &batchedEntryIterator{
+		p:              persistence,
+		currEntryIndex: from,
+		lastEntryIndex: to,
+		maxBatchSize:   maxBatchSize,
+	}
 }
