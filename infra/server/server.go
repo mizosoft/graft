@@ -55,13 +55,11 @@ func (s *Server) ListenAndServe() error {
 	return s.srv.ListenAndServe()
 }
 
-func (s *Server) Shutdown() {
-	s.G.Close()
-	s.G.Persistence.Close()
+func (s *Server) Shutdown() error {
 	err := s.srv.Shutdown(context.Background())
-	if err != nil {
-		s.Logger.Error("Server shutdown", zap.Error(err))
-	}
+	s.G.Close()
+	err = errors.Join(err, s.G.Persistence.Close())
+	return err
 }
 
 func (s *Server) RespondOk(w http.ResponseWriter, payload any) {

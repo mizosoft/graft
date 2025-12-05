@@ -21,26 +21,27 @@ type Service interface {
 
 	ListenAndServe() error
 
-	Shutdown()
+	Shutdown() error
 }
 
 type node[T Service] struct {
-	service T
-	config  NodeConfig[T] // For restarting.
-	errChan chan error
-	mut     sync.Mutex
+	service      T
+	config       NodeConfig[T] // For restarting.
+	startErrChan chan error
+	mut          sync.Mutex
 }
 
 func (n *node[T]) Start() {
 	go func() {
 		err := n.service.ListenAndServe()
+		fmt.Println("Done listening and serving: ", err, n.config.Id)
 
 		n.mut.Lock()
 		defer n.mut.Unlock()
 
-		if n.errChan != nil {
-			n.errChan <- err
-			close(n.errChan)
+		if n.startErrChan != nil {
+			n.startErrChan <- err
+			close(n.startErrChan)
 		} else {
 			log.Panicf("Unexpected ListenAndServe err: %v", err)
 		}
@@ -52,17 +53,23 @@ func (n *node[T]) Shutdown() error {
 		n.mut.Lock()
 		defer n.mut.Unlock()
 
-		if n.errChan == nil {
-			n.errChan = make(chan error)
+		if n.startErrChan == nil {
+			n.startErrChan = make(chan error)
 		}
-		return n.errChan
+		return n.startErrChan
 	}()
 
-	go n.service.Shutdown()
+	err := n.service.Shutdown()
+	if err != nil {
+		log.Println("Error shutting down node: ", err)
+	}
+	fmt.Println("Done shutting down")
 
 	select {
 	case err := <-ch:
-		log.Println("Error shutting down node: ", err)
+		if err != nil {
+			log.Println("ListenAndServe error: ", err)
+		}
 	case <-time.After(5 * time.Second):
 		return fmt.Errorf("timed out waiting for node (%s) to shutdown", n.service.Id())
 	}
@@ -194,7 +201,7 @@ func StartLocalCluster[T Service](config ClusterConfig[T]) (*Cluster[T], error) 
 		n, err := newNode(NodeConfig[T]{
 			Dir:                   dir,
 			Id:                    id,
-			Address:               "127.0.0.1:" + strconv.Itoa(1569+i),
+			Address:               "127.0.0.1:" + strconv.Itoa(2634+i),
 			GraftAddresses:        graftAddresses,
 			Logger:                config.Logger,
 			HeartbeatMillis:       config.HeartbeatMillis,

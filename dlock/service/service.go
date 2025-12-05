@@ -34,9 +34,9 @@ func (s *DlockService) ListenAndServe() error {
 	return s.server.ListenAndServe()
 }
 
-func (s *DlockService) Shutdown() {
+func (s *DlockService) Shutdown() error {
 	s.lock.close()
-	s.server.Shutdown()
+	return s.server.Shutdown()
 }
 
 func (s *DlockService) handleLock(w http.ResponseWriter, r *http.Request) {

@@ -7,13 +7,28 @@ import (
 )
 
 type eventTimer[T any] struct {
-	duration func() time.Duration
-	timer    *time.Timer
-	events   chan struct{}
-	stopped  bool
-	mut      sync.Mutex
-	C        chan T
-	lastTime time.Time
+	duration         func() time.Duration
+	timer            *time.Timer
+	events           chan struct{}
+	started, stopped bool
+	mut              sync.Mutex
+	C                chan T
+	lastTime         time.Time
+	nextEvent        func() T
+}
+
+func (t *eventTimer[T]) startUnguarded() {
+	if t.started || t.stopped {
+		return
+	}
+
+	t.started = true
+	go func() {
+		for range t.events {
+			t.C <- t.nextEvent()
+		}
+		close(t.C)
+	}()
 }
 
 func (t *eventTimer[T]) pause() {
@@ -37,6 +52,8 @@ func (t *eventTimer[T]) reset() {
 		return
 	}
 
+	t.startUnguarded()
+
 	if t.timer != nil {
 		t.timer.Reset(t.duration())
 	} else {
@@ -59,6 +76,8 @@ func (t *eventTimer[T]) poke() {
 	if t.stopped {
 		return
 	}
+
+	t.startUnguarded()
 
 	if t.timer != nil {
 		t.timer.Stop()
@@ -98,17 +117,11 @@ func newRandomizedTimer[T any](low time.Duration, high time.Duration, nextEvent 
 }
 
 func newTimerWithFunc[T any](duration func() time.Duration, nextEvent func() T) *eventTimer[T] {
-	t := &eventTimer[T]{
-		duration: duration,
-		events:   make(chan struct{}, 1),
-		C:        make(chan T),
-		lastTime: time.Now(),
+	return &eventTimer[T]{
+		duration:  duration,
+		events:    make(chan struct{}, 1),
+		C:         make(chan T),
+		lastTime:  time.Now(),
+		nextEvent: nextEvent,
 	}
-	go func() {
-		for range t.events {
-			t.C <- nextEvent()
-		}
-		close(t.C)
-	}()
-	return t
 }

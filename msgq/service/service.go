@@ -34,8 +34,8 @@ func (m *MsgqService) ListenAndServe() error {
 	return m.server.ListenAndServe()
 }
 
-func (m *MsgqService) Shutdown() {
-	m.server.Shutdown()
+func (m *MsgqService) Shutdown() error {
+	return m.server.Shutdown()
 }
 
 func (m *MsgqService) handleEnqueue(w http.ResponseWriter, r *http.Request) {

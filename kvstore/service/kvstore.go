@@ -87,6 +87,7 @@ func (s *kvstore) Snapshot() []byte {
 	if err != nil {
 		panic(err)
 	}
+	atomic.StoreInt32(&s.redundantOperations, 0)
 	return buf.Bytes()
 }
 

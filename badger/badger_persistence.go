@@ -419,8 +419,8 @@ func (b *badgerPersistence) OpenSnapshot(metadata *pb.SnapshotMetadata) (graft.S
 	if myMetadata == nil {
 		return nil, graft.ErrNoSuchSnapshot
 	}
-	if metadata.LastAppliedIndex != myMetadata.LastAppliedIndex ||
-		metadata.LastAppliedTerm != myMetadata.LastAppliedTerm {
+	if metadata.LastIncludedIndex != myMetadata.LastIncludedIndex ||
+		metadata.LastIncludedTerm != myMetadata.LastIncludedTerm {
 		return nil, graft.ErrNoSuchSnapshot
 	}
 	return graft.NewFileSnapshot(metadata, path.Join(b.dir, graft.SnapshotFilename(metadata)))

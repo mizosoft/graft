@@ -505,8 +505,8 @@ func (x *SnapshotResponse) GetTerm() int64 {
 
 type SnapshotMetadata struct {
 	state             protoimpl.MessageState `protogen:"open.v1"`
-	LastAppliedIndex  int64                  `protobuf:"varint,1,opt,name=lastAppliedIndex,proto3" json:"lastAppliedIndex,omitempty"`
-	LastAppliedTerm   int64                  `protobuf:"varint,2,opt,name=lastAppliedTerm,proto3" json:"lastAppliedTerm,omitempty"`
+	LastIncludedIndex int64                  `protobuf:"varint,1,opt,name=lastIncludedIndex,proto3" json:"lastIncludedIndex,omitempty"`
+	LastIncludedTerm  int64                  `protobuf:"varint,2,opt,name=lastIncludedTerm,proto3" json:"lastIncludedTerm,omitempty"`
 	Size              int64                  `protobuf:"varint,3,opt,name=size,proto3" json:"size,omitempty"`
 	ConfigUpdate      *ConfigUpdate          `protobuf:"bytes,4,opt,name=configUpdate,proto3" json:"configUpdate,omitempty"`
 	ConfigUpdateIndex int64                  `protobuf:"varint,5,opt,name=configUpdateIndex,proto3" json:"configUpdateIndex,omitempty"`
@@ -546,14 +546,14 @@ func (*SnapshotMetadata) Descriptor() ([]byte, []int) {
 
 func (x *SnapshotMetadata) GetLastAppliedIndex() int64 {
 	if x != nil {
-		return x.LastAppliedIndex
+		return x.LastIncludedIndex
 	}
 	return 0
 }
 
 func (x *SnapshotMetadata) GetLastAppliedTerm() int64 {
 	if x != nil {
-		return x.LastAppliedTerm
+		return x.LastIncludedTerm
 	}
 	return 0
 }

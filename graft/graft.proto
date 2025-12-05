@@ -52,8 +52,8 @@ message SnapshotResponse {
 }
 
 message SnapshotMetadata {
-  int64 lastAppliedIndex = 1;
-  int64 lastAppliedTerm = 2;
+  int64 lastIncludedIndex = 1;
+  int64 lastIncludedTerm = 2;
   int64 size = 3;
   ConfigUpdate configUpdate = 4;
   int64 configUpdateIndex = 5;

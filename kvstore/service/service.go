@@ -32,8 +32,8 @@ func (s *KvService) ListenAndServe() error {
 	return s.server.ListenAndServe()
 }
 
-func (s *KvService) Shutdown() {
-	s.server.Shutdown()
+func (s *KvService) Shutdown() error {
+	return s.server.Shutdown()
 }
 
 func (s *KvService) handleGet(w http.ResponseWriter, r *http.Request) {

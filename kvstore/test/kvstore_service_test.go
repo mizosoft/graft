@@ -2,6 +2,10 @@ package test
 
 import (
 	"fmt"
+	"os"
+	"os/signal"
+	"sync"
+	"syscall"
 	"testing"
 
 	"github.com/mizosoft/graft"
@@ -10,6 +14,7 @@ import (
 	"github.com/mizosoft/graft/kvstore2/service"
 	"github.com/mizosoft/graft/testutil"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 	"gotest.tools/v3/assert"
 )
 
@@ -41,6 +46,42 @@ func TestKvServicePut(t *testing.T) {
 	assert.NilError(t, err)
 	assert.Assert(t, exists)
 	assert.Equal(t, s, "v2")
+}
+
+func TestKvServiceParallelPut(t *testing.T) {
+	cluster, client := NewClusterClient(t, 3)
+	defer cluster.Shutdown()
+
+	readersCount := 16
+	writersCount := 8
+	runCount := 256
+
+	var wg sync.WaitGroup
+	for range writersCount {
+		wg.Go(func() {
+			for range runCount {
+				v, e, err := client.Put("k", "v")
+				assert.NilError(t, err)
+				if e {
+					assert.Equal(t, v, "v")
+				}
+			}
+		})
+	}
+
+	for range readersCount {
+		wg.Go(func() {
+			for range runCount {
+				v, e, err := client.Get("k")
+				assert.NilError(t, err)
+				if e {
+					assert.Equal(t, v, "v")
+				}
+			}
+		})
+	}
+
+	wg.Wait()
 }
 
 func TestKvServiceDelete(t *testing.T) {
@@ -184,6 +225,40 @@ func TestKvServiceFailOver(t *testing.T) {
 }
 
 func NewClusterClient(t *testing.T, nodeCount int) (*server.Cluster[*service.KvService], *client.KvClient) {
+	// Open a file for writing logs
+	file, err := os.OpenFile("app.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		panic(err)
+	}
+
+	// Create a zapcore.WriteSyncer from the file
+	writeSyncer := zapcore.AddSync(file)
+
+	// Create an encoder configuration
+	encoderConfig := zap.NewProductionEncoderConfig()
+	encoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
+
+	// Create a core that writes to the file
+	core := zapcore.NewCore(
+		zapcore.NewJSONEncoder(encoderConfig),
+		writeSyncer,
+		zapcore.InfoLevel,
+	)
+
+	// Create the logger
+	logger := zap.New(core)
+
+	// Setup signal handling
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+
+	go func() {
+		<-sigChan
+		logger.Info("Shutting down gracefully...")
+		file.Close()
+		logger.Sync() // Ensure logs are flushed
+	}()
+
 	cluster, err := server.StartLocalCluster[*service.KvService](
 		server.ClusterConfig[*service.KvService]{
 			Dir:                   t.TempDir(),
@@ -193,7 +268,7 @@ func NewClusterClient(t *testing.T, nodeCount int) (*server.Cluster[*service.KvS
 			ServiceFactory: func(address string, config graft.Config) (*service.KvService, error) {
 				return service.NewKvService(address, 0, config)
 			},
-			Logger: zap.NewExample(),
+			Logger: logger,
 		},
 	)
 

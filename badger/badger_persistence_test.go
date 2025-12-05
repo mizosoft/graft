@@ -404,8 +404,8 @@ func TestWalSaveAndRetrieveSnapshot(t *testing.T) {
 	assert.Assert(t, retrievedMetadata == nil)
 
 	metadata := &pb.SnapshotMetadata{
-		LastAppliedIndex: 1,
-		LastAppliedTerm:  1,
+		LastIncludedIndex: 1,
+		LastIncludedTerm:  1,
 		ConfigUpdate: &pb.ConfigUpdate{
 			Old: []*pb.NodeConfig{
 				{
@@ -451,8 +451,8 @@ func TestWalRetrieveSnapshotOnReopen(t *testing.T) {
 	defer w1.Close()
 
 	metadata := &pb.SnapshotMetadata{
-		LastAppliedIndex: 1,
-		LastAppliedTerm:  1,
+		LastIncludedIndex: 1,
+		LastIncludedTerm:  1,
 		ConfigUpdate: &pb.ConfigUpdate{
 			Old: []*pb.NodeConfig{
 				{
