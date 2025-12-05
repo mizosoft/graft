@@ -59,7 +59,7 @@ retry:
 	return errors.New(res.Status)
 }
 
-func Post[T any](d *Client, path string, payload any) (T, error) {
+func Post[T any](c *Client, path string, payload any) (T, error) {
 	bodyJson, err := json.Marshal(payload)
 	if err != nil {
 		return *new(T), err
@@ -69,7 +69,10 @@ func Post[T any](d *Client, path string, payload any) (T, error) {
 	defer cancel()
 
 retry:
-	u, err := url.JoinPath(d.url, path)
+	c.mut.Lock()
+	u, err := url.JoinPath(c.url, path)
+	c.mut.Unlock()
+
 	if err != nil {
 		return *new(T), err
 	}
@@ -80,7 +83,7 @@ retry:
 	}
 	request.Header.Set("Content-Type", "application/json")
 
-	res, err := d.http.Do(request)
+	res, err := c.http.Do(request)
 	if err != nil {
 		select {
 		case <-ctx.Done():
@@ -102,8 +105,10 @@ retry:
 		}
 
 		if config.LeaderId != graft.UnknownLeader && len(config.LeaderId) > 0 {
-			d.leaderId = config.LeaderId
-			d.url = "http://" + d.serviceConfig[config.LeaderId] + "/"
+			c.mut.Lock()
+			c.leaderId = config.LeaderId
+			c.url = "http://" + c.serviceConfig[config.LeaderId] + "/"
+			c.mut.Unlock()
 		}
 
 		select {
