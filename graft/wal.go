@@ -1199,7 +1199,7 @@ func (w *wal) LastEntryIndex() (int64, error) {
 
 func (w *wal) Close() error {
 	w.mut.Lock()
-	defer w.mut.Lock()
+	defer w.mut.Unlock()
 
 	if w.closed {
 		return ErrClosed
@@ -1323,7 +1323,7 @@ func (s *fileSnapshotWriter) Commit() (*pb.SnapshotMetadata, error) {
 	}
 
 	s.w.mut.Lock()
-	defer s.w.mut.Lock()
+	defer s.w.mut.Unlock()
 
 	prevMetadata := s.w.lastSnapshotMetadata
 
