@@ -96,7 +96,9 @@ type Graft struct {
 	leaving bool
 
 	// TODO we need some sort of a timeout for this.
-	snapshotWriter     SnapshotWriter // Writer for the currently streaming snapshot.
+	// Writer for the currently streaming snapshot.
+	snapshotWriter SnapshotWriter
+
 	lastHeartbeatTime  time.Time
 	minElectionTimeout time.Duration
 	logger             *zap.SugaredLogger
@@ -104,7 +106,8 @@ type Graft struct {
 	Id                string
 	Persistence       Persistence
 	Restore           func(snapshot Snapshot) error
-	Apply             func(entries []*pb.LogEntry) (shouldSnapshot bool, err error)
+	Apply             func(entry *pb.LogEntry) error
+	ShouldSnapshot    func() bool
 	Snapshot          func(writer io.Writer) error
 	ApplyConfigUpdate func(update *pb.ConfigUpdate) error
 	Closed            func() error
@@ -149,8 +152,8 @@ func New(config Config) (*Graft, error) {
 		Restore: func(snapshot Snapshot) error {
 			return nil
 		},
-		Apply: func(entries []*pb.LogEntry) (shouldSnapshot bool, err error) {
-			return false, nil
+		Apply: func(entry *pb.LogEntry) error {
+			return nil
 		},
 		Snapshot: func(writer io.Writer) error {
 			return nil
@@ -359,7 +362,6 @@ func (g *Graft) applyWorker() {
 		switch e := e.(type) {
 		case entryIndexRange:
 			var lastAppliedEntry *pb.LogEntry
-			var shouldSnapshot bool
 			for i := e.from; i <= e.to; i += defaultEntryBatchSize {
 				entries, err := g.Persistence.GetEntries(i, min(e.to, i+defaultEntryBatchSize))
 				if err != nil {
@@ -375,13 +377,9 @@ func (g *Graft) applyWorker() {
 				for _, entry := range entries {
 					switch entry.Type {
 					case pb.LogEntry_COMMAND:
-						// TODO make a ShouldSnapshot() callback?
-						// TODO make g.Apply accept one entry.
-						localShouldSnapshot, err := g.Apply([]*pb.LogEntry{entry})
-						if err != nil {
+						if err := g.Apply(entry); err != nil {
 							panic(err)
 						}
-						shouldSnapshot = shouldSnapshot || localShouldSnapshot
 						lastAppliedEntry = entry
 					case pb.LogEntry_CONFIG:
 						var update *pb.ConfigUpdate
@@ -404,7 +402,7 @@ func (g *Graft) applyWorker() {
 				g.lastApplied = lastAppliedEntry.Index
 				g.mut.Unlock()
 
-				if shouldSnapshot {
+				if g.ShouldSnapshot() {
 					metadata := &pb.SnapshotMetadata{
 						LastIncludedIndex: lastAppliedEntry.Index,
 						LastIncludedTerm:  lastAppliedEntry.Term,
@@ -1311,21 +1309,17 @@ func (g *Graft) installSnapshotBlock(request *pb.SnapshotRequest) (bool, error) 
 			panic(err)
 		}
 
-		// Determine the log compaction index and signal the worker.
 		firstIndex, err := g.Persistence.FirstEntryIndex()
 		if err != nil {
 			panic(err)
 		}
 		if firstIndex >= 0 && request.Metadata.LastIncludedIndex >= firstIndex {
-			// Log has entries and snapshot covers some of them.
 			lastIndex, err := g.Persistence.LastEntryIndex()
 			if err != nil {
 				panic(err)
 			}
-			// Signal log compaction worker to truncate entries up to the snapshot.
 			g.logCompactionChan <- min(request.Metadata.LastIncludedIndex, lastIndex)
-		}
-		// Otherwise, snapshot is older than log or log is empty - no truncation needed.
+		} // Otherwise, snapshot is older than log or log is empty - no truncation needed.
 
 		// Apply snapshot configuration.
 		if request.Metadata.ConfigUpdate != nil {

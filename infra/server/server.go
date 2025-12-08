@@ -75,13 +75,19 @@ func (s *Server) Respond(w http.ResponseWriter, payload any, status int) {
 	}
 }
 
-func (s *Server) apply(entries []*pb.LogEntry) {
-	for _, cmd := range deserializeCommands(entries) {
-		response := s.sm.Apply(cmd)
-		if cmd.ServerId == s.G.Id {
-			s.publisher.publishOnce(cmd.Id, response)
-		}
+func (s *Server) apply(entry *pb.LogEntry) error {
+	var command Command
+	decoder := gob.NewDecoder(bytes.NewReader(entry.Data))
+	err := decoder.Decode(&command)
+	if err != nil {
+		return err
 	}
+
+	response := s.sm.Apply(command)
+	if command.ServerId == s.G.Id {
+		s.publisher.publishOnce(command.Id, response)
+	}
+	return nil
 }
 
 func (s *Server) Execute(clientId string, smCommand any, w http.ResponseWriter) {
@@ -129,20 +135,6 @@ func serializeCommand(command Command) []byte {
 		panic(err)
 	}
 	return buf.Bytes()
-}
-
-func deserializeCommands(entries []*pb.LogEntry) []*Command {
-	commands := make([]*Command, 0, len(entries))
-	for _, entry := range entries {
-		var command Command
-		decoder := gob.NewDecoder(bytes.NewReader(entry.Data))
-		err := decoder.Decode(&command)
-		if err != nil {
-			panic(err)
-		}
-		commands = append(commands, &command)
-	}
-	return commands
 }
 
 func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
@@ -199,9 +191,11 @@ func (s *Server) Initialize() {
 	s.G.Restore = func(snapshot graft.Snapshot) error {
 		return s.sm.Restore(snapshot)
 	}
-	s.G.Apply = func(entries []*pb.LogEntry) (bool, error) {
-		s.apply(entries)
-		return s.sm.ShouldSnapshot(), nil
+	s.G.Apply = func(entry *pb.LogEntry) error {
+		return s.apply(entry)
+	}
+	s.G.ShouldSnapshot = func() bool {
+		return s.sm.ShouldSnapshot()
 	}
 	s.G.Snapshot = func(writer io.Writer) error {
 		_, err := writer.Write(s.sm.Snapshot())

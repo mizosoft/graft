@@ -3,7 +3,7 @@ package server
 import "github.com/mizosoft/graft"
 
 type StateMachine interface {
-	Apply(command *Command) any
+	Apply(command Command) any
 
 	Restore(snapshot graft.Snapshot) error
 
