@@ -1288,6 +1288,10 @@ func (s *fileSnapshotWriter) WriteAt(p []byte, off int64) (n int, err error) {
 	return
 }
 
+func (s *fileSnapshotWriter) Metadata() *pb.SnapshotMetadata {
+	return s.metadata
+}
+
 func (s *fileSnapshotWriter) Close() error {
 	if s.closed {
 		return nil
@@ -1296,9 +1300,9 @@ func (s *fileSnapshotWriter) Close() error {
 	return errors.Join(s.f.Close(), os.Remove(s.f.Name()))
 }
 
-func (s *fileSnapshotWriter) Commit() (*pb.SnapshotMetadata, error) {
+func (s *fileSnapshotWriter) Commit() error {
 	if s.closed {
-		return nil, ErrClosed
+		return ErrClosed
 	}
 
 	s.closed = true
@@ -1313,13 +1317,13 @@ func (s *fileSnapshotWriter) Commit() (*pb.SnapshotMetadata, error) {
 	}()
 
 	if err := s.f.Sync(); err != nil {
-		return nil, err
+		return err
 	}
 	if err := os.Rename(s.f.Name(), path.Join(s.w.dir, SnapshotFilename(s.metadata))); err != nil {
-		return nil, err
+		return err
 	}
 	if err := s.f.Close(); err != nil {
-		return nil, err
+		return err
 	}
 
 	s.w.mut.Lock()
@@ -1329,7 +1333,7 @@ func (s *fileSnapshotWriter) Commit() (*pb.SnapshotMetadata, error) {
 
 	s.metadata.Size = s.lastOffset
 	if err := s.w.saveSnapshotMetadata(s.metadata); err != nil {
-		return nil, err
+		return err
 	}
 	committed = true
 
@@ -1340,7 +1344,7 @@ func (s *fileSnapshotWriter) Commit() (*pb.SnapshotMetadata, error) {
 		}
 	}
 
-	return s.metadata, nil
+	return nil
 }
 
 func (w *wal) findSegment(entryIndex int64) (int, error) {

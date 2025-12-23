@@ -39,7 +39,6 @@ func IndexOutOfRangeWithCount(index int64, count int64) error {
 	return IndexOutOfRangeError{index, count}
 }
 
-// TODO segregate log/state/snapshot persistence.
 type Persistence interface {
 	io.Closer
 
@@ -88,7 +87,9 @@ type SnapshotWriter interface {
 	io.WriterAt
 	io.Closer
 
-	Commit() (*pb.SnapshotMetadata, error)
+	Metadata() *pb.SnapshotMetadata
+
+	Commit() error
 }
 
 type snapshot struct {
@@ -280,16 +281,20 @@ func (w *memorySnapshotWriter) WriteAt(p []byte, off int64) (int, error) {
 	return len(p), nil
 }
 
-func (w *memorySnapshotWriter) Commit() (*pb.SnapshotMetadata, error) {
+func (w *memorySnapshotWriter) Metadata() *pb.SnapshotMetadata {
+	return w.metadata
+}
+
+func (w *memorySnapshotWriter) Commit() error {
 	if w.closed {
-		return nil, ErrClosed
+		return ErrClosed
 	}
 
 	w.metadata.Size = int64(w.buffer.Len())
 	snapshot := NewMemorySnapshot(w.metadata, w.buffer.Bytes())
 	w.m.snapshot = snapshot
 	w.closed = true
-	return w.metadata, nil
+	return nil
 }
 
 func (w *memorySnapshotWriter) Close() error {

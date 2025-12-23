@@ -95,10 +95,6 @@ type Graft struct {
 	// Whether the current node is a leader and is not part of the new configuration and should leave when the configuration is committed.
 	leaving bool
 
-	// TODO we need some sort of a timeout for this.
-	// Writer for the currently streaming snapshot.
-	snapshotWriter SnapshotWriter
-
 	lastHeartbeatTime  time.Time
 	minElectionTimeout time.Duration
 	logger             *zap.SugaredLogger
@@ -156,9 +152,15 @@ func New(config Config) (*Graft, error) {
 			return nil
 		},
 		Snapshot: func(writer io.Writer) error {
-			return nil
+			return errors.New("not implemented")
+		},
+		ShouldSnapshot: func() bool {
+			return false
 		},
 		ApplyConfigUpdate: func(update *pb.ConfigUpdate) error {
+			return nil
+		},
+		Closed: func() error {
 			return nil
 		},
 	}
@@ -454,7 +456,7 @@ func (g *Graft) writeSnapshot(metadata *pb.SnapshotMetadata) {
 	if err := g.Snapshot(&sequentialSnapshotWriter{base: writer}); err != nil {
 		panic(err)
 	}
-	if _, err = writer.Commit(); err != nil {
+	if err = writer.Commit(); err != nil {
 		panic(err)
 	}
 
@@ -1234,6 +1236,13 @@ func (g *Graft) appendEntries(request *pb.AppendEntriesRequest) (*pb.AppendEntri
 
 func (g *Graft) installSnapshot(stream grpc.ClientStreamingServer[pb.SnapshotRequest, pb.SnapshotResponse]) error {
 	// Do not block for the entire streaming duration.
+	var writer SnapshotWriter
+	defer func() {
+		if writer != nil {
+			writer.Close()
+		}
+	}()
+
 	for {
 		request, err := stream.Recv()
 		if errors.Is(err, io.EOF) {
@@ -1242,7 +1251,7 @@ func (g *Graft) installSnapshot(stream grpc.ClientStreamingServer[pb.SnapshotReq
 			return err
 		}
 
-		success, err := g.installSnapshotBlock(request)
+		success, err := g.installSnapshotBlock(request, writer)
 		if err != nil {
 			return err
 		} else if !success {
@@ -1251,7 +1260,7 @@ func (g *Graft) installSnapshot(stream grpc.ClientStreamingServer[pb.SnapshotReq
 	}
 }
 
-func (g *Graft) installSnapshotBlock(request *pb.SnapshotRequest) (bool, error) {
+func (g *Graft) installSnapshotBlock(request *pb.SnapshotRequest, writer SnapshotWriter) (bool, error) {
 	g.mut.Lock()
 	defer g.mut.Unlock()
 
@@ -1278,34 +1287,13 @@ func (g *Graft) installSnapshotBlock(request *pb.SnapshotRequest) (bool, error) 
 		g.leaderId = request.LeaderId
 	}
 
-	if request.Offset == 0 {
-		// Discard potentially incomplete snapshot.
-		if g.snapshotWriter != nil {
-			g.snapshotWriter.Close()
-			g.snapshotWriter = nil
-		}
-
-		// Begin a new snapshot.
-		writer, err := g.Persistence.CreateSnapshot(request.Metadata)
-		if err != nil {
-			panic(err)
-		}
-		g.snapshotWriter = writer
-	}
-
-	_, err := g.snapshotWriter.WriteAt(request.Data, request.Offset)
+	_, err := writer.WriteAt(request.Data, request.Offset)
 	if err != nil {
 		panic(err)
 	}
 
 	if request.Done {
-		defer func() {
-			g.snapshotWriter.Close()
-			g.snapshotWriter = nil
-		}()
-
-		metadata, err := g.snapshotWriter.Commit()
-		if err != nil {
+		if err := writer.Commit(); err != nil {
 			panic(err)
 		}
 
@@ -1327,7 +1315,7 @@ func (g *Graft) installSnapshotBlock(request *pb.SnapshotRequest) (bool, error) 
 		}
 
 		// Publish snapshot to state-machine.
-		g.applyChan <- metadata
+		g.applyChan <- writer.Metadata()
 	}
 	return true, nil
 }
