@@ -715,6 +715,7 @@ func (g *Graft) broadcastWorker(p *peer, c *broadcastChannel) {
 		if client, err := p.client(); err != nil {
 			g.logger.Error("Error connecting to peer", zap.String("id", p.id), zap.Error(err), zap.Stringer("state", g))
 		} else {
+			timeBeforeSending := time.Now()
 			res := func() proto.Message {
 				switch req := req.(type) {
 				case *pb.AppendEntriesRequest:
@@ -726,69 +727,68 @@ func (g *Graft) broadcastWorker(p *peer, c *broadcastChannel) {
 					}
 
 				case *pb.SnapshotRequest:
+					snapshot, err := g.Persistence.OpenSnapshot(req.Metadata)
+					if errors.Is(err, ErrNoSuchSnapshot) {
+						// Snapshot is lost. Might be due to a concurrent snapshot that superseded this one. We'll try again with
+						// updated state the next time the broadcaster is poked.
+						return nil
+					} else if err != nil {
+						panic(err)
+					}
+
 					if stream, err := client.InstallSnapshot(context.Background()); err != nil {
 						g.logger.Error("InstallSnapshot->", zap.String("peer", p.id), zap.Any("request", req), zap.Error(err), zap.Stringer("state", g))
 						return nil
-					} else {
-						snapshot, err := g.Persistence.OpenSnapshot(req.Metadata)
-						// TODO handle case where snapshot is lost.
+					} else if snapshot.Metadata().Size <= defaultSnapshotBufferSize {
+						// Send without streaming.
+						data, err := snapshot.ReadAll()
 						if err != nil {
 							panic(err)
 						}
 
-						defer snapshot.Close()
-
-						if snapshot.Metadata().Size <= defaultSnapshotBufferSize {
-							// Send without streaming.
-							data, err := snapshot.ReadAll()
-							if err != nil {
-								panic(err)
+						req.Data = data
+						req.Offset = 0
+						req.Done = true
+						err = stream.Send(req)
+						if err == nil || errors.Is(err, io.EOF) {
+							if res, err := stream.CloseAndRecv(); err != nil {
+								g.logger.Error("InstallSnapshot->", zap.String("peer", p.id), zap.Any("request", req), zap.Error(err), zap.Stringer("state", g))
+								return nil
+							} else {
+								return res
+							}
+						} else {
+							g.logger.Error("InstallSnapshot->", zap.String("peer", p.id), zap.Any("request", req), zap.Error(err), zap.Stringer("state", g))
+							return nil
+						}
+					} else {
+						reader := snapshot.Reader()
+						buffer := make([]byte, defaultSnapshotBufferSize)
+						req.Offset = 0
+						for {
+							n, err := reader.Read(buffer)
+							if errors.Is(err, io.EOF) {
+								req.Done = true
+							} else if err != nil {
+								// Don't forget to close the stream.
+								panic(errors.Join(err, stream.CloseSend()))
 							}
 
-							req.Data = data
-							req.Offset = 0
-							req.Done = true
+							req.Data = buffer[:n]
 							err = stream.Send(req)
-							if err == nil || errors.Is(err, io.EOF) {
+							if (req.Done && err == nil) || errors.Is(err, io.EOF) {
 								if res, err := stream.CloseAndRecv(); err != nil {
 									g.logger.Error("InstallSnapshot->", zap.String("peer", p.id), zap.Any("request", req), zap.Error(err), zap.Stringer("state", g))
 									return nil
 								} else {
 									return res
 								}
-							} else {
+							} else if err != nil {
 								g.logger.Error("InstallSnapshot->", zap.String("peer", p.id), zap.Any("request", req), zap.Error(err), zap.Stringer("state", g))
 								return nil
 							}
-						} else {
-							reader := snapshot.Reader()
-							buffer := make([]byte, defaultSnapshotBufferSize)
-							req.Offset = 0
-							for {
-								n, err := reader.Read(buffer)
-								if errors.Is(err, io.EOF) {
-									req.Done = true
-								} else if err != nil {
-									// TODO this will cause a leak. We need a way to discard sending the snapshot first.
-									panic(err)
-								}
 
-								req.Data = buffer[:n]
-								err = stream.Send(req)
-								if req.Done || errors.Is(err, io.EOF) {
-									if res, err := stream.CloseAndRecv(); err != nil {
-										g.logger.Error("InstallSnapshot->", zap.String("peer", p.id), zap.Any("request", req), zap.Error(err), zap.Stringer("state", g))
-										return nil
-									} else {
-										return res
-									}
-								} else if err != nil {
-									g.logger.Error("InstallSnapshot->", zap.String("peer", p.id), zap.Any("request", req), zap.Error(err), zap.Stringer("state", g))
-									return nil
-								}
-
-								req.Offset += int64(n)
-							}
+							req.Offset += int64(n)
 						}
 					}
 
@@ -815,7 +815,7 @@ func (g *Graft) broadcastWorker(p *peer, c *broadcastChannel) {
 						g.unguardedTransitionToFollower(res.Term)
 						return false
 					} else if res.Success {
-						p.lastHeartbeatTime = time.Now()
+						p.lastHeartbeatTime = timeBeforeSending
 
 						req := req.(*pb.AppendEntriesRequest)
 						if len(req.Entries) > 0 {
@@ -840,7 +840,7 @@ func (g *Graft) broadcastWorker(p *peer, c *broadcastChannel) {
 
 						return p.matchIndex < lastIndex
 					} else {
-						p.lastHeartbeatTime = time.Now()
+						p.lastHeartbeatTime = timeBeforeSending
 						p.nextIndex--
 						return true
 					}
@@ -861,7 +861,7 @@ func (g *Graft) broadcastWorker(p *peer, c *broadcastChannel) {
 						g.unguardedTransitionToFollower(res.Term)
 						return false
 					} else {
-						p.lastHeartbeatTime = time.Now()
+						p.lastHeartbeatTime = timeBeforeSending
 
 						req := req.(*pb.SnapshotRequest)
 						p.nextIndex = req.Metadata.LastIncludedIndex + 1
