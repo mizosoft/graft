@@ -97,7 +97,11 @@ type Graft struct {
 
 	lastHeartbeatTime  time.Time
 	minElectionTimeout time.Duration
+	rpcTimeouts        RPCTimeouts
 	logger             *zap.SugaredLogger
+
+	rpcCtx       context.Context
+	rpcCtxCancel context.CancelFunc
 
 	Id                string
 	Persistence       Persistence
@@ -120,6 +124,9 @@ func New(config Config) (*Graft, error) {
 		return nil, fmt.Errorf("sever ID cannot be %s", UnknownLeader)
 	}
 
+	// Create cancellable context for lifecycle management
+	ctx, cancel := context.WithCancel(context.Background())
+
 	g := &Graft{
 		Id: config.Id,
 		raftState: raftState{
@@ -133,6 +140,7 @@ func New(config Config) (*Graft, error) {
 		address:               config.Addresses[config.Id],
 		lastConfigUpdateIndex: -1,
 		minElectionTimeout:    time.Duration(config.ElectionTimeoutMillis.Low) * time.Millisecond,
+		rpcTimeouts:           config.RPCTimeoutsOrDefault(),
 		applyChan:             make(chan any, 1024), // Buffer the channel so that a slow client doesn't immediately block workflow.
 		deadChan:              make(chan struct{}),
 		logCompactionChan:     make(chan int64, 16*1024), // Buffer to avoid blocking snapshot operations.
@@ -142,9 +150,10 @@ func New(config Config) (*Graft, error) {
 		startingConfigUpdate: &pb.ConfigUpdate{
 			Phase: pb.ConfigUpdate_APPLIED,
 		},
-		logger: config.LoggerOrNoop().With(zap.String("name", "Graft"), zap.String("id", config.Id)).Sugar(),
-
-		Persistence: config.Persistence,
+		logger:       config.LoggerOrNoop().With(zap.String("name", "Graft"), zap.String("id", config.Id)).Sugar(),
+		rpcCtx:       ctx,
+		rpcCtxCancel: cancel,
+		Persistence:  config.Persistence,
 		Restore: func(snapshot Snapshot) error {
 			return nil
 		},
@@ -277,6 +286,8 @@ func (g *Graft) Close() {
 		return
 	}
 	g.state = stateDead
+
+	g.rpcCtxCancel()
 
 	g.electionTimer.stop()
 	g.heartbeatTimer.stop()
@@ -547,7 +558,10 @@ func (g *Graft) runElection(timeoutTerm int64) {
 					return
 				}
 
-				if res, rerr := client.RequestVote(context.Background(), request); rerr != nil {
+				ctx, cancel := context.WithTimeout(g.rpcCtx, g.rpcTimeouts.RequestVote)
+				defer cancel()
+
+				if res, rerr := client.RequestVote(ctx, request); rerr != nil {
 					g.logger.Error("RequestVote->", zap.String("peer", p.id), zap.Any("request", request), zap.Error(cerr))
 				} else {
 					g.mut.Lock()
@@ -719,7 +733,10 @@ func (g *Graft) broadcastWorker(p *peer, c *broadcastChannel) {
 			res := func() proto.Message {
 				switch req := req.(type) {
 				case *pb.AppendEntriesRequest:
-					if res, err := client.AppendEntries(context.Background(), req); err != nil {
+					ctx, cancel := context.WithTimeout(g.rpcCtx, g.rpcTimeouts.AppendEntries)
+					defer cancel()
+
+					if res, err := client.AppendEntries(ctx, req); err != nil {
 						g.logger.Error("AppendEntries->", zap.String("peer", p.id), zap.Any("request", req), zap.Error(err), zap.Stringer("state", g))
 						return nil
 					} else {
@@ -736,7 +753,10 @@ func (g *Graft) broadcastWorker(p *peer, c *broadcastChannel) {
 						panic(err)
 					}
 
-					if stream, err := client.InstallSnapshot(context.Background()); err != nil {
+					ctx, cancel := context.WithTimeout(g.rpcCtx, g.rpcTimeouts.InstallSnapshot)
+					defer cancel()
+
+					if stream, err := client.InstallSnapshot(ctx); err != nil {
 						g.logger.Error("InstallSnapshot->", zap.String("peer", p.id), zap.Any("request", req), zap.Error(err), zap.Stringer("state", g))
 						return nil
 					} else if snapshot.Metadata().Size <= defaultSnapshotBufferSize {
