@@ -58,22 +58,17 @@ func main() {
 
 	logger := zap.NewExample()
 
-	q, err := service.NewMsgqService(*address, 0, graft.Config{
-		Id:                        *id,
-		Addresses:                 addresses,
-		ElectionTimeoutLowMillis:  1500,
-		ElectionTimeoutHighMillis: 3000,
-		HeartbeatMillis:           500,
-		Persistence:               wal,
-		Logger:                    logger,
+	q, err := service.NewMsgqServer(*address, 0, graft.Config{
+		Id:                    *id,
+		Addresses:             addresses,
+		ElectionTimeoutMillis: graft.IntRange{Low: 150, High: 300},
+		HeartbeatMillis:       500,
+		Persistence:           wal,
+		Logger:                logger,
 	})
 	if err != nil {
 		panic(err)
 	}
 
-	q.Initialize()
-	err = q.ListenAndServe()
-	if err != nil {
-		panic(err)
-	}
+	q.Start()
 }

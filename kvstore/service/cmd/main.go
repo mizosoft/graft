@@ -59,22 +59,17 @@ func main() {
 
 	logger := zap.NewExample()
 
-	kvs, err := service.NewKvService(*address, 0, graft.Config{
-		Id:                        *id,
-		Addresses:                 addresses,
-		ElectionTimeoutLowMillis:  1500,
-		ElectionTimeoutHighMillis: 3000,
-		HeartbeatMillis:           500,
-		Persistence:               wal,
-		Logger:                    logger,
+	kvs, err := service.NewKvServer(*address, 0, graft.Config{
+		Id:                    *id,
+		Addresses:             addresses,
+		ElectionTimeoutMillis: graft.IntRange{Low: 150, High: 300},
+		HeartbeatMillis:       50,
+		Persistence:           wal,
+		Logger:                logger,
 	})
 	if err != nil {
 		panic(err)
 	}
 
-	kvs.Initialize()
-	err = kvs.ListenAndServe()
-	if err != nil {
-		panic(err)
-	}
+	kvs.Start()
 }

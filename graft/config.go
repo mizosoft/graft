@@ -2,11 +2,9 @@ package graft
 
 import (
 	"fmt"
-	"io"
 	"reflect"
 	"time"
 
-	"github.com/mizosoft/graft/pb"
 	"go.uber.org/zap"
 )
 
@@ -19,14 +17,14 @@ func (r IntRange) String() string {
 	return fmt.Sprintf("IntRange{Low: %d, High: %d}", r.Low, r.High)
 }
 
-type RPCTimeouts struct {
+type RpcTimeouts struct {
 	RequestVote     time.Duration
 	AppendEntries   time.Duration
 	InstallSnapshot time.Duration
 }
 
-func (r RPCTimeouts) String() string {
-	return fmt.Sprintf("RPCTimeouts{RequestVote: %v, AppendEntries: %v, InstallSnapshot: %v}",
+func (r RpcTimeouts) String() string {
+	return fmt.Sprintf("RpcTimeouts{RequestVote: %v, AppendEntries: %v, InstallSnapshot: %v}",
 		r.RequestVote, r.AppendEntries, r.InstallSnapshot)
 }
 
@@ -36,13 +34,7 @@ type Config struct {
 	ElectionTimeoutMillis IntRange
 	HeartbeatMillis       int
 	Persistence           Persistence
-	RPCTimeouts           RPCTimeouts
-	Restore               func(snapshot Snapshot) error
-	Apply                 func(entry *pb.LogEntry) error
-	ShouldSnapshot        func() bool
-	Snapshot              func(writer io.Writer) error
-	ApplyConfigUpdate     func(update *pb.ConfigUpdate) error
-	Closed                func() error
+	RpcTimeouts           RpcTimeouts
 	Logger                *zap.Logger
 }
 
@@ -53,9 +45,9 @@ func (c Config) LoggerOrNoop() *zap.Logger {
 	return zap.NewNop()
 }
 
-func (c Config) RPCTimeoutsOrDefault() RPCTimeouts {
+func (c Config) RpcTimeoutsWithDefaults() RpcTimeouts {
 	// Return configured timeouts, filling in zeros with defaults.
-	timeouts := c.RPCTimeouts
+	timeouts := c.RpcTimeouts
 	if timeouts.RequestVote == 0 {
 		timeouts.RequestVote = 200 * time.Millisecond
 	}
@@ -70,6 +62,6 @@ func (c Config) RPCTimeoutsOrDefault() RPCTimeouts {
 
 func (c Config) String() string {
 	return fmt.Sprintf(
-		"Confg{Id: %s, Addresses: %v, ElectionTimeoutMillis: %v, HeartbeatMillis: %v, Persistence: %s}",
-		c.Id, c.Addresses, c.ElectionTimeoutMillis, c.HeartbeatMillis, reflect.TypeOf(c.Persistence))
+		"Confg{Id: %s, Addresses: %v, ElectionTimeoutMillis: %v, HeartbeatMillis: %v, Persistence: %s, RpcTimeouts: %s}",
+		c.Id, c.Addresses, c.ElectionTimeoutMillis, c.HeartbeatMillis, reflect.TypeOf(c.Persistence), c.RpcTimeouts)
 }

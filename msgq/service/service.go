@@ -18,26 +18,6 @@ type MsgqService struct {
 	server *server.Server
 }
 
-func (m *MsgqService) Id() string {
-	return m.server.G.Id
-}
-
-func (m *MsgqService) Address() string {
-	return m.server.Address()
-}
-
-func (m *MsgqService) Initialize() {
-	m.server.Initialize()
-}
-
-func (m *MsgqService) ListenAndServe() error {
-	return m.server.ListenAndServe()
-}
-
-func (m *MsgqService) Shutdown() error {
-	return m.server.Shutdown()
-}
-
 func (m *MsgqService) handleEnqueue(w http.ResponseWriter, r *http.Request) {
 	req, err := server.DecodeJson[api.EnqueueRequest](r)
 	if err != nil {
@@ -68,7 +48,7 @@ func (m *MsgqService) handleDeque(w http.ResponseWriter, r *http.Request) {
 	}, w)
 }
 
-func NewMsgqService(address string, batchInterval time.Duration, config graft.Config) (*MsgqService, error) {
+func NewMsgqServer(address string, batchInterval time.Duration, config graft.Config) (*server.Server, error) {
 	q := newMsgq(config.Logger.With(zap.String("id", config.Id)))
 	srv, err := server.NewServer("MsgqService", address, batchInterval, q, config)
 	if err != nil {
@@ -84,5 +64,5 @@ func NewMsgqService(address string, batchInterval time.Duration, config graft.Co
 
 		gob.Register(MsgqCommand{})
 	}
-	return service, nil
+	return service.server, nil
 }

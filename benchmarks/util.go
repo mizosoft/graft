@@ -15,7 +15,7 @@ import (
 	"go.uber.org/zap/zapcore"
 )
 
-func newClusterClient(b *testing.B, nodeCount int, batchInterval time.Duration) (*server.Cluster[*service.KvService], *client.KvClient) {
+func newClusterClient(b *testing.B, nodeCount int, batchInterval time.Duration) (*server.Cluster, *client.KvClient) {
 	// Open a file for writing logs
 	file, err := os.OpenFile("app.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
@@ -51,14 +51,14 @@ func newClusterClient(b *testing.B, nodeCount int, batchInterval time.Duration) 
 		os.Exit(0)
 	}()
 
-	cluster, err := server.StartLocalCluster[*service.KvService](
-		server.ClusterConfig[*service.KvService]{
+	cluster, err := server.StartLocalCluster(
+		server.ClusterConfig{
 			Dir:                   b.TempDir(),
 			NodeCount:             nodeCount,
 			HeartbeatMillis:       50,
 			ElectionTimeoutMillis: graft.IntRange{Low: 150, High: 300},
-			ServiceFactory: func(address string, config graft.Config) (*service.KvService, error) {
-				return service.NewKvService(address, batchInterval, config)
+			ServerFactory: func(address string, config graft.Config) (*server.Server, error) {
+				return service.NewKvServer(address, batchInterval, config)
 			},
 			Logger: logger,
 		},
@@ -78,15 +78,15 @@ func newClusterClient(b *testing.B, nodeCount int, batchInterval time.Duration) 
 	return cluster, kvClient
 }
 
-func newClusterClientWithWalPersistence(b *testing.B, nodeCount int, batchInterval time.Duration) (*server.Cluster[*service.KvService], *client.KvClient) {
+func newClusterClientWithWalPersistence(b *testing.B, nodeCount int, batchInterval time.Duration) (*server.Cluster, *client.KvClient) {
 	cluster, err := server.StartLocalCluster[*service.KvService](
-		server.ClusterConfig[*service.KvService]{
+		server.ClusterConfig{
 			Dir:                   b.TempDir(),
 			NodeCount:             nodeCount,
 			HeartbeatMillis:       50,
 			ElectionTimeoutMillis: graft.IntRange{Low: 150, High: 300},
-			ServiceFactory: func(address string, config graft.Config) (*service.KvService, error) {
-				return service.NewKvService(address, batchInterval, config)
+			ServerFactory: func(address string, config graft.Config) (*server.Server, error) {
+				return service.NewKvServer(address, batchInterval, config)
 			},
 			PersistenceFactory: func(dir string) (graft.Persistence, error) {
 				return graft.OpenWal(graft.WalOptions{

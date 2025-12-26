@@ -14,69 +14,35 @@ import (
 	"go.uber.org/zap"
 )
 
-type Service interface {
-	Id() string
-
-	Address() string
-
-	ListenAndServe() error
-
-	Shutdown() error
-}
-
-type node[T Service] struct {
-	service      T
-	config       NodeConfig[T] // For restarting.
+type node struct {
+	server       *Server
+	config       NodeConfig
 	startErrChan chan error
 	mut          sync.Mutex
 }
 
-func (n *node[T]) Start() {
-	go func() {
-		err := n.service.ListenAndServe()
-		fmt.Println("Done listening and serving: ", err, n.config.Id)
-
-		n.mut.Lock()
-		defer n.mut.Unlock()
-
-		if n.startErrChan != nil {
-			n.startErrChan <- err
-			close(n.startErrChan)
-		} else {
-			log.Panicf("Unexpected ListenAndServe err: %v", err)
-		}
-	}()
+func (n *node) Start() {
+	n.server.Start()
 }
 
-func (n *node[T]) Shutdown() error {
-	ch := func() chan error {
-		n.mut.Lock()
-		defer n.mut.Unlock()
-
-		if n.startErrChan == nil {
-			n.startErrChan = make(chan error)
-		}
-		return n.startErrChan
+func (n *node) Close() error {
+	errChan := make(chan error)
+	go func() {
+		errChan <- n.server.Close()
 	}()
 
-	err := n.service.Shutdown()
-	if err != nil {
-		log.Println("Error shutting down node: ", err)
-	}
-	fmt.Println("Done shutting down")
-
 	select {
-	case err := <-ch:
+	case err := <-errChan:
 		if err != nil {
 			log.Println("ListenAndServe error: ", err)
 		}
 	case <-time.After(5 * time.Second):
-		return fmt.Errorf("timed out waiting for node (%s) to shutdown", n.service.Id())
+		return fmt.Errorf("timed out waiting for node (%s) to close", n.config.Id)
 	}
 	return nil
 }
 
-type NodeConfig[T Service] struct {
+type NodeConfig struct {
 	Dir                   string
 	Id                    string
 	Address               string
@@ -84,17 +50,17 @@ type NodeConfig[T Service] struct {
 	Logger                *zap.Logger
 	HeartbeatMillis       int
 	ElectionTimeoutMillis graft.IntRange
-	ServiceFactory        func(address string, config graft.Config) (T, error)
+	ServerFactory         func(address string, config graft.Config) (*Server, error)
 	PersistenceFactory    func(dir string) (graft.Persistence, error)
 }
 
-func newNode[T Service](config NodeConfig[T]) (*node[T], error) {
+func newNode(config NodeConfig) (*node, error) {
 	persistence, err := config.PersistenceFactory(config.Dir)
 	if err != nil {
 		return nil, err
 	}
 
-	service, err := config.ServiceFactory(config.Address, graft.Config{
+	server, err := config.ServerFactory(config.Address, graft.Config{
 		Id:                    config.Id,
 		Addresses:             config.GraftAddresses,
 		ElectionTimeoutMillis: config.ElectionTimeoutMillis,
@@ -105,37 +71,38 @@ func newNode[T Service](config NodeConfig[T]) (*node[T], error) {
 	if err != nil {
 		return nil, err
 	}
-	return &node[T]{
-		service: service,
-		config:  config,
+
+	return &node{
+		server: server,
+		config: config,
 	}, nil
 }
 
-type Cluster[T Service] struct {
-	nodes          map[string]*node[T]
-	serviceFactory func(address string, config graft.Config) (T, error)
+type Cluster struct {
+	nodes         map[string]*node
+	serverFactory func(address string, config graft.Config) (*Server, error)
 }
 
-func (c *Cluster[T]) ServiceConfig() map[string]string {
+func (c *Cluster) ServiceConfig() map[string]string {
 	config := make(map[string]string)
 	for id, node := range c.nodes {
-		config[id] = node.service.Address()
+		config[id] = node.server.Address()
 	}
 	return config
 }
 
-func (c *Cluster[T]) Restart(id string) error {
+func (c *Cluster) Restart(id string) error {
 	n, ok := c.nodes[id]
 	if !ok {
 		return fmt.Errorf("node not found: %s", id)
 	}
 
-	err := n.Shutdown()
+	err := n.Close()
 	if err != nil {
 		log.Printf("Error shutting down node: %v", err)
 	}
 
-	newN, err := newNode[T](n.config)
+	newN, err := newNode(n.config)
 	if err != nil {
 		return err
 	}
@@ -144,10 +111,10 @@ func (c *Cluster[T]) Restart(id string) error {
 	return nil
 }
 
-func (c *Cluster[T]) Shutdown() {
+func (c *Cluster) Shutdown() {
 	var errs []error
 	for _, node := range c.nodes {
-		err := node.Shutdown()
+		err := node.Close()
 		if err != nil {
 			errs = append(errs, err)
 		}
@@ -158,20 +125,20 @@ func (c *Cluster[T]) Shutdown() {
 	}
 }
 
-type ClusterConfig[T Service] struct {
+type ClusterConfig struct {
 	Dir                   string
 	NodeCount             int
 	HeartbeatMillis       int
 	ElectionTimeoutMillis graft.IntRange
-	ServiceFactory        func(address string, config graft.Config) (T, error)
+	ServerFactory         func(address string, config graft.Config) (*Server, error)
 	PersistenceFactory    func(dir string) (graft.Persistence, error)
 	Logger                *zap.Logger
 }
 
-func StartLocalCluster[T Service](config ClusterConfig[T]) (*Cluster[T], error) {
-	cluster := &Cluster[T]{
-		nodes:          make(map[string]*node[T]),
-		serviceFactory: config.ServiceFactory,
+func StartLocalCluster(config ClusterConfig) (*Cluster, error) {
+	cluster := &Cluster{
+		nodes:         make(map[string]*node),
+		serverFactory: config.ServerFactory,
 	}
 
 	graftAddresses := make(map[string]string)
@@ -198,7 +165,7 @@ func StartLocalCluster[T Service](config ClusterConfig[T]) (*Cluster[T], error) 
 			return nil, err
 		}
 
-		n, err := newNode(NodeConfig[T]{
+		n, err := newNode(NodeConfig{
 			Dir:                   dir,
 			Id:                    id,
 			Address:               "127.0.0.1:" + strconv.Itoa(2634+i),
@@ -206,7 +173,7 @@ func StartLocalCluster[T Service](config ClusterConfig[T]) (*Cluster[T], error) 
 			Logger:                config.Logger,
 			HeartbeatMillis:       config.HeartbeatMillis,
 			ElectionTimeoutMillis: config.ElectionTimeoutMillis,
-			ServiceFactory:        config.ServiceFactory,
+			ServerFactory:         config.ServerFactory,
 			PersistenceFactory:    config.PersistenceFactory,
 		})
 		if err != nil {

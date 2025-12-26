@@ -26,40 +26,67 @@ type Command struct {
 }
 
 type Server struct {
-	sm          StateMachine
-	initialized atomic.Bool
-	publisher   *publisher
-	srv         *http.Server
-	batcher     *batcher
-	G           *graft.Graft
-	Mux         *http.ServeMux
-	Logger      *zap.SugaredLogger
-	Init        func()
+	io.Closer
+
+	sm        StateMachine
+	started   atomic.Bool
+	publisher *publisher
+	srv       *http.Server
+	batcher   *batcher
+	G         *graft.Graft
+	Mux       *http.ServeMux
+	Logger    *zap.SugaredLogger
+	Init      func()
 }
 
 func (s *Server) Address() string {
 	return s.srv.Addr
 }
 
-func (s *Server) ListenAndServe() error {
-	s.Initialize()
+func (s *Server) Start() {
+	if !s.started.CompareAndSwap(false, true) {
+		return
+	}
+
+	s.Mux.HandleFunc("POST /config", s.handlePostConfig)
+	s.Mux.HandleFunc("GET /config", s.handleGetConfig)
+
+	s.batcher.init()
+
+	s.Init()
+
+	s.G.Start(graft.Callbacks{
+		Restore: func(snapshot graft.Snapshot) error {
+			return s.sm.Restore(snapshot)
+		},
+		Apply: func(entry *pb.LogEntry) error {
+			return s.apply(entry)
+		},
+		ShouldSnapshot: func() bool {
+			return s.sm.ShouldSnapshot()
+		},
+		Snapshot: func(writer io.Writer) error {
+			_, err := writer.Write(s.sm.Snapshot())
+			return err
+		},
+		ApplyConfigUpdate: func(update *pb.ConfigUpdate) error {
+			s.publisher.publish(update.Id, update)
+			return nil
+		},
+	})
 
 	go func() {
-		err := s.G.ListenAndServe()
-		if err != nil {
-			s.Logger.Error("Graft::ListenAndServe error", zap.Error(err))
+		s.Logger.Info("Starting service", zap.String("address", s.Address()))
+		if err := s.srv.ListenAndServe(); err != nil {
+			s.Logger.Error("ListenAndServer error", zap.Error(err))
 		}
 	}()
-
-	s.Logger.Info("Starting service", zap.String("address", s.Address()))
-	return s.srv.ListenAndServe()
 }
 
-func (s *Server) Shutdown() error {
-	err := s.srv.Shutdown(context.Background())
-	s.G.Close()
-	err = errors.Join(err, s.G.Persistence.Close())
-	return err
+func (s *Server) Close() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return errors.Join(s.srv.Shutdown(ctx), s.G.Close(), s.G.Persistence().Close())
 }
 
 func (s *Server) RespondOk(w http.ResponseWriter, payload any) {
@@ -84,7 +111,7 @@ func (s *Server) apply(entry *pb.LogEntry) error {
 	}
 
 	response := s.sm.Apply(command)
-	if command.ServerId == s.G.Id {
+	if command.ServerId == s.G.Id() {
 		s.publisher.publishOnce(command.Id, response)
 	}
 	return nil
@@ -93,7 +120,7 @@ func (s *Server) apply(entry *pb.LogEntry) error {
 func (s *Server) Execute(clientId string, smCommand any, w http.ResponseWriter) {
 	command := Command{
 		Id:        uuid.New().String(),
-		ServerId:  s.G.Id,
+		ServerId:  s.G.Id(),
 		ClientId:  clientId,
 		SmCommand: smCommand,
 	}
@@ -181,37 +208,6 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, _ *http.Request) {
 	s.RespondOk(w, api.ConfigResponse{
 		Config: s.G.Config(),
 	})
-}
-
-func (s *Server) Initialize() {
-	if !s.initialized.CompareAndSwap(false, true) {
-		return
-	}
-
-	s.G.Restore = func(snapshot graft.Snapshot) error {
-		return s.sm.Restore(snapshot)
-	}
-	s.G.Apply = func(entry *pb.LogEntry) error {
-		return s.apply(entry)
-	}
-	s.G.ShouldSnapshot = func() bool {
-		return s.sm.ShouldSnapshot()
-	}
-	s.G.Snapshot = func(writer io.Writer) error {
-		_, err := writer.Write(s.sm.Snapshot())
-		return err
-	}
-	s.G.ApplyConfigUpdate = func(update *pb.ConfigUpdate) error {
-		s.publisher.publish(update.Id, update)
-		return nil
-	}
-
-	s.Mux.HandleFunc("POST /config", s.handlePostConfig)
-	s.Mux.HandleFunc("GET /config", s.handleGetConfig)
-
-	s.batcher.init()
-
-	s.Init()
 }
 
 func NewServer(serviceName string, address string, batchInterval time.Duration, sm StateMachine, config graft.Config) (*Server, error) {

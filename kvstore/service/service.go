@@ -7,7 +7,7 @@ import (
 
 	"github.com/mizosoft/graft"
 	"github.com/mizosoft/graft/infra/server"
-	kvstore2 "github.com/mizosoft/graft/kvstore2/api"
+	"github.com/mizosoft/graft/kvstore2/api"
 	"go.uber.org/zap"
 )
 
@@ -16,28 +16,8 @@ type KvService struct {
 	server *server.Server
 }
 
-func (s *KvService) Id() string {
-	return s.server.G.Id
-}
-
-func (s *KvService) Address() string {
-	return s.server.Address()
-}
-
-func (s *KvService) Initialize() {
-	s.server.Initialize()
-}
-
-func (s *KvService) ListenAndServe() error {
-	return s.server.ListenAndServe()
-}
-
-func (s *KvService) Shutdown() error {
-	return s.server.Shutdown()
-}
-
 func (s *KvService) handleGet(w http.ResponseWriter, r *http.Request) {
-	req, err := server.DecodeJson[kvstore2.GetRequest](r)
+	req, err := server.DecodeJson[api.GetRequest](r)
 	if err != nil {
 		http.Error(w, "Invalid request format: "+err.Error(), http.StatusBadRequest)
 		return
@@ -54,7 +34,7 @@ func (s *KvService) handleGet(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *KvService) handlePut(w http.ResponseWriter, r *http.Request) {
-	req, err := server.DecodeJson[kvstore2.PutRequest](r)
+	req, err := server.DecodeJson[api.PutRequest](r)
 	if err != nil {
 		http.Error(w, "Invalid request format: "+err.Error(), http.StatusBadRequest)
 		return
@@ -68,7 +48,7 @@ func (s *KvService) handlePut(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *KvService) handlePutIfAbsent(w http.ResponseWriter, r *http.Request) {
-	req, err := server.DecodeJson[kvstore2.PutRequest](r)
+	req, err := server.DecodeJson[api.PutRequest](r)
 	if err != nil {
 		http.Error(w, "Invalid request format: "+err.Error(), http.StatusBadRequest)
 		return
@@ -82,7 +62,7 @@ func (s *KvService) handlePutIfAbsent(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *KvService) handleCas(w http.ResponseWriter, r *http.Request) {
-	req, err := server.DecodeJson[kvstore2.CasRequest](r)
+	req, err := server.DecodeJson[api.CasRequest](r)
 	if err != nil {
 		http.Error(w, "Invalid request format: "+err.Error(), http.StatusBadRequest)
 		return
@@ -97,7 +77,7 @@ func (s *KvService) handleCas(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *KvService) handleDelete(w http.ResponseWriter, r *http.Request) {
-	req, err := server.DecodeJson[kvstore2.DeleteRequest](r)
+	req, err := server.DecodeJson[api.DeleteRequest](r)
 	if err != nil {
 		http.Error(w, "Invalid request format: "+err.Error(), http.StatusBadRequest)
 		return
@@ -110,7 +90,7 @@ func (s *KvService) handleDelete(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *KvService) handleAppend(w http.ResponseWriter, r *http.Request) {
-	req, err := server.DecodeJson[kvstore2.AppendRequest](r)
+	req, err := server.DecodeJson[api.AppendRequest](r)
 	if err != nil {
 		http.Error(w, "Invalid request format: "+err.Error(), http.StatusBadRequest)
 		return
@@ -123,7 +103,7 @@ func (s *KvService) handleAppend(w http.ResponseWriter, r *http.Request) {
 	}, w)
 }
 
-func NewKvService(address string, batchInterval time.Duration, config graft.Config) (*KvService, error) {
+func NewKvServer(address string, batchInterval time.Duration, config graft.Config) (*server.Server, error) {
 	kvStore := newKvstore(config.Logger.With(zap.String("id", config.Id)))
 	srv, err := server.NewServer("KvService", address, batchInterval, kvStore, config)
 	if err != nil {
@@ -143,5 +123,5 @@ func NewKvService(address string, batchInterval time.Duration, config graft.Conf
 
 		gob.Register(KvCommand{})
 	}
-	return service, nil
+	return service.server, nil
 }

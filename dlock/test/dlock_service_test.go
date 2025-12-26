@@ -646,17 +646,17 @@ func mockClock() *MockClock {
 	}
 }
 
-func NewClusterClient(t *testing.T, nodeCount int, clock infra.Clock) (*server.Cluster[*service.DlockService], *client.DlockClient) {
+func NewClusterClient(t *testing.T, nodeCount int, clock infra.Clock) (*server.Cluster, *client.DlockClient) {
 	_, err := zap.NewDevelopment()
 	assert.NilError(t, err)
-	cluster, err := server.StartLocalCluster[*service.DlockService](
-		server.ClusterConfig[*service.DlockService]{
+	cluster, err := server.StartLocalCluster(
+		server.ClusterConfig{
 			Dir:                   t.TempDir(),
 			NodeCount:             nodeCount,
 			HeartbeatMillis:       50,
-			ElectionTimeoutMillis: graft.IntRange{150, 300},
-			ServiceFactory: func(address string, config graft.Config) (*service.DlockService, error) {
-				return service.NewDlockService(address, 0, clock, config)
+			ElectionTimeoutMillis: graft.IntRange{Low: 150, High: 300},
+			ServerFactory: func(address string, config graft.Config) (*server.Server, error) {
+				return service.NewDlockServer(address, 0, clock, config)
 			},
 			Logger: zap.NewExample(),
 		},
@@ -666,12 +666,12 @@ func NewClusterClient(t *testing.T, nodeCount int, clock infra.Clock) (*server.C
 		t.Fatalf("Couldn't start cluster: %v", err)
 	}
 
-	client := client.NewDlockClient("client-"+t.Name(), cluster.ServiceConfig())
+	dlockClient := client.NewDlockClient("client-"+t.Name(), cluster.ServiceConfig())
 
-	err = client.CheckHealthy()
+	err = dlockClient.CheckHealthy()
 	if err != nil {
 		t.Fatalf("Couldn't connect to cluster: %v", err)
 	}
 
-	return cluster, client
+	return cluster, dlockClient
 }

@@ -87,15 +87,15 @@ func TestMsgqServiceFailover(t *testing.T) {
 	}
 }
 
-func NewClusterClient(t *testing.T, nodeCount int) (*server.Cluster[*service.MsgqService], *client.MsgqClient) {
+func NewClusterClient(t *testing.T, nodeCount int) (*server.Cluster, *client.MsgqClient) {
 	cluster, err := server.StartLocalCluster[*service.MsgqService](
-		server.ClusterConfig[*service.MsgqService]{
+		server.ClusterConfig{
 			Dir:                   t.TempDir(),
 			NodeCount:             nodeCount,
 			HeartbeatMillis:       50,
 			ElectionTimeoutMillis: graft.IntRange{Low: 150, High: 300},
-			ServiceFactory: func(address string, config graft.Config) (*service.MsgqService, error) {
-				return service.NewMsgqService(address, 0, config)
+			ServerFactory: func(address string, config graft.Config) (*server.Server, error) {
+				return service.NewMsgqServer(address, 0, config)
 			},
 			Logger: zap.NewExample(),
 		},
@@ -105,12 +105,12 @@ func NewClusterClient(t *testing.T, nodeCount int) (*server.Cluster[*service.Msg
 		t.Fatalf("Couldn't start cluster: %v", err)
 	}
 
-	client := client.NewMsgqClient("client-"+t.Name(), cluster.ServiceConfig())
+	msgqClient := client.NewMsgqClient("client-"+t.Name(), cluster.ServiceConfig())
 
-	err = client.CheckHealthy()
+	err = msgqClient.CheckHealthy()
 	if err != nil {
 		t.Fatalf("Couldn't connect to cluster: %v", err)
 	}
 
-	return cluster, client
+	return cluster, msgqClient
 }

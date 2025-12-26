@@ -224,7 +224,7 @@ func TestKvServiceFailOver(t *testing.T) {
 	}
 }
 
-func NewClusterClient(t *testing.T, nodeCount int) (*server.Cluster[*service.KvService], *client.KvClient) {
+func NewClusterClient(t *testing.T, nodeCount int) (*server.Cluster, *client.KvClient) {
 	// Open a file for writing logs
 	file, err := os.OpenFile("app.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
@@ -259,14 +259,14 @@ func NewClusterClient(t *testing.T, nodeCount int) (*server.Cluster[*service.KvS
 		logger.Sync() // Ensure logs are flushed
 	}()
 
-	cluster, err := server.StartLocalCluster[*service.KvService](
-		server.ClusterConfig[*service.KvService]{
+	cluster, err := server.StartLocalCluster(
+		server.ClusterConfig{
 			Dir:                   t.TempDir(),
 			NodeCount:             nodeCount,
 			HeartbeatMillis:       50,
 			ElectionTimeoutMillis: graft.IntRange{Low: 150, High: 300},
-			ServiceFactory: func(address string, config graft.Config) (*service.KvService, error) {
-				return service.NewKvService(address, 0, config)
+			ServerFactory: func(address string, config graft.Config) (*server.Server, error) {
+				return service.NewKvServer(address, 0, config)
 			},
 			Logger: logger,
 		},
@@ -276,12 +276,12 @@ func NewClusterClient(t *testing.T, nodeCount int) (*server.Cluster[*service.KvS
 		t.Fatalf("Couldn't start cluster: %v", err)
 	}
 
-	client := client.NewKvClient("client-"+t.Name(), cluster.ServiceConfig())
+	kvClient := client.NewKvClient("client-"+t.Name(), cluster.ServiceConfig())
 
-	err = client.CheckHealthy()
+	err = kvClient.CheckHealthy()
 	if err != nil {
 		t.Fatalf("Couldn't connect to cluster: %v", err)
 	}
 
-	return cluster, client
+	return cluster, kvClient
 }
