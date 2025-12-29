@@ -61,7 +61,7 @@ message SnapshotMetadata {
 
 message NodeConfig {
   string id = 1;
-  string address = 2;
+  string url = 2;
 }
 
 message ConfigUpdate {

@@ -14,8 +14,8 @@ import (
 
 type peer struct {
 	id                string
-	address           string
-	learner           bool
+	url               string
+	learner           bool // Is this peer a learner or does it participate in votes and whatnot?
 	nextIndex         int64
 	matchIndex        int64
 	lastHeartbeatTime time.Time // Last heartbeat sent to this peer.
@@ -35,7 +35,7 @@ func (p *peer) client() (pb.RaftClient, error) {
 	client := p.lazyClient
 	if client == nil {
 		conn, err := grpc.NewClient(
-			p.address,
+			p.url,
 			grpc.WithTransportCredentials(insecure.NewCredentials()),
 			grpc.WithConnectParams(grpc.ConnectParams{
 				Backoff: backoff.Config{

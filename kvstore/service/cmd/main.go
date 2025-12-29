@@ -61,7 +61,7 @@ func main() {
 
 	kvs, err := service.NewKvServer(*address, 0, graft.Config{
 		Id:                    *id,
-		Addresses:             addresses,
+		ClusterUrls:           addresses,
 		ElectionTimeoutMillis: graft.IntRange{Low: 150, High: 300},
 		HeartbeatMillis:       50,
 		Persistence:           wal,

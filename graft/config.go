@@ -30,7 +30,7 @@ func (r RpcTimeouts) String() string {
 
 type Config struct {
 	Id                    string
-	Addresses             map[string]string
+	ClusterUrls           map[string]string
 	ElectionTimeoutMillis IntRange
 	HeartbeatMillis       int
 	Persistence           Persistence
@@ -62,6 +62,6 @@ func (c Config) RpcTimeoutsWithDefaults() RpcTimeouts {
 
 func (c Config) String() string {
 	return fmt.Sprintf(
-		"Confg{Id: %s, Addresses: %v, ElectionTimeoutMillis: %v, HeartbeatMillis: %v, Persistence: %s, RpcTimeouts: %s}",
-		c.Id, c.Addresses, c.ElectionTimeoutMillis, c.HeartbeatMillis, reflect.TypeOf(c.Persistence), c.RpcTimeouts)
+		"Confg{Id: %s, ClusterUrls: %v, ElectionTimeoutMillis: %v, HeartbeatMillis: %v, Persistence: %s, RpcTimeouts: %s}",
+		c.Id, c.ClusterUrls, c.ElectionTimeoutMillis, c.HeartbeatMillis, reflect.TypeOf(c.Persistence), c.RpcTimeouts)
 }

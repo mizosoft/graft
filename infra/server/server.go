@@ -191,7 +191,7 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 			s.publisher.unsubscribe(id)
 			config := make(map[string]string)
 			for _, c := range u.New {
-				config[c.Id] = c.Address
+				config[c.Id] = c.Url
 			}
 			s.RespondOk(w, api.ConfigResponse{
 				Config: config,

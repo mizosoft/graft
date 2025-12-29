@@ -62,7 +62,7 @@ func newNode(config NodeConfig) (*node, error) {
 
 	server, err := config.ServerFactory(config.Address, graft.Config{
 		Id:                    config.Id,
-		Addresses:             config.GraftAddresses,
+		ClusterUrls:           config.GraftAddresses,
 		ElectionTimeoutMillis: config.ElectionTimeoutMillis,
 		HeartbeatMillis:       config.HeartbeatMillis,
 		Persistence:           persistence,

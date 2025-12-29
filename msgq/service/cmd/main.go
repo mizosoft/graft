@@ -60,7 +60,7 @@ func main() {
 
 	q, err := service.NewMsgqServer(*address, 0, graft.Config{
 		Id:                    *id,
-		Addresses:             addresses,
+		ClusterUrls:           addresses,
 		ElectionTimeoutMillis: graft.IntRange{Low: 150, High: 300},
 		HeartbeatMillis:       500,
 		Persistence:           wal,

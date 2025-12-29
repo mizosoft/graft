@@ -128,7 +128,7 @@ type Graft struct {
 	io.Closer
 
 	raftState
-	address           string
+	url               string
 	leaderId          string
 	peers             map[string]*peer
 	electionTimer     *eventTimer[int64]
@@ -203,7 +203,7 @@ func New(config Config) (*Graft, error) {
 			lastApplied: -1,
 		},
 		leaderId:              UnknownLeader,
-		address:               config.Addresses[config.Id],
+		url:                   config.ClusterUrls[config.Id],
 		lastConfigUpdateIndex: -1,
 		minElectionTimeout:    time.Duration(config.ElectionTimeoutMillis.Low) * time.Millisecond,
 		rpcTimeouts:           config.RpcTimeoutsWithDefaults(),
@@ -234,10 +234,10 @@ func New(config Config) (*Graft, error) {
 			return struct{}{}
 		})
 
-	for id, addr := range config.Addresses {
+	for id, addr := range config.ClusterUrls {
 		g.startingConfigUpdate.New = append(g.startingConfigUpdate.New, &pb.NodeConfig{
-			Id:      id,
-			Address: addr,
+			Id:  id,
+			Url: addr,
 		})
 	}
 
@@ -268,7 +268,7 @@ func (g *Graft) Start(callbacks Callbacks) {
 			g.fatal(err)
 		}
 
-		listener, err := net.Listen("tcp", g.address)
+		listener, err := net.Listen("tcp", g.url)
 		if err != nil {
 			g.fatal(err)
 		}
@@ -1423,7 +1423,7 @@ func (f *peerFactory) get(config *pb.NodeConfig) *peer {
 	if !ok {
 		p = &peer{
 			id:                config.Id,
-			address:           config.Address,
+			url:               config.Url,
 			nextIndex:         f.lastLogIndex + 1,
 			matchIndex:        -1,
 			learner:           false,
@@ -1580,9 +1580,9 @@ func (g *Graft) ConfigUpdate(id string, addedNodes map[string]string, removedNod
 
 	existingNodes := make(map[string]string)
 	for _, peer := range g.peers {
-		existingNodes[peer.id] = peer.address
+		existingNodes[peer.id] = peer.url
 	}
-	existingNodes[g.id] = g.address
+	existingNodes[g.id] = g.url
 
 	// Perform some clean-up: make sure existingNodes & addedNodes are disjoint, and removedNodes is a subset of
 	// existingNodes and is disjoint with addedNodes.
@@ -1610,19 +1610,19 @@ func (g *Graft) ConfigUpdate(id string, addedNodes map[string]string, removedNod
 		Old: g.lastConfigUpdate.New,
 	}
 
-	for id, address := range existingNodes {
+	for id, url := range existingNodes {
 		if !slices.Contains(removedNodes, id) {
 			update.New = append(update.New, &pb.NodeConfig{
-				Id:      id,
-				Address: address,
+				Id:  id,
+				Url: url,
 			})
 		}
 	}
 
-	for id, address := range addedNodes {
+	for id, url := range addedNodes {
 		update.New = append(update.New, &pb.NodeConfig{
-			Id:      id,
-			Address: address,
+			Id:  id,
+			Url: url,
 		})
 	}
 
@@ -1655,7 +1655,7 @@ func (g *Graft) Config() map[string]string {
 
 	config := make(map[string]string)
 	for _, nodeConfig := range g.lastConfigUpdate.New {
-		config[nodeConfig.Id] = nodeConfig.Address
+		config[nodeConfig.Id] = nodeConfig.Url
 	}
 	return config
 }

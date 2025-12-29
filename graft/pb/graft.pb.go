@@ -544,14 +544,14 @@ func (*SnapshotMetadata) Descriptor() ([]byte, []int) {
 	return file_graft_proto_rawDescGZIP(), []int{6}
 }
 
-func (x *SnapshotMetadata) GetLastAppliedIndex() int64 {
+func (x *SnapshotMetadata) GetLastIncludedIndex() int64 {
 	if x != nil {
 		return x.LastIncludedIndex
 	}
 	return 0
 }
 
-func (x *SnapshotMetadata) GetLastAppliedTerm() int64 {
+func (x *SnapshotMetadata) GetLastIncludedTerm() int64 {
 	if x != nil {
 		return x.LastIncludedTerm
 	}
@@ -582,7 +582,7 @@ func (x *SnapshotMetadata) GetConfigUpdateIndex() int64 {
 type NodeConfig struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	Address       string                 `protobuf:"bytes,2,opt,name=address,proto3" json:"address,omitempty"`
+	Url           string                 `protobuf:"bytes,2,opt,name=url,proto3" json:"url,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -624,9 +624,9 @@ func (x *NodeConfig) GetId() string {
 	return ""
 }
 
-func (x *NodeConfig) GetAddress() string {
+func (x *NodeConfig) GetUrl() string {
 	if x != nil {
-		return x.Address
+		return x.Url
 	}
 	return ""
 }
@@ -1038,17 +1038,17 @@ const file_graft_proto_rawDesc = "" +
 	"\x04done\x18\x05 \x01(\bR\x04done\x123\n" +
 	"\bmetadata\x18\x06 \x01(\v2\x17.graft.SnapshotMetadataR\bmetadata\"&\n" +
 	"\x10SnapshotResponse\x12\x12\n" +
-	"\x04term\x18\x01 \x01(\x03R\x04term\"\xe3\x01\n" +
-	"\x10SnapshotMetadata\x12*\n" +
-	"\x10lastAppliedIndex\x18\x01 \x01(\x03R\x10lastAppliedIndex\x12(\n" +
-	"\x0flastAppliedTerm\x18\x02 \x01(\x03R\x0flastAppliedTerm\x12\x12\n" +
+	"\x04term\x18\x01 \x01(\x03R\x04term\"\xe7\x01\n" +
+	"\x10SnapshotMetadata\x12,\n" +
+	"\x11lastIncludedIndex\x18\x01 \x01(\x03R\x11lastIncludedIndex\x12*\n" +
+	"\x10lastIncludedTerm\x18\x02 \x01(\x03R\x10lastIncludedTerm\x12\x12\n" +
 	"\x04size\x18\x03 \x01(\x03R\x04size\x127\n" +
 	"\fconfigUpdate\x18\x04 \x01(\v2\x13.graft.ConfigUpdateR\fconfigUpdate\x12,\n" +
-	"\x11configUpdateIndex\x18\x05 \x01(\x03R\x11configUpdateIndex\"6\n" +
+	"\x11configUpdateIndex\x18\x05 \x01(\x03R\x11configUpdateIndex\".\n" +
 	"\n" +
 	"NodeConfig\x12\x0e\n" +
-	"\x02id\x18\x01 \x01(\tR\x02id\x12\x18\n" +
-	"\aaddress\x18\x02 \x01(\tR\aaddress\"\xc8\x01\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x10\n" +
+	"\x03url\x18\x02 \x01(\tR\x03url\"\xc8\x01\n" +
 	"\fConfigUpdate\x12#\n" +
 	"\x03old\x18\x01 \x03(\v2\x11.graft.NodeConfigR\x03old\x12#\n" +
 	"\x03new\x18\x02 \x03(\v2\x11.graft.NodeConfigR\x03new\x12/\n" +
