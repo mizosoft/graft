@@ -57,22 +57,20 @@ const defaultSnapshotBufferSize = 1 * 1024 * 1024
 // TODO limit broadcastWorker & make each worker send requests to any peer.
 
 type Callbacks struct {
-	Restore           func(snapshot Snapshot) error
-	Apply             func(entry *pb.LogEntry) error
-	ShouldSnapshot    func() bool
-	Snapshot          func(writer io.Writer) error
-	ApplyConfigUpdate func(update *pb.ConfigUpdate) error
-	Closed            func() error
+	Restore        func(snapshot Snapshot) error
+	Apply          func(entry *pb.LogEntry) error
+	ShouldSnapshot func() bool
+	Snapshot       func(writer io.Writer) error
+	Closed         func() error
 }
 
 func (c Callbacks) Copy() Callbacks {
 	return Callbacks{
-		Restore:           c.Restore,
-		Apply:             c.Apply,
-		ShouldSnapshot:    c.ShouldSnapshot,
-		Snapshot:          c.Snapshot,
-		ApplyConfigUpdate: c.ApplyConfigUpdate,
-		Closed:            c.Closed,
+		Restore:        c.Restore,
+		Apply:          c.Apply,
+		ShouldSnapshot: c.ShouldSnapshot,
+		Snapshot:       c.Snapshot,
+		Closed:         c.Closed,
 	}
 }
 
@@ -96,11 +94,6 @@ func (c Callbacks) WithDefaults() Callbacks {
 	if c2.Snapshot == nil {
 		c2.Snapshot = func(writer io.Writer) error {
 			return ErrNotSupported
-		}
-	}
-	if c2.ApplyConfigUpdate == nil {
-		c2.ApplyConfigUpdate = func(update *pb.ConfigUpdate) error {
-			return nil
 		}
 	}
 	if c2.Closed == nil {
@@ -128,6 +121,8 @@ type Graft struct {
 	io.Closer
 
 	raftState
+
+	id                string
 	url               string
 	leaderId          string
 	peers             map[string]*peer
@@ -164,8 +159,6 @@ type Graft struct {
 	rpcCtxCancel context.CancelFunc
 
 	persistence Persistence
-
-	id string
 
 	// Callbacks for state machine integration.
 	callbacks Callbacks
@@ -460,23 +453,14 @@ func (g *Graft) applyWorker() {
 				}
 
 				for _, entry := range entries {
-					switch entry.Type {
-					case pb.LogEntry_COMMAND:
-						if err := g.callbacks.Apply(entry); err != nil {
-							panic(err)
-						}
-						lastAppliedEntry = entry
-					case pb.LogEntry_CONFIG:
-						var update *pb.ConfigUpdate
-						protoUnmarshal(entry.Data, update)
-						if err := g.callbacks.ApplyConfigUpdate(update); err != nil {
-							panic(err)
-						}
-					case pb.LogEntry_NOOP:
-						// Skip.
-					default:
-						panic(fmt.Sprintf("Unexpected entry type %v", entry.Type))
+					if entry.Type == pb.LogEntry_NOOP {
+						continue
 					}
+
+					if err := g.callbacks.Apply(entry); err != nil {
+						panic(err)
+					}
+					lastAppliedEntry = entry
 				}
 			}
 
@@ -1090,14 +1074,14 @@ func (g *Graft) unguardedContinueConfigUpdate() {
 		if !hasLearners {
 			update := cloneMsg(g.lastConfigUpdate)
 			update.Phase = pb.ConfigUpdate_JOINT
-			if err := g.unguardedAppendConfigUpdate(update); err != nil {
+			if _, err := g.unguardedAppendConfigUpdate(update); err != nil {
 				panic(err)
 			}
 		}
 	case pb.ConfigUpdate_JOINT:
 		update := cloneMsg(g.lastConfigUpdate)
 		update.Phase = pb.ConfigUpdate_APPLIED
-		if err := g.unguardedAppendConfigUpdate(update); err != nil {
+		if _, err := g.unguardedAppendConfigUpdate(update); err != nil {
 			panic(err)
 		}
 	case pb.ConfigUpdate_APPLIED:
@@ -1434,18 +1418,18 @@ func (f *peerFactory) get(config *pb.NodeConfig) *peer {
 	return p
 }
 
-func (g *Graft) unguardedAppendConfigUpdate(update *pb.ConfigUpdate) error {
+func (g *Graft) unguardedAppendConfigUpdate(update *pb.ConfigUpdate) (int64, error) {
 	nextIndex, err := g.persistence.Append(g.unguardedCapturePersistedState(), []*pb.LogEntry{{
 		Term: g.currentTerm,
 		Type: pb.LogEntry_CONFIG,
 		Data: protoMarshal(update),
 	}})
 	if err != nil {
-		return err
+		return -1, err
 	}
 	g.unguardedInitConfigUpdate(update, nextIndex-1)
 	g.heartbeatTimer.poke() // Broadcast update.
-	return nil
+	return nextIndex, nil
 }
 
 func (g *Graft) unguardedInitConfigUpdate(update *pb.ConfigUpdate, updateIndex int64) {
@@ -1566,16 +1550,16 @@ func (g *Graft) Append(commands [][]byte) (int64, error) {
 	return nextIndex - int64(len(entries)), nil
 }
 
-func (g *Graft) ConfigUpdate(id string, addedNodes map[string]string, removedNodes []string) error {
+func (g *Graft) UpdateCluster(updateId string, addedNodes map[string]string, removedNodes []string) (int64, error) {
 	g.mut.Lock()
 	defer g.mut.Unlock()
 
 	if g.state == stateDead {
-		return ErrDead
+		return -1, ErrDead
 	}
 
 	if g.state != stateLeader {
-		return ErrNotLeader
+		return -1, ErrNotLeader
 	}
 
 	existingNodes := make(map[string]string)
@@ -1606,7 +1590,7 @@ func (g *Graft) ConfigUpdate(id string, addedNodes map[string]string, removedNod
 	// Create config update.
 
 	update := &pb.ConfigUpdate{
-		Id:  id,
+		Id:  updateId,
 		Old: g.lastConfigUpdate.New,
 	}
 

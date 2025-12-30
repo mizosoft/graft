@@ -16,6 +16,7 @@ import (
 	"github.com/mizosoft/graft/infra/api"
 	"github.com/mizosoft/graft/pb"
 	"go.uber.org/zap"
+	"google.golang.org/protobuf/proto"
 )
 
 type Command struct {
@@ -69,10 +70,6 @@ func (s *Server) Start() {
 			_, err := writer.Write(s.sm.Snapshot())
 			return err
 		},
-		ApplyConfigUpdate: func(update *pb.ConfigUpdate) error {
-			s.publisher.publish(update.Id, update)
-			return nil
-		},
 	})
 
 	go func() {
@@ -103,16 +100,26 @@ func (s *Server) Respond(w http.ResponseWriter, payload any, status int) {
 }
 
 func (s *Server) apply(entry *pb.LogEntry) error {
-	var command Command
-	decoder := gob.NewDecoder(bytes.NewReader(entry.Data))
-	err := decoder.Decode(&command)
-	if err != nil {
-		return err
-	}
+	switch entry.Type {
+	case pb.LogEntry_COMMAND:
+		var command Command
+		decoder := gob.NewDecoder(bytes.NewReader(entry.Data))
+		err := decoder.Decode(&command)
+		if err != nil {
+			return err
+		}
 
-	response := s.sm.Apply(command)
-	if command.ServerId == s.G.Id() {
-		s.publisher.publishOnce(command.Id, response)
+		response := s.sm.Apply(command)
+		if command.ServerId == s.G.Id() {
+			s.publisher.publishOnce(command.Id, response)
+		}
+		return nil
+	case pb.LogEntry_CONFIG:
+		var update pb.ConfigUpdate
+		if err := proto.Unmarshal(entry.Data, &update); err != nil {
+			return err
+		}
+		s.publisher.publish(update.Id, &update) // We'll have multiple config updates states with the same ID.
 	}
 	return nil
 }
@@ -171,9 +178,10 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id := uuid.New().String()
-	ch := s.publisher.subscribe(id)
-	if err := s.G.ConfigUpdate(id, req.Add, req.Remove); err != nil {
+	updateId := uuid.New().String()
+	notify := s.publisher.subscribe(updateId)
+	if _, err := s.G.UpdateCluster(updateId, req.Add, req.Remove); err != nil {
+		s.publisher.unsubscribe(updateId)
 		if errors.Is(err, graft.ErrNotLeader) {
 			s.Respond(w, api.NotLeaderResponse{
 				LeaderId: s.G.LeaderId(),
@@ -185,10 +193,10 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	for update := range ch {
+	for update := range notify {
 		u := update.(*pb.ConfigUpdate)
 		if u.Phase == pb.ConfigUpdate_APPLIED {
-			s.publisher.unsubscribe(id)
+			s.publisher.unsubscribe(updateId)
 			config := make(map[string]string)
 			for _, c := range u.New {
 				config[c.Id] = c.Url
@@ -200,7 +208,7 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	s.Logger.Errorf("Config %s never applied", id)
+	s.Logger.Errorf("Config %s never applied", updateId)
 	http.Error(w, "Internal server error", http.StatusInternalServerError)
 }
 
