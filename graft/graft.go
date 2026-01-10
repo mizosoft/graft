@@ -36,6 +36,8 @@ var (
 	ErrDead         = errors.New("dead")
 	ErrInitialized  = errors.New("already initialized")
 	ErrNotSupported = errors.New("not supported")
+	ErrIdConflict   = errors.New("ID conflict")
+	ErrNoSuchId     = errors.New("no such ID")
 )
 
 func (s state) String() string {
@@ -168,6 +170,10 @@ func (g *Graft) Id() string {
 	return g.id
 }
 
+func (g *Graft) Url() string {
+	return g.url
+}
+
 func (g *Graft) Persistence() Persistence {
 	return g.persistence
 }
@@ -187,7 +193,8 @@ func New(config Config) (*Graft, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	g := &Graft{
-		id: config.Id,
+		id:  config.Id,
+		url: config.Url,
 		raftState: raftState{
 			state:       stateNew,
 			currentTerm: -1,
@@ -196,7 +203,6 @@ func New(config Config) (*Graft, error) {
 			lastApplied: -1,
 		},
 		leaderId:              UnknownLeader,
-		url:                   config.ClusterUrls[config.Id],
 		lastConfigUpdateIndex: -1,
 		minElectionTimeout:    time.Duration(config.ElectionTimeoutMillis.Low) * time.Millisecond,
 		rpcTimeouts:           config.RpcTimeoutsWithDefaults(),
@@ -1447,6 +1453,7 @@ func (g *Graft) unguardedInitConfigUpdate(update *pb.ConfigUpdate, updateIndex i
 	if err != nil {
 		panic(err)
 	}
+
 	newPeers := make(map[string]*peer)
 	factory := &peerFactory{
 		existingPeers:        g.peers,
@@ -1487,8 +1494,7 @@ func (g *Graft) unguardedInitConfigUpdate(update *pb.ConfigUpdate, updateIndex i
 
 	newBroadcastChans := make(map[string]*broadcastChannel)
 	for _, p := range newPeers {
-		ch, ok := g.broadcastChans[p.id]
-		if ok {
+		if ch, ok := g.broadcastChans[p.id]; ok {
 			newBroadcastChans[p.id] = ch
 			delete(g.broadcastChans, p.id)
 		} else {
@@ -1571,17 +1577,21 @@ func (g *Graft) UpdateCluster(updateId string, addedNodes map[string]string, rem
 	// Perform some clean-up: make sure existingNodes & addedNodes are disjoint, and removedNodes is a subset of
 	// existingNodes and is disjoint with addedNodes.
 
-	for id := range existingNodes {
-		delete(addedNodes, id)
-	}
-
-	cleanedRemovedNodes := make([]string, 0)
-	for _, id := range removedNodes {
-		if _, ok := existingNodes[id]; ok {
-			cleanedRemovedNodes = append(cleanedRemovedNodes, id)
+	for id, url := range existingNodes {
+		if addedUrl, ok := addedNodes[id]; ok {
+			if url == addedUrl {
+				delete(existingNodes, id)
+			} else {
+				return -1, ErrIdConflict
+			}
 		}
 	}
-	removedNodes = cleanedRemovedNodes
+
+	for _, id := range removedNodes {
+		if _, ok := existingNodes[id]; !ok {
+			return -1, ErrNoSuchId
+		}
+	}
 
 	for _, id := range removedNodes {
 		delete(addedNodes, id)
