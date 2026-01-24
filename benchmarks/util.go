@@ -9,13 +9,14 @@ import (
 
 	"github.com/mizosoft/graft"
 	"github.com/mizosoft/graft/infra/server"
+	infratesting "github.com/mizosoft/graft/infra/testing"
 	"github.com/mizosoft/graft/kvstore2/client"
 	"github.com/mizosoft/graft/kvstore2/service"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )
 
-func newClusterClient(b *testing.B, nodeCount int, batchInterval time.Duration) (*server.Cluster, *client.KvClient) {
+func newClusterClient(b *testing.B, nodeCount int, batchInterval time.Duration) (*infratesting.Cluster, *client.KvClient) {
 	// Open a file for writing logs
 	file, err := os.OpenFile("app.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
@@ -51,8 +52,8 @@ func newClusterClient(b *testing.B, nodeCount int, batchInterval time.Duration) 
 		os.Exit(0)
 	}()
 
-	cluster, err := server.StartLocalCluster(
-		server.ClusterConfig{
+	cluster, err := infratesting.StartLocalCluster(
+		infratesting.ClusterConfig{
 			Dir:                   b.TempDir(),
 			NodeCount:             nodeCount,
 			HeartbeatMillis:       50,
@@ -78,9 +79,9 @@ func newClusterClient(b *testing.B, nodeCount int, batchInterval time.Duration) 
 	return cluster, kvClient
 }
 
-func newClusterClientWithWalPersistence(b *testing.B, nodeCount int, batchInterval time.Duration) (*server.Cluster, *client.KvClient) {
-	cluster, err := server.StartLocalCluster[*service.KvService](
-		server.ClusterConfig{
+func newClusterClientWithWalPersistence(b *testing.B, nodeCount int, batchInterval time.Duration) (*infratesting.Cluster, *client.KvClient) {
+	cluster, err := infratesting.StartLocalCluster[*service.KvService](
+		infratesting.ClusterConfig{
 			Dir:                   b.TempDir(),
 			NodeCount:             nodeCount,
 			HeartbeatMillis:       50,

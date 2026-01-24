@@ -12,6 +12,7 @@ import (
 	"github.com/mizosoft/graft/dlock/service"
 	"github.com/mizosoft/graft/infra"
 	"github.com/mizosoft/graft/infra/server"
+	infratesting "github.com/mizosoft/graft/infra/testing"
 	"go.uber.org/zap"
 	"gotest.tools/v3/assert"
 )
@@ -646,11 +647,11 @@ func mockClock() *MockClock {
 	}
 }
 
-func NewClusterClient(t *testing.T, nodeCount int, clock infra.Clock) (*server.Cluster, *client.DlockClient) {
+func NewClusterClient(t *testing.T, nodeCount int, clock infra.Clock) (*infratesting.Cluster, *client.DlockClient) {
 	_, err := zap.NewDevelopment()
 	assert.NilError(t, err)
-	cluster, err := server.StartLocalCluster(
-		server.ClusterConfig{
+	cluster, err := infratesting.StartLocalCluster(
+		infratesting.ClusterConfig{
 			Dir:                   t.TempDir(),
 			NodeCount:             nodeCount,
 			HeartbeatMillis:       50,

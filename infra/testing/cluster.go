@@ -1,4 +1,4 @@
-package server
+package testing
 
 import (
 	"errors"
@@ -11,11 +11,12 @@ import (
 	"time"
 
 	"github.com/mizosoft/graft"
+	"github.com/mizosoft/graft/infra/server"
 	"go.uber.org/zap"
 )
 
 type node struct {
-	server       *Server
+	server       *server.Server
 	config       NodeConfig
 	startErrChan chan error
 	mut          sync.Mutex
@@ -50,7 +51,7 @@ type NodeConfig struct {
 	Logger                *zap.Logger
 	HeartbeatMillis       int
 	ElectionTimeoutMillis graft.IntRange
-	ServerFactory         func(address string, config graft.Config) (*Server, error)
+	ServerFactory         func(address string, config graft.Config) (*server.Server, error)
 	PersistenceFactory    func(dir string) (graft.Persistence, error)
 }
 
@@ -80,7 +81,7 @@ func newNode(config NodeConfig) (*node, error) {
 
 type Cluster struct {
 	nodes         map[string]*node
-	serverFactory func(address string, config graft.Config) (*Server, error)
+	serverFactory func(address string, config graft.Config) (*server.Server, error)
 }
 
 func (c *Cluster) ServiceConfig() map[string]string {
@@ -130,7 +131,7 @@ type ClusterConfig struct {
 	NodeCount             int
 	HeartbeatMillis       int
 	ElectionTimeoutMillis graft.IntRange
-	ServerFactory         func(address string, config graft.Config) (*Server, error)
+	ServerFactory         func(address string, config graft.Config) (*server.Server, error)
 	PersistenceFactory    func(dir string) (graft.Persistence, error)
 	Logger                *zap.Logger
 }

@@ -8,7 +8,7 @@ import (
 
 	"github.com/mizosoft/graft"
 	"github.com/mizosoft/graft/infra/server"
-	kvstore2 "github.com/mizosoft/graft/kvstore2/api"
+	"github.com/mizosoft/graft/kvstore2/api"
 	"go.uber.org/zap"
 )
 
@@ -91,7 +91,7 @@ func (s *kvstore) Snapshot() []byte {
 	return buf.Bytes()
 }
 
-func (s *kvstore) get(key string) *kvstore2.GetResponse {
+func (s *kvstore) get(key string) *api.GetResponse {
 	s.logger.Info("Get", zap.String("key", key))
 
 	s.mut.RLock()
@@ -99,13 +99,13 @@ func (s *kvstore) get(key string) *kvstore2.GetResponse {
 
 	atomic.AddInt32(&s.redundantOperations, 1)
 	value, ok := s.data[key]
-	return &kvstore2.GetResponse{
+	return &api.GetResponse{
 		Exists: ok,
 		Value:  value,
 	}
 }
 
-func (s *kvstore) put(key string, value string) *kvstore2.PutResponse {
+func (s *kvstore) put(key string, value string) *api.PutResponse {
 	s.logger.Info("Put", zap.String("key", key), zap.String("value", value))
 
 	s.mut.Lock()
@@ -116,13 +116,13 @@ func (s *kvstore) put(key string, value string) *kvstore2.PutResponse {
 	if ok {
 		atomic.AddInt32(&s.redundantOperations, 1)
 	}
-	return &kvstore2.PutResponse{
+	return &api.PutResponse{
 		Exists:        ok,
 		PreviousValue: prevValue,
 	}
 }
 
-func (s *kvstore) putIfAbsent(key string, value string) *kvstore2.PutIfAbsentResponse {
+func (s *kvstore) putIfAbsent(key string, value string) *api.PutIfAbsentResponse {
 	s.logger.Info("PutIfAbsent", zap.String("key", key), zap.String("value", value))
 
 	s.mut.Lock()
@@ -134,12 +134,12 @@ func (s *kvstore) putIfAbsent(key string, value string) *kvstore2.PutIfAbsentRes
 	} else {
 		s.data[key] = value
 	}
-	return &kvstore2.PutIfAbsentResponse{
+	return &api.PutIfAbsentResponse{
 		Success: !ok,
 	}
 }
 
-func (s *kvstore) del(key string) *kvstore2.DeleteResponse {
+func (s *kvstore) del(key string) *api.DeleteResponse {
 	s.logger.Info("Del", zap.String("key", key))
 
 	s.mut.Lock()
@@ -151,13 +151,13 @@ func (s *kvstore) del(key string) *kvstore2.DeleteResponse {
 		delete(s.data, key)
 	}
 	s.logger.Info("Delddfdf", zap.String("key", key))
-	return &kvstore2.DeleteResponse{
+	return &api.DeleteResponse{
 		Exists: ok,
 		Value:  value,
 	}
 }
 
-func (s *kvstore) cas(key string, expectedValue string, value string) *kvstore2.CasResponse {
+func (s *kvstore) cas(key string, expectedValue string, value string) *api.CasResponse {
 	s.logger.Info("Cas", zap.String("key", key), zap.String("expectedValue", expectedValue), zap.String("value", value))
 
 	s.mut.Lock()
@@ -172,14 +172,14 @@ func (s *kvstore) cas(key string, expectedValue string, value string) *kvstore2.
 		ok = true
 		success = true
 	}
-	return &kvstore2.CasResponse{
+	return &api.CasResponse{
 		Success: success,
 		Exists:  ok,
 		Value:   currValue,
 	}
 }
 
-func (s *kvstore) append(key string, value string) *kvstore2.AppendResponse {
+func (s *kvstore) append(key string, value string) *api.AppendResponse {
 	s.logger.Info("Append", zap.String("key", key), zap.String("value", value))
 
 	s.mut.Lock()
@@ -192,7 +192,7 @@ func (s *kvstore) append(key string, value string) *kvstore2.AppendResponse {
 	} else {
 		s.data[key] = value
 	}
-	return &kvstore2.AppendResponse{
+	return &api.AppendResponse{
 		Length: length,
 	}
 }

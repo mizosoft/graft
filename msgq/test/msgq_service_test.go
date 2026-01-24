@@ -7,6 +7,7 @@ import (
 
 	"github.com/mizosoft/graft"
 	"github.com/mizosoft/graft/infra/server"
+	infratesting "github.com/mizosoft/graft/infra/testing"
 	"github.com/mizosoft/graft/msgq/client"
 	"github.com/mizosoft/graft/msgq/service"
 	"go.uber.org/zap"
@@ -87,9 +88,9 @@ func TestMsgqServiceFailover(t *testing.T) {
 	}
 }
 
-func NewClusterClient(t *testing.T, nodeCount int) (*server.Cluster, *client.MsgqClient) {
-	cluster, err := server.StartLocalCluster[*service.MsgqService](
-		server.ClusterConfig{
+func NewClusterClient(t *testing.T, nodeCount int) (*infratesting.Cluster, *client.MsgqClient) {
+	cluster, err := infratesting.StartLocalCluster[*service.MsgqService](
+		infratesting.ClusterConfig{
 			Dir:                   t.TempDir(),
 			NodeCount:             nodeCount,
 			HeartbeatMillis:       50,

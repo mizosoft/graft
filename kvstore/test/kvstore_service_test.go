@@ -10,6 +10,7 @@ import (
 
 	"github.com/mizosoft/graft"
 	"github.com/mizosoft/graft/infra/server"
+	infratesting "github.com/mizosoft/graft/infra/testing"
 	"github.com/mizosoft/graft/kvstore2/client"
 	"github.com/mizosoft/graft/kvstore2/service"
 	"github.com/mizosoft/graft/testutil"
@@ -224,7 +225,7 @@ func TestKvServiceFailOver(t *testing.T) {
 	}
 }
 
-func NewClusterClient(t *testing.T, nodeCount int) (*server.Cluster, *client.KvClient) {
+func NewClusterClient(t *testing.T, nodeCount int) (*infratesting.Cluster, *client.KvClient) {
 	// Open a file for writing logs
 	file, err := os.OpenFile("app.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
@@ -259,8 +260,8 @@ func NewClusterClient(t *testing.T, nodeCount int) (*server.Cluster, *client.KvC
 		logger.Sync() // Ensure logs are flushed
 	}()
 
-	cluster, err := server.StartLocalCluster(
-		server.ClusterConfig{
+	cluster, err := infratesting.StartLocalCluster(
+		infratesting.ClusterConfig{
 			Dir:                   t.TempDir(),
 			NodeCount:             nodeCount,
 			HeartbeatMillis:       50,
