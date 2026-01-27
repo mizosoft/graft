@@ -10,8 +10,8 @@ import (
 	"github.com/mizosoft/graft"
 	"github.com/mizosoft/graft/infra/server"
 	infratesting "github.com/mizosoft/graft/infra/testing"
-	"github.com/mizosoft/graft/kvstore2/client"
-	"github.com/mizosoft/graft/kvstore2/service"
+	"github.com/mizosoft/graft/kvstore/client"
+	"github.com/mizosoft/graft/kvstore/service"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )
@@ -80,7 +80,7 @@ func newClusterClient(b *testing.B, nodeCount int, batchInterval time.Duration) 
 }
 
 func newClusterClientWithWalPersistence(b *testing.B, nodeCount int, batchInterval time.Duration) (*infratesting.Cluster, *client.KvClient) {
-	cluster, err := infratesting.StartLocalCluster[*service.KvService](
+	cluster, err := infratesting.StartLocalCluster(
 		infratesting.ClusterConfig{
 			Dir:                   b.TempDir(),
 			NodeCount:             nodeCount,

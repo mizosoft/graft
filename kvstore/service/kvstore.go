@@ -8,7 +8,7 @@ import (
 
 	"github.com/mizosoft/graft"
 	"github.com/mizosoft/graft/infra/server"
-	"github.com/mizosoft/graft/kvstore2/api"
+	"github.com/mizosoft/graft/kvstore/api"
 	"go.uber.org/zap"
 )
 
@@ -197,7 +197,7 @@ func (s *kvstore) append(key string, value string) *api.AppendResponse {
 	}
 }
 
-func newKvstore(logger *zap.Logger) *kvstore {
+func newKvStore(logger *zap.Logger) *kvstore {
 	return &kvstore{
 		data:   make(map[string]string),
 		logger: logger.With(zap.String("name", "kvstore")).Sugar(),

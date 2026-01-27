@@ -7,7 +7,7 @@ import (
 
 	"github.com/mizosoft/graft"
 	"github.com/mizosoft/graft/infra/server"
-	"github.com/mizosoft/graft/kvstore2/api"
+	"github.com/mizosoft/graft/kvstore/api"
 	"go.uber.org/zap"
 )
 
@@ -104,7 +104,7 @@ func (s *KvService) handleAppend(w http.ResponseWriter, r *http.Request) {
 }
 
 func NewKvServer(address string, batchInterval time.Duration, config graft.Config) (*server.Server, error) {
-	kvStore := newKvstore(config.Logger.With(zap.String("id", config.Id)))
+	kvStore := newKvStore(config.Logger.With(zap.String("id", config.Id)))
 	srv, err := server.NewServer("KvService", address, batchInterval, kvStore, config)
 	if err != nil {
 		return nil, err

@@ -2,7 +2,7 @@ package client
 
 import (
 	"github.com/mizosoft/graft/infra/client"
-	"github.com/mizosoft/graft/kvstore2/api"
+	"github.com/mizosoft/graft/kvstore/api"
 )
 
 type KvClient struct {
