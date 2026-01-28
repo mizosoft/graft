@@ -53,12 +53,11 @@ func CmdWithArgs(name, argsUsage, usage string, action func(ctx *Context) error)
 }
 
 func newContext(c *cli.Context) (*Context, error) {
-	configFile := c.String("config")
 	clientId := c.String("id")
 
-	config, err := infra.ParseConfigFile(configFile)
+	config, err := infra.ParseAddressList(c.String("servers"))
 	if err != nil {
-		return nil, fmt.Errorf("reading config file: %w", err)
+		return nil, fmt.Errorf("parsing --servers: %w", err)
 	}
 
 	return &Context{
@@ -94,9 +93,9 @@ func RunClient(name, usage string, commands ...*cli.Command) {
 		Usage: usage,
 		Flags: []cli.Flag{
 			&cli.StringFlag{
-				Name:  "config",
-				Value: "config.txt",
-				Usage: "Path to cluster config file",
+				Name:     "servers",
+				Usage:    "Server addresses (e.g., n1=localhost:8001,n2=localhost:8002)",
+				Required: true,
 			},
 			&cli.StringFlag{
 				Name:  "id",

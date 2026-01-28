@@ -185,8 +185,8 @@ func (g *Graft) String() string {
 }
 
 func New(config Config) (*Graft, error) {
-	if config.Id == UnknownLeader {
-		return nil, fmt.Errorf("server ID cannot be %s", UnknownLeader)
+	if err := config.Validate(); err != nil {
+		return nil, err
 	}
 
 	// Create cancellable context for lifecycle management
@@ -194,7 +194,7 @@ func New(config Config) (*Graft, error) {
 
 	g := &Graft{
 		id:  config.Id,
-		url: config.Url,
+		url: config.ClusterUrls[config.Id],
 		raftState: raftState{
 			state:       stateNew,
 			currentTerm: -1,
@@ -624,7 +624,7 @@ func (g *Graft) runElection(timeoutTerm int64) {
 				defer cancel()
 
 				if res, rerr := client.RequestVote(ctx, request); rerr != nil {
-					g.logger.Error("RequestVote->", zap.String("peer", p.id), zap.Any("request", request), zap.Error(cerr))
+					g.logger.Error("RequestVote->", zap.String("peer", p.id), zap.Any("request", request), zap.Error(rerr))
 				} else {
 					g.mut.Lock()
 					defer g.mut.Unlock()

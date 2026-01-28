@@ -30,13 +30,40 @@ func (r RpcTimeouts) String() string {
 
 type Config struct {
 	Id                    string
-	Url                   string
 	ClusterUrls           map[string]string
 	ElectionTimeoutMillis IntRange
 	HeartbeatMillis       int
 	Persistence           Persistence
 	RpcTimeouts           RpcTimeouts
 	Logger                *zap.Logger
+}
+
+func (c Config) Validate() error {
+	if c.Id == "" {
+		return fmt.Errorf("Id is required")
+	}
+	if c.Id == UnknownLeader {
+		return fmt.Errorf("Id cannot be %q", UnknownLeader)
+	}
+	if len(c.ClusterUrls) == 0 {
+		return fmt.Errorf("ClusterUrls is required")
+	}
+	if _, ok := c.ClusterUrls[c.Id]; !ok {
+		return fmt.Errorf("ClusterUrls must contain the node's own Id %q", c.Id)
+	}
+	if c.ElectionTimeoutMillis.Low <= 0 || c.ElectionTimeoutMillis.High <= 0 {
+		return fmt.Errorf("ElectionTimeoutMillis.Low and High must be positive: %v", c.ElectionTimeoutMillis)
+	}
+	if c.ElectionTimeoutMillis.Low > c.ElectionTimeoutMillis.High {
+		return fmt.Errorf("ElectionTimeoutMillis.Low must be <= High: %v", c.ElectionTimeoutMillis)
+	}
+	if c.HeartbeatMillis <= 0 {
+		return fmt.Errorf("HeartbeatMillis must be positive: %d", c.HeartbeatMillis)
+	}
+	if c.Persistence == nil {
+		return fmt.Errorf("Persistence is required")
+	}
+	return nil
 }
 
 func (c Config) LoggerOrNoop() *zap.Logger {

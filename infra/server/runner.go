@@ -53,13 +53,13 @@ func RunServer(serviceName string, factory Factory) {
 				Required: true,
 			},
 			&cli.StringFlag{
-				Name:  "address",
+				Name:  "service-addr",
 				Usage: "HTTP address to listen on (e.g., :8001)",
 			},
 			&cli.StringFlag{
-				Name:  "config",
-				Value: "config.txt",
-				Usage: "Path to cluster configuration file",
+				Name:     "join",
+				Usage:    "Cluster node addresses (e.g., n1=localhost:9001,n2=localhost:9002)",
+				Required: true,
 			},
 			&cli.StringFlag{
 				Name:  "wal-dir",
@@ -83,6 +83,10 @@ func RunServer(serviceName string, factory Factory) {
 				Name:  "wal-mmap",
 				Usage: "Enable memory-mapped WAL files",
 			},
+			&cli.StringFlag{
+				Name:  "log-file",
+				Usage: "Log output file (defaults to stderr)",
+			},
 		},
 		Action: func(c *cli.Context) error {
 			return runServer(c, factory)
@@ -97,7 +101,6 @@ func RunServer(serviceName string, factory Factory) {
 
 func runServer(c *cli.Context, factory Factory) error {
 	id := c.String("id")
-	configFile := c.String("config")
 	walDir := c.String("wal-dir")
 
 	if walDir == "" {
@@ -114,16 +117,20 @@ func runServer(c *cli.Context, factory Factory) error {
 		return fmt.Errorf("invalid wal-cache-size: %w", err)
 	}
 
-	clusterUrls, err := infra.ParseConfigFile(configFile)
+	clusterUrls, err := infra.ParseAddressList(c.String("join"))
 	if err != nil {
-		return fmt.Errorf("reading config file: %w", err)
+		return fmt.Errorf("parsing --join: %w", err)
 	}
 
 	if err := os.MkdirAll(walDir, 0755); err != nil {
 		return fmt.Errorf("creating WAL directory: %w", err)
 	}
 
-	logger, _ := zap.NewDevelopment()
+	logger, err := buildLogger(c.String("log-file"))
+	if err != nil {
+		return fmt.Errorf("creating logger: %w", err)
+	}
+	defer logger.Sync()
 
 	wal, err := graft.OpenWal(graft.WalOptions{
 		Dir:             walDir,
@@ -136,7 +143,7 @@ func runServer(c *cli.Context, factory Factory) error {
 		return fmt.Errorf("opening WAL: %w", err)
 	}
 
-	srv, err := factory(c.String("address"), c.Duration("batch-interval"), graft.Config{
+	srv, err := factory(c.String("service-addr"), c.Duration("batch-interval"), graft.Config{
 		Id:                    id,
 		ClusterUrls:           clusterUrls,
 		ElectionTimeoutMillis: graft.IntRange{Low: 150, High: 300},
@@ -161,6 +168,15 @@ func runServer(c *cli.Context, factory Factory) error {
 	}
 
 	return nil
+}
+
+func buildLogger(logFile string) (*zap.Logger, error) {
+	cfg := zap.NewDevelopmentConfig()
+	if logFile != "" {
+		cfg.OutputPaths = []string{logFile}
+		cfg.ErrorOutputPaths = []string{logFile}
+	}
+	return cfg.Build()
 }
 
 // parseSize parses a size string like "64MB", "1GB", or a plain number (bytes).

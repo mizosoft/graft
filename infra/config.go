@@ -1,46 +1,25 @@
 package infra
 
 import (
-	"bufio"
 	"fmt"
-	"os"
 	"strings"
 )
 
-// ParseConfigFile reads a cluster configuration file.
-// Format: one line per node with "<node-id> <address>".
-// Empty lines and lines starting with # are ignored.
-func ParseConfigFile(path string) (map[string]string, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-
+// ParseAddressList parses an inline address list with the format "id=addr,id=addr,...".
+func ParseAddressList(s string) (map[string]string, error) {
 	addresses := make(map[string]string)
-	scanner := bufio.NewScanner(file)
-	lineNum := 0
-
-	for scanner.Scan() {
-		lineNum++
-		line := strings.TrimSpace(scanner.Text())
-
-		// Skip empty lines and comments.
-		if len(line) == 0 || strings.HasPrefix(line, "#") {
+	for _, entry := range strings.Split(s, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
 			continue
 		}
 
-		fields := strings.Fields(line)
-		if len(fields) < 2 {
-			return nil, fmt.Errorf("line %d: expected '<id> <address>', got: %s", lineNum, line)
+		parts := strings.SplitN(entry, "=", 2)
+		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+			return nil, fmt.Errorf("invalid entry %q: expected 'id=address'", entry)
 		}
 
-		addresses[fields[0]] = fields[1]
+		addresses[parts[0]] = parts[1]
 	}
-
-	if err := scanner.Err(); err != nil {
-		return nil, err
-	}
-
 	return addresses, nil
 }
