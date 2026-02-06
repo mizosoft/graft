@@ -10,5 +10,5 @@ type ConfigResponse struct {
 }
 
 type NotLeaderResponse struct {
-	LeaderId string `json:"leaderIdd"`
+	LeaderId string `json:"leaderId"`
 }

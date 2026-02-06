@@ -16,6 +16,11 @@ import (
 	"github.com/mizosoft/graft/infra/api"
 )
 
+const (
+	maxRetriesPerUrl = 3
+	retryBackoff     = 50 * time.Millisecond
+)
+
 type Client struct {
 	id            string
 	leaderId      string
@@ -68,6 +73,10 @@ func Post[T any](c *Client, path string, payload any) (T, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	retries := 0
+	urlSwitches := 0
+	maxUrlSwitches := len(c.serviceConfig)
+
 retry:
 	c.mut.Lock()
 	u, err := url.JoinPath(c.url, path)
@@ -85,10 +94,19 @@ retry:
 
 	res, err := c.http.Do(request)
 	if err != nil {
+		retries++
+		if retries >= maxRetriesPerUrl {
+			// Too many retries on this URL, try another
+			if urlSwitches < maxUrlSwitches && c.switchToNextUrl() {
+				retries = 0
+				urlSwitches++
+			}
+		}
+
 		select {
 		case <-ctx.Done():
 			return *new(T), err
-		case <-time.After(50 * time.Millisecond): // backoff
+		case <-time.After(retryBackoff):
 			goto retry
 		}
 	}
@@ -107,14 +125,26 @@ retry:
 		if config.LeaderId != graft.UnknownLeader && len(config.LeaderId) > 0 {
 			c.mut.Lock()
 			c.leaderId = config.LeaderId
-			c.url = "http://" + c.serviceConfig[config.LeaderId] + "/"
+			if addr, ok := c.serviceConfig[config.LeaderId]; ok {
+				c.url = "http://" + addr + "/"
+			}
 			c.mut.Unlock()
+			retries = 0 // Reset retries when redirected to leader
+		} else {
+			// No leader known, try switching to another URL
+			retries++
+			if retries >= maxRetriesPerUrl {
+				if urlSwitches < maxUrlSwitches && c.switchToNextUrl() {
+					retries = 0
+					urlSwitches++
+				}
+			}
 		}
 
 		select {
 		case <-ctx.Done():
 			return *new(T), errors.New("timeout while looking up leader")
-		case <-time.After(50 * time.Millisecond): // backoff
+		case <-time.After(retryBackoff):
 			goto retry
 		}
 	}
@@ -140,6 +170,24 @@ func decodeJson[T any](response *http.Response) (T, error) {
 		return *new(T), err
 	}
 	return result, nil
+}
+
+// switchToNextUrl switches to a different URL from the service config.
+// Returns true if switched, false if no other URLs available.
+func (c *Client) switchToNextUrl() bool {
+	c.mut.Lock()
+	defer c.mut.Unlock()
+
+	currentUrl := c.url
+	for id, address := range c.serviceConfig {
+		candidateUrl := "http://" + address + "/"
+		if candidateUrl != currentUrl {
+			c.url = candidateUrl
+			c.leaderId = id
+			return true
+		}
+	}
+	return false
 }
 
 func New(id string, serviceConfig map[string]string) *Client {
