@@ -1,7 +1,7 @@
-syntax: glob
-target/**
-classes/**
-checkouts/**
+/target
+/classes
+/checkouts
+/bin
 profiles.clj
 pom.xml
 pom.xml.asc
@@ -10,5 +10,5 @@ pom.xml.asc
 /.lein-*
 /.nrepl-port
 /.prepl-port
-.gitignore
-.git/**
+.hgignore
+.hg/
