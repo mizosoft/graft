@@ -1,0 +1,49 @@
+name: Jepsen Tests
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  jepsen:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Install Leiningen
+        uses: DeLaGuardo/setup-clojure@12.5
+        with:
+          lein: 2.11.2
+
+      - name: Cache Leiningen dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2/repository
+          key: ${{ runner.os }}-lein-${{ hashFiles('**/project.clj') }}
+          restore-keys: |
+            ${{ runner.os }}-lein-
+
+      - name: Run Jepsen linearizability tests
+        working-directory: kvstore/jepsen/jepsen.graft
+        run: lein run test --local --time-limit 60
+
+      - name: Upload Jepsen results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jepsen-results
+          path: kvstore/jepsen/jepsen.graft/store/
+          retention-days: 30

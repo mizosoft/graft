@@ -38,6 +38,35 @@
 ;; Local Database (runs processes directly on the machine)
 ;; ============================================================================
 
+;; We run from kvstore/jepsen/jepsen.graft/, so graft root is 3 levels up
+(def graft-root (.getCanonicalPath (io/file "../../..")))
+(def bin-dir (str graft-root "/kvstore/jepsen/jepsen.graft/bin"))
+
+(defn build-binaries!
+  "Build kvstore and kvstore-cli binaries if they don't exist."
+  []
+  (let [kvstore-bin (str bin-dir "/kvstore")
+        cli-bin (str bin-dir "/kvstore-cli")]
+
+    ;; Create bin directory
+    (.mkdirs (io/file bin-dir))
+
+    ;; Build kvstore server if missing
+    (when-not (.exists (io/file kvstore-bin))
+      (info "Building kvstore binary...")
+      (let [{:keys [exit err]} (shell/sh "go" "build" "-o" kvstore-bin "./kvstore/service/cmd"
+                                         :dir graft-root)]
+        (when-not (zero? exit)
+          (throw (ex-info (str "Failed to build kvstore: " err) {:exit exit})))))
+
+    ;; Build kvstore-cli if missing
+    (when-not (.exists (io/file cli-bin))
+      (info "Building kvstore-cli binary...")
+      (let [{:keys [exit err]} (shell/sh "go" "build" "-o" cli-bin "./kvstore/client/cmd"
+                                         :dir graft-root)]
+        (when-not (zero? exit)
+          (throw (ex-info (str "Failed to build kvstore-cli: " err) {:exit exit})))))))
+
 (defn local-data-dir [node]
   (str "/tmp/jepsen-kvstore/" (node-id node)))
 
@@ -55,14 +84,10 @@
        (str/join ",")))
 
 (defn local-binary-path []
-  ;; Look for kvstore binary in several locations
-  (let [candidates ["./bin/kvstore"
-                    "../docker/bin/kvstore"
-                    "../../docker/bin/kvstore"
-                    (str (System/getProperty "user.dir") "/kvstore")]]
-    (or (first (filter #(.exists (io/file %)) candidates))
-        (throw (ex-info "kvstore binary not found. Build it with: go build -o bin/kvstore ./kvstore/service/cmd"
-                        {:candidates candidates})))))
+  (str bin-dir "/kvstore"))
+
+(defn cli-binary-path []
+  (str bin-dir "/kvstore-cli"))
 
 (defn start-local-kvstore!
   "Start kvstore process locally."
@@ -124,6 +149,7 @@
   (reify db/DB
     (setup! [_ test node]
       (info "Setting up local kvstore on" node)
+      (build-binaries!)
       (cleanup-local-data! node)
       (start-local-kvstore! test node)
       ;; Wait for cluster to elect a leader and stabilize (5 nodes need time)

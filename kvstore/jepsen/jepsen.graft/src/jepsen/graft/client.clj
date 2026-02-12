@@ -7,14 +7,9 @@
             [jepsen.graft.db :as db]))
 
 (defn cli-binary-path
-  "Find the kvstore-cli binary."
+  "Get the kvstore-cli binary path from db config."
   []
-  (let [candidates ["./bin/kvstore-cli"
-                    "../bin/kvstore-cli"
-                    "../../bin/kvstore-cli"]]
-    (or (first (filter #(.exists (clojure.java.io/file %)) candidates))
-        (throw (ex-info "kvstore-cli binary not found"
-                        {:candidates candidates})))))
+  (db/cli-binary-path))
 
 (defn servers-string
   "Build the --servers argument string for the CLI."
