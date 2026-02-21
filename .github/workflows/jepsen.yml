@@ -9,6 +9,10 @@ on:
 jobs:
   jepsen:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [ kvstore, msgq, dlock ]
     steps:
       - uses: actions/checkout@v4
 
@@ -36,14 +40,14 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-lein-
 
-      - name: Run Jepsen linearizability tests
-        working-directory: kvstore/jepsen/jepsen.graft
-        run: lein run test --local --time-limit 60
+      - name: Run Jepsen tests for ${{ matrix.service }}
+        working-directory: jepsen
+        run: lein run test --service ${{ matrix.service }} --time-limit 60
 
       - name: Upload Jepsen results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: jepsen-results
-          path: kvstore/jepsen/jepsen.graft/store/
+          name: jepsen-results-${{ matrix.service }}
+          path: jepsen/store/
           retention-days: 30
