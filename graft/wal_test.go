@@ -872,14 +872,14 @@ func TestWalSaveAndRetrieveSnapshot(t *testing.T) {
 				ConfigUpdate: &pb.ConfigUpdate{
 					Old: []*pb.NodeConfig{
 						{
-							Id:      "s1",
-							Address: "127.0.0.1:1234",
+							Id:  "s1",
+							Url: "127.0.0.1:1234",
 						},
 					},
 					New: []*pb.NodeConfig{
 						{
-							Id:      "s2",
-							Address: "127.0.0.2:1234",
+							Id:  "s2",
+							Url: "127.0.0.2:1234",
 						},
 					},
 					Phase: pb.ConfigUpdate_LEARNING,
@@ -896,12 +896,12 @@ func TestWalSaveAndRetrieveSnapshot(t *testing.T) {
 			assert.NilError(t, err)
 			assert.Equal(t, n, len(data)-2)
 
-			committedMetadata, err := writer.Commit()
+			err = writer.Commit()
 			assert.NilError(t, err)
-			assert.Equal(t, committedMetadata.Size, int64(len(data)))
+			assert.Equal(t, metadata.Size, int64(len(data)))
 
 			metadata.Size = int64(len(data))
-			assert.Assert(t, proto.Equal(committedMetadata, metadata))
+			assert.Assert(t, proto.Equal(metadata, metadata))
 
 			retrievedMetadata, err = w.LastSnapshotMetadata()
 			assert.NilError(t, err)
@@ -936,14 +936,14 @@ func TestWalDiscardedSnapshot(t *testing.T) {
 				ConfigUpdate: &pb.ConfigUpdate{
 					Old: []*pb.NodeConfig{
 						{
-							Id:      "s1",
-							Address: "127.0.0.1:1234",
+							Id:  "s1",
+							Url: "127.0.0.1:1234",
 						},
 					},
 					New: []*pb.NodeConfig{
 						{
-							Id:      "s2",
-							Address: "127.0.0.2:1234",
+							Id:  "s2",
+							Url: "127.0.0.2:1234",
 						},
 					},
 					Phase: pb.ConfigUpdate_LEARNING,
@@ -983,14 +983,14 @@ func TestWalDiscardedSnapshotAfterCommittedSnapshot(t *testing.T) {
 				ConfigUpdate: &pb.ConfigUpdate{
 					Old: []*pb.NodeConfig{
 						{
-							Id:      "s1",
-							Address: "127.0.0.1:1234",
+							Id:  "s1",
+							Url: "127.0.0.1:1234",
 						},
 					},
 					New: []*pb.NodeConfig{
 						{
-							Id:      "s2",
-							Address: "127.0.0.2:1234",
+							Id:  "s2",
+							Url: "127.0.0.2:1234",
 						},
 					},
 					Phase: pb.ConfigUpdate_LEARNING,
@@ -1004,7 +1004,7 @@ func TestWalDiscardedSnapshotAfterCommittedSnapshot(t *testing.T) {
 			assert.NilError(t, err)
 			assert.Equal(t, n, 3)
 
-			_, err = writer1.Commit()
+			err = writer1.Commit()
 			assert.NilError(t, err)
 
 			snapshot, err := w.OpenSnapshot(metadata1)
@@ -1061,14 +1061,14 @@ func TestWalRetrieveSnapshotOnReopen(t *testing.T) {
 				ConfigUpdate: &pb.ConfigUpdate{
 					Old: []*pb.NodeConfig{
 						{
-							Id:      "s1",
-							Address: "127.0.0.1:1234",
+							Id:  "s1",
+							Url: "127.0.0.1:1234",
 						},
 					},
 					New: []*pb.NodeConfig{
 						{
-							Id:      "s2",
-							Address: "127.0.0.2:1234",
+							Id:  "s2",
+							Url: "127.0.0.2:1234",
 						},
 					},
 					Phase: pb.ConfigUpdate_LEARNING,
@@ -1083,7 +1083,7 @@ func TestWalRetrieveSnapshotOnReopen(t *testing.T) {
 			assert.NilError(t, err)
 			assert.Equal(t, n, len(data))
 
-			_, err = writer.Commit()
+			err = writer.Commit()
 			assert.NilError(t, err)
 
 			w1.Close()
