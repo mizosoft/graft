@@ -90,6 +90,6 @@ func (c Config) RpcTimeoutsWithDefaults() RpcTimeouts {
 
 func (c Config) String() string {
 	return fmt.Sprintf(
-		"Confg{Id: %s, Url: %s, ClusterUrls: %v, ElectionTimeoutMillis: %v, HeartbeatMillis: %v, Persistence: %s, RpcTimeouts: %s}",
+		"Confg{Id: %s, ClusterUrls: %v, ElectionTimeoutMillis: %v, HeartbeatMillis: %v, Persistence: %s, RpcTimeouts: %s}",
 		c.Id, c.ClusterUrls, c.ElectionTimeoutMillis, c.HeartbeatMillis, reflect.TypeOf(c.Persistence), c.RpcTimeouts)
 }
