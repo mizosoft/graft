@@ -1,6 +1,6 @@
 module github.com/mizosoft/graft
 
-go 1.24.0
+go 1.26.0
 
 require (
 	github.com/edsrzf/mmap-go v1.2.0

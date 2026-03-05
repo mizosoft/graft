@@ -1,6 +1,6 @@
 module github.com/mizosoft/graft/infra
 
-go 1.24
+go 1.26.0
 
 require (
 	github.com/cpuguy83/go-md2man/v2 v2.0.7 // indirect

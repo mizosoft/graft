@@ -1,6 +1,6 @@
 module github.com/mizosoft/graft/dlock
 
-go 1.24
+go 1.26.0
 
 require (
 	go.uber.org/multierr v1.10.0 // indirect
