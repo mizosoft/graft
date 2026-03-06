@@ -89,7 +89,7 @@ func TestMsgqServiceFailover(t *testing.T) {
 }
 
 func NewClusterClient(t *testing.T, nodeCount int) (*infratesting.Cluster, *client.MsgqClient) {
-	cluster, err := infratesting.StartLocalCluster[*service.MsgqService](
+	cluster, err := infratesting.StartLocalCluster(
 		infratesting.ClusterConfig{
 			Dir:                   t.TempDir(),
 			NodeCount:             nodeCount,
