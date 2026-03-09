@@ -5,3 +5,8 @@
 .idea/
 ./TODO
 .vscode
+/target/
+/classes/
+/.lein-*
+/.nrepl-port
+/store/

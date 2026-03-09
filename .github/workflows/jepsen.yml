@@ -42,8 +42,8 @@ jobs:
             ${{ runner.os }}-lein-
 
       - name: Run Jepsen tests for ${{ matrix.service }}
-        #j working-directory: ../jepsen
-        run: pwd
+        working-directory: jepsen
+        run: lein run test --service ${{ matrix.service }} --time-limit 60
 
       - name: Upload Jepsen results
         if: always()
