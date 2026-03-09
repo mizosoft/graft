@@ -20,7 +20,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
+          go-version: '1.26'
 
       - name: Set up Java
         uses: actions/setup-java@v4
@@ -42,8 +42,8 @@ jobs:
             ${{ runner.os }}-lein-
 
       - name: Run Jepsen tests for ${{ matrix.service }}
-        working-directory: jepsen
-        run: lein run test --service ${{ matrix.service }} --time-limit 60
+        working-directory: ../jepsen
+        run: pwd && lein run test --service ${{ matrix.service }} --time-limit 60
 
       - name: Upload Jepsen results
         if: always()
