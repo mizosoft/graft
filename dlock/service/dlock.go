@@ -1,8 +1,8 @@
 package service
 
 import (
-	"bytes"
 	"encoding/gob"
+	"io"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -209,17 +209,13 @@ func (d *dlock) ShouldSnapshot() bool {
 	return atomic.LoadInt32(&d.redundantOperations) >= 4096
 }
 
-func (d *dlock) Snapshot() []byte {
+func (d *dlock) Snapshot(writer io.Writer) error {
 	d.mut.Lock()
 	defer d.mut.Unlock()
 
-	buf := new(bytes.Buffer)
-	encoder := gob.NewEncoder(buf)
-	err := encoder.Encode(d.locks)
-	if err != nil {
-		panic(err)
-	}
-	return buf.Bytes()
+	atomic.StoreInt32(&d.redundantOperations, 0)
+
+	return gob.NewEncoder(writer).Encode(d.locks)
 }
 
 func (d *dlock) nextToken() uint64 {

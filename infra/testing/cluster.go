@@ -37,7 +37,7 @@ func (n *node) Close() error {
 		if err != nil {
 			log.Println("ListenAndServe error: ", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(10 * time.Second):
 		return fmt.Errorf("timed out waiting for node (%s) to close", n.config.Id)
 	}
 	return nil

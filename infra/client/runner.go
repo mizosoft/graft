@@ -21,21 +21,6 @@ func (c *Context) Args() []string {
 	return c.cliCtx.Args().Slice()
 }
 
-// Cmd creates a new command for use with RunClient.
-func Cmd(name, usage string, action func(ctx *Context) error) *cli.Command {
-	return &cli.Command{
-		Name:  name,
-		Usage: usage,
-		Action: func(c *cli.Context) error {
-			ctx, err := newContext(c)
-			if err != nil {
-				return err
-			}
-			return action(ctx)
-		},
-	}
-}
-
 // CmdWithArgs creates a command that shows argument usage in help.
 func CmdWithArgs(name, argsUsage, usage string, action func(ctx *Context) error) *cli.Command {
 	return &cli.Command{

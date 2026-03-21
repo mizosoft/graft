@@ -1,6 +1,10 @@
 package server
 
-import "github.com/mizosoft/graft"
+import (
+	"io"
+
+	"github.com/mizosoft/graft"
+)
 
 type StateMachine interface {
 	Apply(command Command) any
@@ -9,5 +13,5 @@ type StateMachine interface {
 
 	ShouldSnapshot() bool
 
-	Snapshot() []byte
+	Snapshot(writer io.Writer) error
 }

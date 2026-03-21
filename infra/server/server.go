@@ -29,15 +29,18 @@ type Command struct {
 type Server struct {
 	io.Closer
 
-	sm        StateMachine
-	started   atomic.Bool
-	publisher *publisher
-	srv       *http.Server
-	batcher   *batcher
-	G         *graft.Graft
-	Mux       *http.ServeMux
-	Logger    *zap.SugaredLogger
-	Init      func()
+	sm           StateMachine
+	started      atomic.Bool
+	publisher    *publisher
+	srv          *http.Server
+	batcher      *batcher
+	G            *graft.Graft
+	Mux          *http.ServeMux
+	Logger       *zap.SugaredLogger
+	applyChan    chan *graft.Event
+	snapshotChan chan *graft.SnapshotSink
+	closedChan   chan error
+	Init         func()
 }
 
 func (s *Server) Address() string {
@@ -56,20 +59,10 @@ func (s *Server) Start() {
 
 	s.Init()
 
-	s.G.Start(graft.Callbacks{
-		Restore: func(snapshot graft.Snapshot) error {
-			return s.sm.Restore(snapshot)
-		},
-		Apply: func(entry *pb.LogEntry) error {
-			return s.apply(entry)
-		},
-		ShouldSnapshot: func() bool {
-			return s.sm.ShouldSnapshot()
-		},
-		Snapshot: func(writer io.Writer) error {
-			_, err := writer.Write(s.sm.Snapshot())
-			return err
-		},
+	s.G.Start(graft.StateMachine{
+		Apply:    s.applyChan,
+		Snapshot: s.snapshotChan,
+		Closed:   s.closedChan,
 	})
 
 	go func() {
@@ -78,12 +71,59 @@ func (s *Server) Start() {
 			s.Logger.Error("ListenAndServer error", zap.Error(err))
 		}
 	}()
+
+	go s.applyWorker()
+}
+
+func (s *Server) applyWorker() {
+	for event := range s.applyChan {
+		if event.Entries != nil {
+			for _, entry := range event.Entries {
+				if err := s.apply(entry); err != nil {
+					panic(err)
+				}
+
+				if s.sm.ShouldSnapshot() {
+					s.G.AppliedEntry(entry)
+					s.G.ScheduleSnapshot()
+
+					sink, ok := <-s.snapshotChan
+					if !ok {
+						return // TODO is this what we want?
+					}
+
+					func() {
+						defer sink.Close()
+
+						if err := s.sm.Snapshot(sink); err != nil {
+							sink.Abort()
+							panic(err)
+						}
+					}()
+				}
+			}
+
+			s.G.AppliedEntry(event.Entries[len(event.Entries)-1])
+		} else {
+			func() {
+				defer event.Snapshot.Close()
+
+				if err := s.sm.Restore(event.Snapshot); err != nil {
+					panic(err)
+				}
+				s.G.AppliedSnapshot(event.Snapshot.Metadata())
+			}()
+		}
+	}
 }
 
 func (s *Server) Close() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	return errors.Join(s.srv.Shutdown(ctx), s.G.Close(), s.G.Persistence().Close())
+	err := errors.Join(s.srv.Shutdown(ctx), s.G.Close(), s.G.Persistence().Close())
+	close(s.applyChan)
+	close(s.snapshotChan)
+	return err
 }
 
 func (s *Server) RespondOk(w http.ResponseWriter, payload any) {
@@ -234,10 +274,13 @@ func NewServer(serviceName string, address string, batchInterval time.Duration, 
 			Addr:    address,
 			Handler: mux,
 		},
-		batcher: newBatcher(g, batchInterval),
-		G:       g,
-		Mux:     mux,
-		Logger:  config.LoggerOrNoop().With(zap.String("name", serviceName), zap.String("id", config.Id)).Sugar(),
+		batcher:      newBatcher(g, batchInterval),
+		applyChan:    make(chan *graft.Event, 1024),
+		snapshotChan: make(chan *graft.SnapshotSink, 1),
+		closedChan:   make(chan error, 1),
+		G:            g,
+		Mux:          mux,
+		Logger:       config.LoggerOrNoop().With(zap.String("name", serviceName), zap.String("id", config.Id)).Sugar(),
 	}
 	return server, nil
 }

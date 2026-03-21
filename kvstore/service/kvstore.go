@@ -1,8 +1,8 @@
 package service
 
 import (
-	"bytes"
 	"encoding/gob"
+	"io"
 	"sync"
 	"sync/atomic"
 
@@ -77,18 +77,13 @@ func (s *kvstore) ShouldSnapshot() bool {
 	return atomic.LoadInt32(&s.redundantOperations) >= 4096
 }
 
-func (s *kvstore) Snapshot() []byte {
+func (s *kvstore) Snapshot(writer io.Writer) error {
 	s.mut.RLock()
 	defer s.mut.RUnlock()
 
-	buf := new(bytes.Buffer)
-	encoder := gob.NewEncoder(buf)
-	err := encoder.Encode(s.data)
-	if err != nil {
-		panic(err)
-	}
 	atomic.StoreInt32(&s.redundantOperations, 0)
-	return buf.Bytes()
+
+	return gob.NewEncoder(writer).Encode(s.data)
 }
 
 func (s *kvstore) get(key string) *api.GetResponse {
@@ -150,7 +145,7 @@ func (s *kvstore) del(key string) *api.DeleteResponse {
 	if ok {
 		delete(s.data, key)
 	}
-	s.logger.Info("Delddfdf", zap.String("key", key))
+
 	return &api.DeleteResponse{
 		Exists: ok,
 		Value:  value,

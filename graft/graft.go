@@ -16,8 +16,6 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// TODO recheck the overuse of panics.
-
 const UnknownLeader = "UNKNOWN"
 
 type state int
@@ -32,12 +30,11 @@ const (
 )
 
 var (
-	ErrNotLeader    = errors.New("not leader")
-	ErrDead         = errors.New("dead")
-	ErrInitialized  = errors.New("already initialized")
-	ErrNotSupported = errors.New("not supported")
-	ErrIdConflict   = errors.New("ID conflict")
-	ErrNoSuchId     = errors.New("no such ID")
+	ErrNotLeader   = errors.New("not leader")
+	ErrDead        = errors.New("dead")
+	ErrInitialized = errors.New("already initialized")
+	ErrIdConflict  = errors.New("ID conflict")
+	ErrNoSuchId    = errors.New("no such ID")
 )
 
 func (s state) String() string {
@@ -58,52 +55,35 @@ const defaultSnapshotBufferSize = 1 * 1024 * 1024
 
 // TODO limit broadcastWorker & make each worker send requests to any peer.
 
-type Callbacks struct {
-	Restore        func(snapshot Snapshot) error
-	Apply          func(entry *pb.LogEntry) error
-	ShouldSnapshot func() bool
-	Snapshot       func(writer io.Writer) error
-	Closed         func() error
+// Event is delivered on StateMachine.Apply and represents either a batch of committed log
+// entries or a snapshot restore. Exactly one of Entries or Snapshot is non-nil.
+//
+// The state machine must call Graft.AppliedEntry after processing the event to advance lastApplied.
+type Event struct {
+	// Entries is the batch of committed log entries to apply. Non-nil for entry events.
+	// NOOP entries are filtered out; only user-submitted commands & configuration updates are included.
+	Entries []*pb.LogEntry
+
+	// Snapshot is the snapshot to restore from. Non-nil for restore events.
+	// The state machine must load its state from this snapshot and close it when done.
+	Snapshot Snapshot
 }
 
-func (c Callbacks) Copy() Callbacks {
-	return Callbacks{
-		Restore:        c.Restore,
-		Apply:          c.Apply,
-		ShouldSnapshot: c.ShouldSnapshot,
-		Snapshot:       c.Snapshot,
-		Closed:         c.Closed,
-	}
-}
+// StateMachine wires Graft to an application state machine via channels.
+// All fields are optional; set to nil to ignore the corresponding events.
+type StateMachine struct {
+	// Apply receives events in log order. Each event is either a batch of committed entries
+	// (Entries != nil) or a snapshot restore (Snapshot != nil). The state machine must call
+	// Graft.AppliedEntry after processing each event to advance lastApplied.
+	Apply chan *Event
 
-func (c Callbacks) WithDefaults() Callbacks {
-	c2 := c.Copy()
-	if c2.Restore == nil {
-		c2.Restore = func(snapshot Snapshot) error {
-			return nil
-		}
-	}
-	if c2.Apply == nil {
-		c2.Apply = func(entry *pb.LogEntry) error {
-			return nil
-		}
-	}
-	if c2.ShouldSnapshot == nil {
-		c2.ShouldSnapshot = func() bool {
-			return false
-		}
-	}
-	if c2.Snapshot == nil {
-		c2.Snapshot = func(writer io.Writer) error {
-			return ErrNotSupported
-		}
-	}
-	if c2.Closed == nil {
-		c2.Closed = func() error {
-			return nil
-		}
-	}
-	return c2
+	// Snapshot receives a SnapshotSink when a snapshot has been scheduled via ScheduleSnapshot.
+	// The state machine must write its full state to the sink, then call Close to commit or Abort to discard.
+	Snapshot chan *SnapshotSink
+
+	// Closed receives nil when Graft shuts down cleanly. The channel should be buffered so
+	// that the send does not block if the receiver is not ready.
+	Closed chan error
 }
 
 type entryIndexRange struct {
@@ -111,11 +91,12 @@ type entryIndexRange struct {
 }
 
 type raftState struct {
-	state       state
-	currentTerm int64
-	votedFor    string
-	commitIndex int64
-	lastApplied int64
+	state           state
+	currentTerm     int64
+	votedFor        string
+	commitIndex     int64
+	lastApplied     int64
+	lastAppliedTerm int64
 }
 
 type Graft struct {
@@ -133,7 +114,7 @@ type Graft struct {
 	grpcServer        *grpc.Server
 	mut               sync.Mutex
 	applyChan         chan any
-	deadChan          chan struct{}
+	snapshotChan      chan struct{}
 	logCompactionChan chan int64
 	broadcastChans    map[string]*broadcastChannel
 
@@ -162,8 +143,8 @@ type Graft struct {
 
 	persistence Persistence
 
-	// Callbacks for state machine integration.
-	callbacks Callbacks
+	// StateMachine for state machine integration.
+	sm StateMachine
 }
 
 func (g *Graft) Id() string {
@@ -184,6 +165,36 @@ func (g *Graft) String() string {
 		g.state, g.currentTerm, g.votedFor, g.commitIndex, g.lastApplied, g.leaderId, g.persistence.EntryCount())
 }
 
+func (g *Graft) ScheduleSnapshot() {
+	select {
+	case g.snapshotChan <- struct{}{}:
+	default:
+		// Ignore. A new snapshot routine is certainly to be scheduled.
+	}
+}
+
+// AppliedEntry notifies Graft that the state machine has finished processing the given entry,
+// advancing lastApplied accordingly. The state machine may call AppliedEntry multiple times
+// per event for fine-grained control (e.g. to snapshot mid-batch).
+//
+// To snapshot at this index, call ScheduleSnapshot immediately after AppliedEntry, then block on
+// StateMachine.Snapshot to receive the SnapshotSink.
+func (g *Graft) AppliedEntry(entry *pb.LogEntry) {
+	g.mut.Lock()
+	g.lastApplied = max(g.lastApplied, entry.Index)
+	g.lastAppliedTerm = max(g.lastAppliedTerm, entry.Term)
+	g.mut.Unlock()
+}
+
+// AppliedSnapshot notifies Graft that the state machine has finished processing the given snapshot,
+// advancing lastApplied accordingly.
+func (g *Graft) AppliedSnapshot(metadata *pb.SnapshotMetadata) {
+	g.mut.Lock()
+	g.lastApplied = max(g.lastApplied, metadata.LastIncludedIndex)
+	g.lastAppliedTerm = max(g.lastAppliedTerm, metadata.LastIncludedTerm)
+	g.mut.Unlock()
+}
+
 func New(config Config) (*Graft, error) {
 	if err := config.Validate(); err != nil {
 		return nil, err
@@ -196,18 +207,19 @@ func New(config Config) (*Graft, error) {
 		id:  config.Id,
 		url: config.ClusterUrls[config.Id],
 		raftState: raftState{
-			state:       stateNew,
-			currentTerm: -1,
-			votedFor:    UnknownLeader,
-			commitIndex: -1,
-			lastApplied: -1,
+			state:           stateNew,
+			currentTerm:     -1,
+			votedFor:        UnknownLeader,
+			commitIndex:     -1,
+			lastApplied:     -1,
+			lastAppliedTerm: -1,
 		},
 		leaderId:              UnknownLeader,
 		lastConfigUpdateIndex: -1,
 		minElectionTimeout:    time.Duration(config.ElectionTimeoutMillis.Low) * time.Millisecond,
 		rpcTimeouts:           config.RpcTimeoutsWithDefaults(),
 		applyChan:             make(chan any, 1024), // Buffer the channel so that a slow client doesn't immediately block workflow.
-		deadChan:              make(chan struct{}),
+		snapshotChan:          make(chan struct{}, 1),
 		logCompactionChan:     make(chan int64, 16*1024), // Buffer to avoid blocking snapshot operations.
 		broadcastChans:        make(map[string]*broadcastChannel),
 		peers:                 make(map[string]*peer),
@@ -220,7 +232,7 @@ func New(config Config) (*Graft, error) {
 		rpcCtxCancel: cancel,
 		persistence:  config.Persistence,
 		grpcServer:   grpc.NewServer(),
-		callbacks:    Callbacks{}.WithDefaults(),
+		sm:           StateMachine{},
 	}
 
 	g.electionTimer = newRandomizedTimer[int64](
@@ -253,7 +265,7 @@ func (g *Graft) fatal(err error) {
 	g.logger.Panic(err)
 }
 
-func (g *Graft) Start(callbacks Callbacks) {
+func (g *Graft) Start(sm StateMachine) {
 	g.mut.Lock()
 	defer g.mut.Unlock()
 
@@ -263,7 +275,7 @@ func (g *Graft) Start(callbacks Callbacks) {
 	g.state = stateStarting
 
 	go func() {
-		if err := g.initialize(callbacks); err != nil {
+		if err := g.initialize(sm); err != nil {
 			g.fatal(err)
 		}
 
@@ -281,7 +293,7 @@ func (g *Graft) Start(callbacks Callbacks) {
 	}()
 }
 
-func (g *Graft) initialize(callbacks Callbacks) error {
+func (g *Graft) initialize(sm StateMachine) error {
 	g.mut.Lock()
 	defer g.mut.Unlock()
 
@@ -337,9 +349,10 @@ func (g *Graft) initialize(callbacks Callbacks) error {
 		g.applyChan <- entryIndexRange{firstIndex, commitIndex}
 	}
 
-	g.callbacks = callbacks.WithDefaults()
+	g.sm = sm
 
 	go g.applyWorker()
+	go g.snapshotWorker()
 	go g.electionWorker()
 	go g.heartbeatWorker()
 	go g.logCompactionWorker()
@@ -375,6 +388,13 @@ func (g *Graft) Close() error {
 	}
 
 	g.grpcServer.Stop()
+
+	if g.sm.Closed != nil {
+		select {
+		case g.sm.Closed <- nil:
+		default:
+		}
+	}
 
 	g.logger.Info("Graft closed")
 	return nil
@@ -441,57 +461,102 @@ func (g *Graft) unguardedCountMajority(condition func(*peer) bool) bool {
 	return false
 }
 
+// SnapshotSink is passed to the state machine to write a snapshot.
+// Close commits the snapshot; Abort discards it without committing.
+type SnapshotSink struct {
+	seq       *sequentialSnapshotWriter
+	writer    SnapshotWriter
+	notifyCh  chan struct{}
+	once      sync.Once
+	committed bool
+}
+
+func (s *SnapshotSink) Write(p []byte) (int, error) {
+	return s.seq.Write(p)
+}
+
+// Close commits the snapshot and signals the library that snapshotting is done.
+func (s *SnapshotSink) Close() error {
+	var err error
+	s.once.Do(func() {
+		if err = s.writer.Commit(); err == nil {
+			s.committed = true
+		}
+		err = errors.Join(s.writer.Close())
+		close(s.notifyCh)
+	})
+	return err
+}
+
+// Abort discards the in-progress snapshot without committing.
+func (s *SnapshotSink) Abort() {
+	s.once.Do(func() {
+		s.writer.Close()
+		close(s.notifyCh)
+	})
+}
+
 func (g *Graft) applyWorker() {
+outer:
 	for e := range g.applyChan {
 		switch e := e.(type) {
 		case entryIndexRange:
-			var lastAppliedEntry *pb.LogEntry
 			for i := e.from; i <= e.to; i += defaultEntryBatchSize {
 				entries, err := g.persistence.GetEntries(i, min(e.to, i+defaultEntryBatchSize))
 				if err != nil {
-					var indexOutOfRangeError IndexOutOfRangeError
-					if errors.As(err, &indexOutOfRangeError) {
-						// A concurrent truncation (due to snapshotting) could've occurred. We can proceed towards getting the next
-						// snapshot.
-						break
+					if _, ok := errors.AsType[IndexOutOfRangeError](err); ok {
+						// A concurrent truncation (due to snapshotting) could've occurred. We can proceed towards getting the next event.
+						continue outer
 					}
 					panic(err)
 				}
 
+				var effectiveEntries []*pb.LogEntry
 				for _, entry := range entries {
-					if entry.Type == pb.LogEntry_NOOP {
-						continue
+					if entry.Type != pb.LogEntry_NOOP {
+						effectiveEntries = append(effectiveEntries, entry)
 					}
-
-					if err := g.callbacks.Apply(entry); err != nil {
-						panic(err)
-					}
-					lastAppliedEntry = entry
 				}
-			}
 
-			if lastAppliedEntry != nil {
-				g.logger.Infof("Applied entries up to %d", lastAppliedEntry.Index)
+				if len(effectiveEntries) == 0 {
+					continue
+				}
 
-				g.mut.Lock()
-				g.lastApplied = lastAppliedEntry.Index
-				g.mut.Unlock()
+				lastIndex := effectiveEntries[len(effectiveEntries)-1].Index
+				lastTerm := effectiveEntries[len(effectiveEntries)-1].Term
 
-				if g.callbacks.ShouldSnapshot() {
-					metadata := &pb.SnapshotMetadata{
-						LastIncludedIndex: lastAppliedEntry.Index,
-						LastIncludedTerm:  lastAppliedEntry.Term,
+				if g.sm.Apply != nil {
+					g.sm.Apply <- &Event{
+						Entries: cloneMsgs[*pb.LogEntry](effectiveEntries),
 					}
-					g.writeSnapshot(metadata)
-					g.logger.Infof("Snapshotted: %v", metadata)
+				} else {
+					g.mut.Lock()
+					g.lastApplied = max(g.lastApplied, lastIndex)
+					g.lastAppliedTerm = max(g.lastAppliedTerm, lastTerm)
+					g.mut.Unlock()
 				}
 			}
 		case *pb.SnapshotMetadata:
-			if g.restoreSnapshot(e) {
+			snapshot, err := g.persistence.OpenSnapshot(e)
+			if err != nil {
+				if errors.Is(err, ErrNoSuchSnapshot) {
+					// A concurrent snapshotting could've removed this snapshot. We can proceed towards getting the next snapshot.
+					continue
+				}
+				panic(err)
+			}
+
+			if g.sm.Apply != nil {
+				g.sm.Apply <- &Event{
+					Snapshot: snapshot,
+				}
 				g.logger.Infof("Restored snapshot: %v", e)
+			} else {
+				snapshot.Close()
 
 				g.mut.Lock()
 				g.lastApplied = e.LastIncludedIndex
+				g.lastAppliedTerm = e.LastIncludedTerm
 				g.mut.Unlock()
 			}
 		default:
@@ -500,40 +565,48 @@ func (g *Graft) applyWorker() {
 	}
 }
 
-func (g *Graft) restoreSnapshot(metadata *pb.SnapshotMetadata) bool {
-	snapshot, err := g.persistence.OpenSnapshot(metadata)
-	if err != nil {
-		if errors.Is(err, ErrNoSuchSnapshot) {
-			// A concurrent snapshotting could've removed this snapshot. We can proceed towards getting the next
-			// snapshot.
-			return false
+func (g *Graft) snapshotWorker() {
+	for range g.snapshotChan {
+		g.mut.Lock()
+		lastApplied := g.lastApplied
+		lastAppliedTerm := g.lastAppliedTerm
+		g.mut.Unlock()
+
+		if lastApplied < 0 || g.sm.Snapshot == nil {
+			continue
 		}
-		panic(err)
-	}
 
-	defer snapshot.Close()
+		metadata := &pb.SnapshotMetadata{
+			LastIncludedIndex: lastApplied,
+			LastIncludedTerm:  lastAppliedTerm,
+		}
 
-	if err := g.callbacks.Restore(snapshot); err != nil {
-		panic(err)
-	}
-	return true
-}
+		writer, err := g.persistence.CreateSnapshot(metadata)
+		if err != nil {
+			panic(err)
+		}
 
-func (g *Graft) writeSnapshot(metadata *pb.SnapshotMetadata) {
-	writer, err := g.persistence.CreateSnapshot(metadata)
-	if err != nil {
-		panic(err)
-	}
-	defer writer.Close()
+		doneCh := make(chan struct{})
+		sink := &SnapshotSink{
+			seq:      &sequentialSnapshotWriter{base: writer},
+			writer:   writer,
+			notifyCh: doneCh,
+		}
 
-	if err := g.callbacks.Snapshot(&sequentialSnapshotWriter{base: writer}); err != nil {
-		panic(err)
-	}
-	if err = writer.Commit(); err != nil {
-		panic(err)
-	}
+		func() {
+			defer writer.Close()
 
-	g.logCompactionChan <- metadata.LastIncludedIndex
+			g.sm.Snapshot <- sink
+
+			// TODO let's specify a timeout here.
+			// Block until the state machine closes or aborts the sink, then do log compaction.
+			<-doneCh
+			if sink.committed {
+				g.logCompactionChan <- metadata.LastIncludedIndex
+				g.logger.Infof("Snapshotted: %v", metadata)
+			}
+		}()
+	}
 }
 
 type sequentialSnapshotWriter struct {
@@ -546,8 +619,8 @@ func (w *sequentialSnapshotWriter) Write(data []byte) (int, error) {
 		return 0, err
 	} else {
 		w.offset += int64(n)
+		return n, nil
 	}
-	return len(data), nil
 }
 
 func (g *Graft) electionWorker() {
@@ -672,8 +745,7 @@ func (g *Graft) logCompactionWorker() {
 			g.mut.Lock()
 			defer g.mut.Unlock()
 
-			err := g.persistence.TruncateEntriesTo(index)
-			if err != nil {
+			if err := g.persistence.TruncateEntriesTo(index); err != nil {
 				g.logger.Error("Error compacting log", zap.Error(err))
 			}
 		}()
@@ -761,7 +833,7 @@ func (g *Graft) createAppendEntriesOrSnapshotRequest(p *peer) proto.Message {
 		request.PrevLogIndex, request.PrevLogTerm = prevLogIndex, prevLogTerm
 	} else if metadata, err := g.persistence.LastSnapshotMetadata(); err == nil &&
 		metadata != nil && prevLogIndex == metadata.LastIncludedIndex {
-		request.PrevLogIndex, request.PrevLogTerm = metadata.LastIncludedIndex, metadata.LastIncludedIndex
+		request.PrevLogIndex, request.PrevLogTerm = metadata.LastIncludedIndex, metadata.LastIncludedTerm
 	} else if err != nil {
 		panic(err)
 	} else {
@@ -814,6 +886,7 @@ func (g *Graft) broadcastWorker(p *peer, c *broadcastChannel) {
 					} else if err != nil {
 						panic(err)
 					}
+					defer snapshot.Close()
 
 					ctx, cancel := context.WithTimeout(g.rpcCtx, g.rpcTimeouts.InstallSnapshot)
 					defer cancel()
@@ -1050,7 +1123,9 @@ func (g *Graft) unguardedFlushCommittedEntries() {
 	if newCommitIndex > g.commitIndex {
 		oldCommitIndex := g.commitIndex
 		g.unguardedUpdateCommitIndex(newCommitIndex)
-		g.applyChan <- entryIndexRange{oldCommitIndex + 1, newCommitIndex}
+		if newCommitIndex > g.lastApplied {
+			g.applyChan <- entryIndexRange{1 + max(oldCommitIndex, g.lastApplied), newCommitIndex}
+		}
 		g.heartbeatTimer.poke() // Broadcast new commitIndex.
 	}
 }
@@ -1331,6 +1406,13 @@ func (g *Graft) installSnapshot(stream grpc.ClientStreamingServer[pb.SnapshotReq
 			return stream.SendAndClose(&pb.SnapshotResponse{Term: g.GetCurrentTerm()})
 		} else if err != nil {
 			return err
+		}
+
+		if writer == nil {
+			writer, err = g.persistence.CreateSnapshot(request.Metadata)
+			if err != nil {
+				panic(err)
+			}
 		}
 
 		success, err := g.installSnapshotBlock(request, writer)

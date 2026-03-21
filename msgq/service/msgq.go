@@ -1,9 +1,9 @@
 package service
 
 import (
-	"bytes"
 	"encoding/gob"
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/mizosoft/graft"
@@ -67,17 +67,13 @@ func (m *msgq) ShouldSnapshot() bool {
 	return atomic.LoadInt32(&m.redundantOperations) >= 4096
 }
 
-func (m *msgq) Snapshot() []byte {
+func (m *msgq) Snapshot(writer io.Writer) error {
 	m.mut.Lock()
 	defer m.mut.Unlock()
 
-	buf := new(bytes.Buffer)
-	encoder := gob.NewEncoder(buf)
-	err := encoder.Encode(m.queues)
-	if err != nil {
-		panic(err)
-	}
-	return buf.Bytes()
+	atomic.StoreInt32(&m.redundantOperations, 0)
+
+	return gob.NewEncoder(writer).Encode(m.queues)
 }
 
 func (m *msgq) enqueue(topic string, msg api.Message) api.EnqueueResponse {

@@ -98,7 +98,7 @@ func NewClusterClient(t *testing.T, nodeCount int) (*infratesting.Cluster, *clie
 			ServerFactory: func(address string, config graft.Config) (*server.Server, error) {
 				return service.NewMsgqServer(address, 0, config)
 			},
-			Logger: zap.NewExample(),
+			Logger: zap.NewNop(),
 		},
 	)
 
