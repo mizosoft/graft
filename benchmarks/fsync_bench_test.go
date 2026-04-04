@@ -1,6 +1,7 @@
 package benchmarks
 
 import (
+	"errors"
 	"fmt"
 	"math/rand"
 	"os"
@@ -28,13 +29,12 @@ func BenchmarkWriteWithFsync(b *testing.B) {
 			if err != nil {
 				b.Fatalf("couldn't create file: %v", err)
 			}
-			defer os.Remove(file.Name())
-			defer file.Close()
+			defer func() { errors.Join(file.Close(), os.Remove(file.Name())) }()
 
 			// Benchmark
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				if _, err := file.Write(data); err != nil {
+				if _, err := file.WriteAt(data, 0); err != nil {
 					b.Fatalf("write error: %v", err)
 				}
 				if err := file.Sync(); err != nil {
@@ -63,8 +63,7 @@ func BenchmarkWriteWithMsync(b *testing.B) {
 			if err != nil {
 				b.Fatalf("couldn't create file: %v", err)
 			}
-			defer os.Remove(file.Name())
-			defer file.Close()
+			defer func() { errors.Join(file.Close(), os.Remove(file.Name())) }()
 
 			if err := file.Truncate(int64(len(data))); err != nil {
 				b.Fatalf("truncate error: %v", err)
