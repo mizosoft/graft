@@ -10,3 +10,19 @@
 /.lein-*
 /.nrepl-port
 /store/
+
+# OS
+.DS_Store
+
+# Binaries
+**/cmd/kv
+**/cmd/kvstore
+
+# Logs
+*.log
+*.txt
+**/logn*/
+
+# Jepsen artifacts
+**/jepsen/docker/bin/
+**/jepsen/**/store/
