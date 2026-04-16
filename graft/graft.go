@@ -56,15 +56,15 @@ const defaultSnapshotBufferSize = 1 * 1024 * 1024
 // TODO limit broadcastWorker & make each worker send requests to any peer.
 
 // Event is delivered on StateMachine.Apply and represents either a batch of committed log
-// entries or a snapshot restore. Exactly one of Entries or Snapshot is non-nil.
+// entries or a snapshot to restore. Exactly one of Entries or Snapshot is non-nil.
 //
 // The state machine must call Graft.AppliedEntry after processing the event to advance lastApplied.
 type Event struct {
-	// Entries is the batch of committed log entries to apply. Non-nil for entry events.
+	// Entries is the batch of committed log entries to apply. Non-nil for log entry events.
 	// NOOP entries are filtered out; only user-submitted commands & configuration updates are included.
 	Entries []*pb.LogEntry
 
-	// Snapshot is the snapshot to restore from. Non-nil for restore events.
+	// Snapshot is the snapshot to restore from. Non-nil for snapshot restore events.
 	// The state machine must load its state from this snapshot and close it when done.
 	Snapshot Snapshot
 }
@@ -74,15 +74,14 @@ type Event struct {
 type StateMachine struct {
 	// Apply receives events in log order. Each event is either a batch of committed entries
 	// (Entries != nil) or a snapshot restore (Snapshot != nil). The state machine must call
-	// Graft.AppliedEntry after processing each event to advance lastApplied.
+	// Graft.AppliedEntry after processing each event to advance Graft's lastApplied.
 	Apply chan *Event
 
-	// Snapshot receives a SnapshotSink when a snapshot has been scheduled via ScheduleSnapshot.
-	// The state machine must write its full state to the sink, then call Close to commit or Abort to discard.
+	// Snapshot receives a SnapshotSink when a snapshot has been scheduled via Graft.ScheduleSnapshot.
+	// The state machine must write its full state to the sink, then call SnapshotSink.Close to commit or SnapshotSink.Abort to discard.
 	Snapshot chan *SnapshotSink
 
-	// Closed receives nil when Graft shuts down cleanly. The channel should be buffered so
-	// that the send does not block if the receiver is not ready.
+	// Closed is notified when Graft is closed, possibly with a non-nil error signifying an error that happened during closure.
 	Closed chan error
 }
 
@@ -137,14 +136,10 @@ type Graft struct {
 	minElectionTimeout time.Duration
 	rpcTimeouts        RpcTimeouts
 	logger             *zap.SugaredLogger
-
-	rpcCtx       context.Context
-	rpcCtxCancel context.CancelFunc
-
-	persistence Persistence
-
-	// StateMachine for state machine integration.
-	sm StateMachine
+	rpcCtx             context.Context
+	rpcCtxCancel       context.CancelFunc
+	persistence        Persistence
+	sm                 StateMachine
 }
 
 func (g *Graft) Id() string {
@@ -178,8 +173,10 @@ func (g *Graft) ScheduleSnapshot() {
 // per event for fine-grained control (e.g. to snapshot mid-batch).
 //
 // To snapshot at this index, call ScheduleSnapshot immediately after AppliedEntry, then block on
-// StateMachine.Snapshot to receive the SnapshotSink.
+// StateMachine.Snapshot to receive the SnapshotSink to write the snapshot to.
 func (g *Graft) AppliedEntry(entry *pb.LogEntry) {
+	g.logger.Infof("Applied upto entry: %v - %v", entry.Index, entry.Term)
+
 	g.mut.Lock()
 	g.lastApplied = max(g.lastApplied, entry.Index)
 	g.lastAppliedTerm = max(g.lastAppliedTerm, entry.Term)
@@ -189,6 +186,8 @@ func (g *Graft) AppliedEntry(entry *pb.LogEntry) {
 // AppliedSnapshot notifies Graft that the state machine has finished processing the given snapshot,
 // advancing lastApplied accordingly.
 func (g *Graft) AppliedSnapshot(metadata *pb.SnapshotMetadata) {
+	g.logger.Infof("Restored snapshot: %v", metadata)
+
 	g.mut.Lock()
 	g.lastApplied = max(g.lastApplied, metadata.LastIncludedIndex)
 	g.lastAppliedTerm = max(g.lastAppliedTerm, metadata.LastIncludedTerm)
@@ -200,7 +199,7 @@ func New(config Config) (*Graft, error) {
 		return nil, err
 	}
 
-	// Create cancellable context for lifecycle management
+	// Create cancellable context for lifecycle management.
 	ctx, cancel := context.WithCancel(context.Background())
 
 	g := &Graft{
@@ -449,6 +448,7 @@ func (g *Graft) unguardedCountMajority(condition func(*peer) bool) bool {
 			count++
 			satisfiedCount++
 		}
+
 		for _, p := range g.peers {
 			if condition(p) {
 				satisfiedCount++
@@ -550,7 +550,6 @@ outer:
 				g.sm.Apply <- &Event{
 					Snapshot: snapshot,
 				}
-				g.logger.Infof("Restored snapshot: %v", e)
 			} else {
 				snapshot.Close()
 
@@ -664,23 +663,7 @@ func (g *Graft) runElection(timeoutTerm int64) {
 						return nil
 					}
 
-					lastLogIndex, err := g.persistence.LastEntryIndex()
-					if err != nil {
-						panic(err)
-					}
-
-					var lastLogTerm int64 = -1
-					if lastLogIndex >= 0 {
-						lastLogTerm, err = g.persistence.GetEntryTerm(lastLogIndex)
-						if err != nil {
-							panic(err)
-						}
-					} else if metadata, err := g.persistence.LastSnapshotMetadata(); err == nil && metadata != nil {
-						lastLogIndex, lastLogTerm = metadata.LastIncludedIndex, metadata.LastIncludedTerm
-					} else if err != nil {
-						panic(err)
-					}
-
+					lastLogIndex, lastLogTerm := g.lastLogIndexAndTerm()
 					return &pb.RequestVoteRequest{
 						Term:         electionTerm,
 						CandidateId:  g.id,
@@ -1214,12 +1197,20 @@ func (g *Graft) unguardedIsUnknownPeer(peerId string) bool {
 }
 
 func (g *Graft) unguardedIsCandidateLogUpToDate(request *pb.RequestVoteRequest) bool {
+	lastLogIndex, lastLogTerm := g.lastLogIndexAndTerm()
+
+	// Note that this comparison works with the -1 sentinel values.
+	return lastLogTerm < request.LastLogTerm ||
+		(lastLogTerm == request.LastLogTerm && lastLogIndex <= request.LastLogIndex)
+}
+
+func (g *Graft) lastLogIndexAndTerm() (int64, int64) {
 	myLastLogIndex, err := g.persistence.LastEntryIndex()
 	if err != nil {
 		panic(err)
 	}
 
-	var myLastLogTerm int64 = -1
+	myLastLogTerm := int64(-1)
 	if myLastLogIndex >= 0 {
 		myLastLogTerm, err = g.persistence.GetEntryTerm(myLastLogIndex)
 		if err != nil {
@@ -1230,10 +1221,7 @@ func (g *Graft) unguardedIsCandidateLogUpToDate(request *pb.RequestVoteRequest) 
 	} else if err != nil {
 		panic(err)
 	}
-
-	// Note that this comparison works with the -1 sentinel values.
-	return myLastLogTerm < request.LastLogTerm ||
-		(myLastLogTerm == request.LastLogTerm && myLastLogIndex <= request.LastLogIndex)
+	return myLastLogIndex, myLastLogTerm
 }
 
 func (g *Graft) requestVote(request *pb.RequestVoteRequest) (*pb.RequestVoteResponse, error) {
