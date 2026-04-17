@@ -15,17 +15,17 @@ import (
 )
 
 func TestMsgqServiceEnqueueDequeAutoAck(t *testing.T) {
-	cluster, client := NewClusterClient(t, 3)
+	cluster, kvClient := NewClusterClient(t, 3)
 	defer cluster.Shutdown()
 
-	msg, ok, err := client.Dequeue("a")
+	msg, ok, err := kvClient.Dequeue("a")
 	assert.NilError(t, err)
 	assert.Assert(t, !ok)
 
-	id, err := client.Enqueue("a", "hello")
+	id, err := kvClient.Enqueue("a", "hello")
 	assert.NilError(t, err)
 
-	msg, ok, err = client.Dequeue("a")
+	msg, ok, err = kvClient.Dequeue("a")
 	assert.NilError(t, err)
 	assert.Assert(t, ok)
 	assert.Equal(t, id, msg.Id)
@@ -33,18 +33,18 @@ func TestMsgqServiceEnqueueDequeAutoAck(t *testing.T) {
 }
 
 func TestMsgqServiceEnqueueMultiple(t *testing.T) {
-	cluster, client := NewClusterClient(t, 3)
+	cluster, kvClient := NewClusterClient(t, 3)
 	defer cluster.Shutdown()
 
 	ids := make([]string, 0)
 	for i := range 10 {
-		id, err := client.Enqueue("a", "hello"+strconv.Itoa(i))
+		id, err := kvClient.Enqueue("a", "hello"+strconv.Itoa(i))
 		assert.NilError(t, err)
 		ids = append(ids, id)
 	}
 
 	for i := range 10 {
-		msg, ok, err := client.Dequeue("a")
+		msg, ok, err := kvClient.Dequeue("a")
 		assert.NilError(t, err)
 		assert.Assert(t, ok)
 		assert.Equal(t, ids[i], msg.Id)
@@ -53,7 +53,7 @@ func TestMsgqServiceEnqueueMultiple(t *testing.T) {
 }
 
 func TestMsgqServiceFailover(t *testing.T) {
-	cluster, client := NewClusterClient(t, 3)
+	cluster, kvClient := NewClusterClient(t, 3)
 	defer cluster.Shutdown()
 
 	var q []string
@@ -62,24 +62,24 @@ func TestMsgqServiceFailover(t *testing.T) {
 	}
 
 	for _, v := range q {
-		_, err := client.Enqueue("a", v)
+		_, err := kvClient.Enqueue("a", v)
 		assert.NilError(t, err)
 	}
 
 	for i := range 50 {
 		if i%5 == 0 {
-			err := cluster.Restart(client.LeaderId())
+			err := cluster.Restart(kvClient.LeaderId())
 			assert.NilError(t, err)
 		}
 
 		newV := fmt.Sprintf("hello%d", 10*(i+1))
 		q = append(q, newV)
 
-		_, err := client.Enqueue("a", newV)
+		_, err := kvClient.Enqueue("a", newV)
 		assert.NilError(t, err)
 
 		for _, v := range q {
-			msg, exists, err := client.Dequeue("a")
+			msg, exists, err := kvClient.Dequeue("a")
 			assert.NilError(t, err)
 			assert.Assert(t, exists)
 			assert.Equal(t, v, msg.Data)

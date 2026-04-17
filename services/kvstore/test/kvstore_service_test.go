@@ -20,37 +20,37 @@ import (
 )
 
 func TestKvServicePut(t *testing.T) {
-	cluster, client := NewClusterClient(t, 3)
+	cluster, kvClient := NewClusterClient(t, 3)
 	defer cluster.Shutdown()
 
-	s, exists, err := client.Get("k1")
+	s, exists, err := kvClient.Get("k1")
 	assert.NilError(t, err)
 	assert.Assert(t, !exists)
 	testutil.AssertNil(t, s)
 
-	s, exists, err = client.Put("k1", "v1")
+	s, exists, err = kvClient.Put("k1", "v1")
 	assert.NilError(t, err)
 	assert.Assert(t, !exists)
 	testutil.AssertNil(t, s)
 
-	s, exists, err = client.Get("k1")
+	s, exists, err = kvClient.Get("k1")
 	assert.NilError(t, err)
 	assert.Assert(t, exists)
 	assert.Equal(t, s, "v1")
 
-	s, exists, err = client.Put("k1", "v2")
+	s, exists, err = kvClient.Put("k1", "v2")
 	assert.NilError(t, err)
 	assert.Assert(t, exists)
 	assert.Equal(t, s, "v1")
 
-	s, exists, err = client.Get("k1")
+	s, exists, err = kvClient.Get("k1")
 	assert.NilError(t, err)
 	assert.Assert(t, exists)
 	assert.Equal(t, s, "v2")
 }
 
 func TestKvServiceParallelPut(t *testing.T) {
-	cluster, client := NewClusterClient(t, 3)
+	cluster, kvClient := NewClusterClient(t, 3)
 	defer cluster.Shutdown()
 
 	readersCount := 16
@@ -61,7 +61,7 @@ func TestKvServiceParallelPut(t *testing.T) {
 	for range writersCount {
 		wg.Go(func() {
 			for range runCount {
-				v, e, err := client.Put("k", "v")
+				v, e, err := kvClient.Put("k", "v")
 				assert.NilError(t, err)
 				if e {
 					assert.Equal(t, v, "v")
@@ -73,7 +73,7 @@ func TestKvServiceParallelPut(t *testing.T) {
 	for range readersCount {
 		wg.Go(func() {
 			for range runCount {
-				v, e, err := client.Get("k")
+				v, e, err := kvClient.Get("k")
 				assert.NilError(t, err)
 				if e {
 					assert.Equal(t, v, "v")
@@ -86,112 +86,112 @@ func TestKvServiceParallelPut(t *testing.T) {
 }
 
 func TestKvServiceDelete(t *testing.T) {
-	cluster, client := NewClusterClient(t, 3)
+	cluster, kvClient := NewClusterClient(t, 3)
 	defer cluster.Shutdown()
 
-	s, exists, err := client.Delete("k1")
+	s, exists, err := kvClient.Delete("k1")
 	assert.NilError(t, err)
 	assert.Assert(t, !exists)
 	testutil.AssertNil(t, s)
 
-	s, exists, err = client.Put("k1", "v1")
+	s, exists, err = kvClient.Put("k1", "v1")
 	assert.NilError(t, err)
 	assert.Assert(t, !exists)
 	testutil.AssertNil(t, s)
 
-	s, exists, err = client.Delete("k1")
+	s, exists, err = kvClient.Delete("k1")
 	assert.NilError(t, err)
 	assert.Assert(t, exists)
 	assert.Equal(t, s, "v1")
 }
 
 func TestKvServicePutIfAbsent(t *testing.T) {
-	cluster, client := NewClusterClient(t, 3)
+	cluster, kvClient := NewClusterClient(t, 3)
 	defer cluster.Shutdown()
 
-	b, err := client.PutIfAbsent("k1", "v1")
+	b, err := kvClient.PutIfAbsent("k1", "v1")
 	assert.NilError(t, err)
 	assert.Assert(t, b)
 
-	s, exists, err := client.Get("k1")
+	s, exists, err := kvClient.Get("k1")
 	assert.NilError(t, err)
 	assert.Assert(t, exists)
 	assert.Equal(t, s, "v1")
 
-	b, err = client.PutIfAbsent("k1", "v2")
+	b, err = kvClient.PutIfAbsent("k1", "v2")
 	assert.NilError(t, err)
 	assert.Assert(t, !b)
 
-	s, exists, err = client.Get("k1")
+	s, exists, err = kvClient.Get("k1")
 	assert.NilError(t, err)
 	assert.Assert(t, exists)
 	assert.Equal(t, s, "v1")
 }
 
 func TestKvServiceAppend(t *testing.T) {
-	cluster, client := NewClusterClient(t, 3)
+	cluster, kvClient := NewClusterClient(t, 3)
 	defer cluster.Shutdown()
 
-	l, err := client.Append("k1", "aa")
+	l, err := kvClient.Append("k1", "aa")
 	assert.NilError(t, err)
 	assert.Equal(t, l, 2)
 
-	s, exists, err := client.Get("k1")
+	s, exists, err := kvClient.Get("k1")
 	assert.NilError(t, err)
 	assert.Assert(t, exists)
 	assert.Equal(t, s, "aa")
 
-	l, err = client.Append("k1", "bbb")
+	l, err = kvClient.Append("k1", "bbb")
 	assert.NilError(t, err)
 	assert.Equal(t, l, 5)
 
-	s, exists, err = client.Get("k1")
+	s, exists, err = kvClient.Get("k1")
 	assert.NilError(t, err)
 	assert.Assert(t, exists)
 	assert.Equal(t, s, "aabbb")
 
-	s, exists, err = client.Put("k1", "abab")
+	s, exists, err = kvClient.Put("k1", "abab")
 	assert.NilError(t, err)
 	assert.Assert(t, exists)
 	assert.Equal(t, s, "aabbb")
 
-	s, exists, err = client.Get("k1")
+	s, exists, err = kvClient.Get("k1")
 	assert.NilError(t, err)
 	assert.Assert(t, exists)
 	assert.Equal(t, s, "abab")
 }
 
 func TestKvServiceCas(t *testing.T) {
-	cluster, client := NewClusterClient(t, 3)
+	cluster, kvClient := NewClusterClient(t, 3)
 	defer cluster.Shutdown()
 
-	ok, s, err := client.Cas("k1", "a", "aa")
+	ok, s, err := kvClient.Cas("k1", "a", "aa")
 	assert.NilError(t, err)
 	assert.Assert(t, !ok)
 	testutil.AssertNil(t, s)
 
-	s, exists, err := client.Get("k1")
+	s, exists, err := kvClient.Get("k1")
 	assert.NilError(t, err)
 	assert.Assert(t, !exists)
 	testutil.AssertNil(t, s)
 
-	ok, s, err = client.Cas("k1", "", "a")
+	ok, s, err = kvClient.Cas("k1", "", "a")
 	assert.NilError(t, err)
 	assert.Equal(t, s, "a")
 
-	ok, s, err = client.Cas("k1", "aa", "bb")
+	ok, s, err = kvClient.Cas("k1", "aa", "bb")
 	assert.NilError(t, err)
 	assert.Assert(t, !ok)
 	assert.Equal(t, s, "a")
 
-	ok, s, err = client.Cas("k1", "a", "bb")
+	ok, s, err = kvClient.Cas("k1", "a", "bb")
 	assert.NilError(t, err)
 	assert.Assert(t, ok)
 	assert.Equal(t, s, "bb")
 }
 
 func TestKvServiceFailOver(t *testing.T) {
-	cluster, client := NewClusterClient(t, 3)
+	cluster, kvClient := NewClusterClient(t, 3)
 	defer cluster.Shutdown()
 
 	values := make(map[string]string)
@@ -200,24 +200,24 @@ func TestKvServiceFailOver(t *testing.T) {
 	}
 
 	for k, v := range values {
-		_, _, err := client.Put(k, v)
+		_, _, err := kvClient.Put(k, v)
 		assert.NilError(t, err)
 	}
 
 	for i := range 50 {
 		if i%5 == 0 {
-			err := cluster.Restart(client.LeaderId())
+			err := cluster.Restart(kvClient.LeaderId())
 			assert.NilError(t, err)
 		}
 
 		newK, newV := fmt.Sprintf("k%d", 10*(i+1)), fmt.Sprintf("v%d", 10*(i+1))
 		values[newK] = newV
 
-		_, _, err := client.Put(newK, newV)
+		_, _, err := kvClient.Put(newK, newV)
 		assert.NilError(t, err)
 
 		for k, v := range values {
-			av, exists, err := client.Get(k)
+			av, exists, err := kvClient.Get(k)
 			assert.NilError(t, err)
 			assert.Assert(t, exists, k, av)
 			assert.Equal(t, v, av)

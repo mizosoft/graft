@@ -18,168 +18,168 @@ import (
 
 func TestDlockServiceLockWithExpiry(t *testing.T) {
 	clock := mockClock()
-	cluster, client1 := NewClusterClient(t, 3, clock)
+	cluster, dlockClient := NewClusterClient(t, 3, clock)
 	defer cluster.Shutdown()
 
-	client2 := client.NewDlockClient("client2-"+t.Name(), cluster.ServiceConfig())
+	dlockClient2 := client.NewDlockClient("client2-"+t.Name(), cluster.ServiceConfig())
 
-	t1, ok, err := client1.TryLock("r1", 1*time.Second)
+	t1, ok, err := dlockClient.TryLock("r1", 1*time.Second)
 	assert.NilError(t, err)
 	assert.Assert(t, ok)
 
-	_, ok, err = client2.TryLock("r1", 1*time.Second)
+	_, ok, err = dlockClient2.TryLock("r1", 1*time.Second)
 	assert.NilError(t, err)
 	assert.Assert(t, !ok)
 
 	clock.Advance(500 * time.Millisecond)
 
-	_, ok, err = client2.TryLock("r1", 1*time.Second)
+	_, ok, err = dlockClient2.TryLock("r1", 1*time.Second)
 	assert.NilError(t, err)
 	assert.Assert(t, !ok)
 
 	clock.Advance(500 * time.Millisecond)
 
-	t2, ok, err := client2.TryLock("r1", 1*time.Second)
+	t2, ok, err := dlockClient2.TryLock("r1", 1*time.Second)
 	assert.NilError(t, err)
 	assert.Assert(t, ok)
 	assert.Assert(t, t1 < t2)
 
-	_, ok, err = client1.TryLock("r1", 1*time.Second)
+	_, ok, err = dlockClient.TryLock("r1", 1*time.Second)
 	assert.NilError(t, err)
 	assert.Assert(t, !ok)
 }
 
 func TestDlockServiceRLockWithExpiry(t *testing.T) {
 	clock := mockClock()
-	cluster, client1 := NewClusterClient(t, 3, clock)
+	cluster, dlockClient := NewClusterClient(t, 3, clock)
 	defer cluster.Shutdown()
 
-	client2 := client.NewDlockClient("client2-"+t.Name(), cluster.ServiceConfig())
+	dlockClient2 := client.NewDlockClient("client2-"+t.Name(), cluster.ServiceConfig())
 
-	t1, ok, err := client1.TryRLock("r1", 1*time.Second)
+	t1, ok, err := dlockClient.TryRLock("r1", 1*time.Second)
 	assert.NilError(t, err)
 	assert.Assert(t, ok)
 
-	_, ok, err = client2.TryLock("r1", 1*time.Second)
+	_, ok, err = dlockClient2.TryLock("r1", 1*time.Second)
 	assert.NilError(t, err)
 	assert.Assert(t, !ok)
 
-	t2, ok, err := client2.TryRLock("r1", 1*time.Second)
+	t2, ok, err := dlockClient2.TryRLock("r1", 1*time.Second)
 	assert.NilError(t, err)
 	assert.Assert(t, ok)
 	assert.Assert(t, t1 == t2)
 
 	clock.Advance(500 * time.Millisecond)
 
-	client3 := client.NewDlockClient("client3-"+t.Name(), cluster.ServiceConfig())
+	dlockClient3 := client.NewDlockClient("client3-"+t.Name(), cluster.ServiceConfig())
 
-	_, ok, err = client3.TryLock("r1", 1*time.Second)
+	_, ok, err = dlockClient3.TryLock("r1", 1*time.Second)
 	assert.NilError(t, err)
 	assert.Assert(t, !ok)
 
 	clock.Advance(500 * time.Millisecond)
 
-	t3, ok, err := client3.TryLock("r1", 1*time.Second)
+	t3, ok, err := dlockClient3.TryLock("r1", 1*time.Second)
 	assert.NilError(t, err)
 	assert.Assert(t, ok)
 	assert.Assert(t, t2 < t3)
 
-	_, ok, err = client1.TryRLock("r1", 1*time.Second)
+	_, ok, err = dlockClient.TryRLock("r1", 1*time.Second)
 	assert.NilError(t, err)
 	assert.Assert(t, !ok)
 
-	_, ok, err = client2.TryRLock("r1", 1*time.Second)
+	_, ok, err = dlockClient2.TryRLock("r1", 1*time.Second)
 	assert.NilError(t, err)
 	assert.Assert(t, !ok)
 }
 
 func TestDlockServiceLockUnlock(t *testing.T) {
-	cluster, client1 := NewClusterClient(t, 3, server.SystemClock())
+	cluster, dlockClient := NewClusterClient(t, 3, server.SystemClock())
 	defer cluster.Shutdown()
 
-	client2 := client.NewDlockClient("client2-"+t.Name(), cluster.ServiceConfig())
+	dlockClient2 := client.NewDlockClient("client2-"+t.Name(), cluster.ServiceConfig())
 
-	t1, ok, err := client1.TryLock("r1", 1*time.Second)
+	t1, ok, err := dlockClient.TryLock("r1", 1*time.Second)
 	assert.NilError(t, err)
 	assert.Assert(t, ok)
 
-	_, ok, err = client2.TryLock("r1", 1*time.Second)
+	_, ok, err = dlockClient2.TryLock("r1", 1*time.Second)
 	assert.NilError(t, err)
 	assert.Assert(t, !ok)
 
-	ok, err = client1.Unlock("r1", t1)
+	ok, err = dlockClient.Unlock("r1", t1)
 	assert.NilError(t, err)
 	assert.Assert(t, ok)
 
-	ok, err = client1.Unlock("r1", t1)
+	ok, err = dlockClient.Unlock("r1", t1)
 	assert.NilError(t, err)
 	assert.Assert(t, !ok)
 
-	t2, ok, err := client2.TryLock("r1", 1*time.Second)
+	t2, ok, err := dlockClient2.TryLock("r1", 1*time.Second)
 	assert.NilError(t, err)
 	assert.Assert(t, ok)
 	assert.Assert(t, t1 < t2)
 
-	_, ok, err = client1.TryLock("r1", 1*time.Second)
+	_, ok, err = dlockClient.TryLock("r1", 1*time.Second)
 	assert.NilError(t, err)
 	assert.Assert(t, !ok)
 
-	ok, err = client2.Unlock("r1", t1) // T1 is not current token.
+	ok, err = dlockClient2.Unlock("r1", t1) // T1 is not current token.
 	assert.NilError(t, err)
 	assert.Assert(t, !ok)
 
-	ok, err = client2.Unlock("r1", t2)
+	ok, err = dlockClient2.Unlock("r1", t2)
 	assert.NilError(t, err)
 	assert.Assert(t, ok)
 
-	t3, ok, err := client1.TryLock("r1", 1*time.Second)
+	t3, ok, err := dlockClient.TryLock("r1", 1*time.Second)
 	assert.NilError(t, err)
 	assert.Assert(t, ok)
 	assert.Assert(t, t2 < t3)
 }
 
 func TestDlockServiceRLockUnlock(t *testing.T) {
-	cluster, client1 := NewClusterClient(t, 3, server.SystemClock())
+	cluster, dlockClient := NewClusterClient(t, 3, server.SystemClock())
 	defer cluster.Shutdown()
 
-	client2 := client.NewDlockClient("client2-"+t.Name(), cluster.ServiceConfig())
-	client3 := client.NewDlockClient("client3-"+t.Name(), cluster.ServiceConfig())
+	dlockClient2 := client.NewDlockClient("client2-"+t.Name(), cluster.ServiceConfig())
+	dlockClient3 := client.NewDlockClient("client3-"+t.Name(), cluster.ServiceConfig())
 
-	t1, ok, err := client1.TryRLock("r1", 1*time.Second)
+	t1, ok, err := dlockClient.TryRLock("r1", 1*time.Second)
 	assert.NilError(t, err)
 	assert.Assert(t, ok)
 
-	t2, ok, err := client2.TryRLock("r1", 1*time.Second)
+	t2, ok, err := dlockClient2.TryRLock("r1", 1*time.Second)
 	assert.NilError(t, err)
 	assert.Assert(t, ok)
 	assert.Assert(t, t1 == t2)
 
-	_, ok, err = client3.TryLock("r1", 1*time.Second)
+	_, ok, err = dlockClient3.TryLock("r1", 1*time.Second)
 	assert.NilError(t, err)
 	assert.Assert(t, !ok)
 
-	ok, err = client1.RUnlock("r1", t1)
+	ok, err = dlockClient.RUnlock("r1", t1)
 	assert.NilError(t, err)
 	assert.Assert(t, ok)
 
-	_, ok, err = client3.TryLock("r1", 1*time.Second)
+	_, ok, err = dlockClient3.TryLock("r1", 1*time.Second)
 	assert.NilError(t, err)
 	assert.Assert(t, !ok)
 
-	ok, err = client2.RUnlock("r1", t2)
+	ok, err = dlockClient2.RUnlock("r1", t2)
 	assert.NilError(t, err)
 	assert.Assert(t, ok)
 
-	t3, ok, err := client3.TryLock("r1", 1*time.Second)
+	t3, ok, err := dlockClient3.TryLock("r1", 1*time.Second)
 	assert.NilError(t, err)
 	assert.Assert(t, ok)
 	assert.Assert(t, t2 < t3)
 
-	ok, err = client3.Unlock("r1", t3)
+	ok, err = dlockClient3.Unlock("r1", t3)
 	assert.NilError(t, err)
 	assert.Assert(t, ok)
 
-	t4, ok, err := client2.TryRLock("r1", 1*time.Second)
+	t4, ok, err := dlockClient2.TryRLock("r1", 1*time.Second)
 	assert.NilError(t, err)
 	assert.Assert(t, ok)
 	assert.Assert(t, t3 == t4)
@@ -188,37 +188,37 @@ func TestDlockServiceRLockUnlock(t *testing.T) {
 func TestDlockServiceRefreshLock(t *testing.T) {
 	clock := mockClock()
 
-	cluster, client1 := NewClusterClient(t, 3, clock)
+	cluster, dlockClient := NewClusterClient(t, 3, clock)
 	defer cluster.Shutdown()
 
-	client2 := client.NewDlockClient("client2-"+t.Name(), cluster.ServiceConfig())
+	dlockClient2 := client.NewDlockClient("client2-"+t.Name(), cluster.ServiceConfig())
 
-	t1, ok, err := client1.TryLock("r1", 1*time.Second)
+	t1, ok, err := dlockClient.TryLock("r1", 1*time.Second)
 	assert.NilError(t, err)
 	assert.Assert(t, ok)
 
 	clock.Advance(900 * time.Millisecond)
 
-	ok, err = client1.RefreshLock("r1", t1, 600*time.Millisecond)
+	ok, err = dlockClient.RefreshLock("r1", t1, 600*time.Millisecond)
 	assert.NilError(t, err)
 	assert.Assert(t, ok)
 
 	clock.Advance(100 * time.Millisecond)
 
-	_, ok, err = client2.TryLock("r1", 1*time.Second)
+	_, ok, err = dlockClient2.TryLock("r1", 1*time.Second)
 	assert.NilError(t, err)
 	assert.Assert(t, !ok)
 
 	clock.Advance(500 * time.Millisecond)
 
-	t2, ok, err := client2.TryLock("r1", 1*time.Second)
+	t2, ok, err := dlockClient2.TryLock("r1", 1*time.Second)
 	assert.NilError(t, err)
 	assert.Assert(t, ok)
 	assert.Assert(t, t1 < t2)
 
 	clock.Advance(1 * time.Second)
 
-	ok, err = client2.RefreshLock("r1", t1, 500*time.Millisecond)
+	ok, err = dlockClient2.RefreshLock("r1", t1, 500*time.Millisecond)
 	assert.NilError(t, err)
 	assert.Assert(t, !ok)
 }
@@ -226,57 +226,57 @@ func TestDlockServiceRefreshLock(t *testing.T) {
 func TestDlockServiceRefreshRLock(t *testing.T) {
 	clock := mockClock()
 
-	cluster, client1 := NewClusterClient(t, 3, clock)
+	cluster, dlockClient := NewClusterClient(t, 3, clock)
 	defer cluster.Shutdown()
 
-	client2 := client.NewDlockClient("client2-"+t.Name(), cluster.ServiceConfig())
+	dlockClient2 := client.NewDlockClient("client2-"+t.Name(), cluster.ServiceConfig())
 
-	t1, ok, err := client1.TryRLock("r1", 1*time.Second)
+	t1, ok, err := dlockClient.TryRLock("r1", 1*time.Second)
 	assert.NilError(t, err)
 	assert.Assert(t, ok)
 
 	clock.Advance(900 * time.Millisecond)
 
-	ok, err = client1.RefreshRLock("r1", t1, 600*time.Millisecond)
+	ok, err = dlockClient.RefreshRLock("r1", t1, 600*time.Millisecond)
 	assert.NilError(t, err)
 	assert.Assert(t, ok)
 
 	clock.Advance(100 * time.Millisecond)
 
-	_, ok, err = client2.TryLock("r1", 1*time.Second)
+	_, ok, err = dlockClient2.TryLock("r1", 1*time.Second)
 	assert.NilError(t, err)
 	assert.Assert(t, !ok)
 
 	clock.Advance(500 * time.Millisecond)
 
-	t2, ok, err := client2.TryLock("r1", 1*time.Second)
+	t2, ok, err := dlockClient2.TryLock("r1", 1*time.Second)
 	assert.NilError(t, err)
 	assert.Assert(t, ok)
 	assert.Assert(t, t1 < t2)
 
-	ok, err = client2.Unlock("r1", t2)
+	ok, err = dlockClient2.Unlock("r1", t2)
 	assert.NilError(t, err)
 	assert.Assert(t, ok)
 
-	_, ok, err = client2.TryRLock("r1", 1*time.Second)
+	_, ok, err = dlockClient2.TryRLock("r1", 1*time.Second)
 	assert.NilError(t, err)
 	assert.Assert(t, ok)
 
 	clock.Advance(1 * time.Second)
 
-	ok, err = client2.RefreshRLock("r1", t1, 500*time.Millisecond)
+	ok, err = dlockClient2.RefreshRLock("r1", t1, 500*time.Millisecond)
 	assert.NilError(t, err)
 	assert.Assert(t, !ok)
 }
 
 func TestDlockServiceBlockingLockWithExpiredTtl(t *testing.T) {
-	cluster, client1 := NewClusterClient(t, 3, server.SystemClock())
+	cluster, dlockClient := NewClusterClient(t, 3, server.SystemClock())
 	defer cluster.Shutdown()
 
 	client2 := client.NewDlockClient("client2-"+t.Name(), cluster.ServiceConfig())
 
 	now := time.Now()
-	t1, ok, err := client1.TryLock("r1", 500*time.Millisecond)
+	t1, ok, err := dlockClient.TryLock("r1", 500*time.Millisecond)
 	assert.NilError(t, err)
 	assert.Assert(t, ok)
 
@@ -300,13 +300,13 @@ func TestDlockServiceBlockingLockWithExpiredTtl(t *testing.T) {
 }
 
 func TestDlockServiceBlockingLockWithUnlock(t *testing.T) {
-	cluster, client1 := NewClusterClient(t, 3, server.SystemClock())
+	cluster, dlockClient := NewClusterClient(t, 3, server.SystemClock())
 	defer cluster.Shutdown()
 
 	client2 := client.NewDlockClient("client2-"+t.Name(), cluster.ServiceConfig())
 
 	now := time.Now()
-	t1, ok, err := client1.TryLock("r1", 1*time.Second)
+	t1, ok, err := dlockClient.TryLock("r1", 1*time.Second)
 	assert.NilError(t, err)
 	assert.Assert(t, ok)
 
@@ -322,7 +322,7 @@ func TestDlockServiceBlockingLockWithUnlock(t *testing.T) {
 	}()
 
 	time.AfterFunc(500*time.Millisecond, func() {
-		ok, err := client1.Unlock("r1", t1)
+		ok, err := dlockClient.Unlock("r1", t1)
 		assert.NilError(t, err)
 		assert.Assert(t, ok)
 	})
@@ -336,13 +336,13 @@ func TestDlockServiceBlockingLockWithUnlock(t *testing.T) {
 }
 
 func TestDlockServiceBlockingRLockWithExpiredTtl(t *testing.T) {
-	cluster, client1 := NewClusterClient(t, 3, server.SystemClock())
+	cluster, dlockClient := NewClusterClient(t, 3, server.SystemClock())
 	defer cluster.Shutdown()
 
 	client2 := client.NewDlockClient("client2-"+t.Name(), cluster.ServiceConfig())
 
 	now := time.Now()
-	t1, ok, err := client1.TryLock("r1", 500*time.Millisecond)
+	t1, ok, err := dlockClient.TryLock("r1", 500*time.Millisecond)
 	assert.NilError(t, err)
 	assert.Assert(t, ok)
 
@@ -366,13 +366,13 @@ func TestDlockServiceBlockingRLockWithExpiredTtl(t *testing.T) {
 }
 
 func TestDlockServiceBlockingRLockWithUnlock(t *testing.T) {
-	cluster, client1 := NewClusterClient(t, 3, server.SystemClock())
+	cluster, dlockClient := NewClusterClient(t, 3, server.SystemClock())
 	defer cluster.Shutdown()
 
 	client2 := client.NewDlockClient("client2-"+t.Name(), cluster.ServiceConfig())
 
 	now := time.Now()
-	t1, ok, err := client1.TryLock("r1", 1*time.Second)
+	t1, ok, err := dlockClient.TryLock("r1", 1*time.Second)
 	assert.NilError(t, err)
 	assert.Assert(t, ok)
 
@@ -388,7 +388,7 @@ func TestDlockServiceBlockingRLockWithUnlock(t *testing.T) {
 	}()
 
 	time.AfterFunc(500*time.Millisecond, func() {
-		ok, err := client1.Unlock("r1", t1)
+		ok, err := dlockClient.Unlock("r1", t1)
 		assert.NilError(t, err)
 		assert.Assert(t, ok)
 	})
@@ -458,10 +458,10 @@ func TestDlockServiceContention(t *testing.T) {
 }
 
 func TestDlockServiceFairLock(t *testing.T) {
-	cluster, client1 := NewClusterClient(t, 3, server.SystemClock())
+	cluster, dlockClient := NewClusterClient(t, 3, server.SystemClock())
 	defer cluster.Shutdown()
 
-	tok, ok, err := client1.TryLock("r1", 1*time.Minute)
+	tok, ok, err := dlockClient.TryLock("r1", 1*time.Minute)
 	assert.NilError(t, err)
 	assert.Assert(t, ok)
 
@@ -476,7 +476,7 @@ func TestDlockServiceFairLock(t *testing.T) {
 		assert.Assert(t, !ok)
 	}
 
-	ok, err = client1.Unlock("r1", tok)
+	ok, err = dlockClient.Unlock("r1", tok)
 	assert.NilError(t, err)
 	assert.Assert(t, ok)
 
@@ -505,7 +505,7 @@ func TestDlockServiceFairLock(t *testing.T) {
 
 // If you're reading this, brace yourself! This is a long-ass test.
 func TestDlockServiceFairLockWithRLock(t *testing.T) {
-	cluster, client1 := NewClusterClient(t, 3, server.SystemClock())
+	cluster, dlockClient := NewClusterClient(t, 3, server.SystemClock())
 	defer cluster.Shutdown()
 
 	readers1 := make([]*client.DlockClient, 0)
@@ -521,7 +521,7 @@ func TestDlockServiceFairLockWithRLock(t *testing.T) {
 		readers2 = append(readers2, client.NewDlockClient(fmt.Sprintf("client-r2-%d-%s", i, t.Name()), cluster.ServiceConfig()))
 	}
 
-	tok, ok, err := client1.TryLock("r1", 1*time.Minute)
+	tok, ok, err := dlockClient.TryLock("r1", 1*time.Minute)
 	assert.NilError(t, err)
 	assert.Assert(t, ok)
 
@@ -549,7 +549,7 @@ func TestDlockServiceFairLockWithRLock(t *testing.T) {
 
 	// Make all readers1 acquire the lock.
 
-	ok, err = client1.Unlock("r1", tok)
+	ok, err = dlockClient.Unlock("r1", tok)
 	assert.NilError(t, err)
 	assert.Assert(t, ok)
 
