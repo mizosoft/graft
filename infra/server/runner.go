@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/mizosoft/graft"
-	"github.com/mizosoft/graft/infra"
+	"github.com/mizosoft/graft/infra/util"
 	"github.com/urfave/cli/v2"
 	"go.uber.org/zap"
 )
@@ -117,7 +117,7 @@ func runServer(c *cli.Context, factory Factory) error {
 		return fmt.Errorf("invalid wal-cache-size: %w", err)
 	}
 
-	clusterUrls, err := infra.ParseAddressList(c.String("join"))
+	clusterUrls, err := util.ParseAddressList(c.String("join"))
 	if err != nil {
 		return fmt.Errorf("parsing --join: %w", err)
 	}

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/mizosoft/graft/infra"
+	"github.com/mizosoft/graft/infra/util"
 	"github.com/urfave/cli/v2"
 )
 
@@ -40,7 +40,7 @@ func CmdWithArgs(name, argsUsage, usage string, action func(ctx *Context) error)
 func newContext(c *cli.Context) (*Context, error) {
 	clientId := c.String("id")
 
-	config, err := infra.ParseAddressList(c.String("servers"))
+	config, err := util.ParseAddressList(c.String("servers"))
 	if err != nil {
 		return nil, fmt.Errorf("parsing --servers: %w", err)
 	}

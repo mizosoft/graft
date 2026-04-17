@@ -3,10 +3,10 @@ go 1.26.0
 use (
 	./badger
 	./benchmarks
-	./dlock
 	./graft
 	./infra
-	./kvstore
-	./msgq
+	./services/dlock
+	./services/kvstore
+	./services/msgq
 	./testutil
 )
