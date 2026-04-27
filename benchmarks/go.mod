@@ -1,6 +1,6 @@
 module github.com/mizosoft/graft/benchmarks
 
-go 1.24
+go 1.26
 
 require (
 	github.com/edsrzf/mmap-go v1.2.0

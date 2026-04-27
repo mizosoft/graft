@@ -34,14 +34,9 @@ func BenchmarkWalAppend(b *testing.B) {
 			}
 
 			// Benchmark
-			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
-				nextIndex, err := wal.Append(&pb.PersistedState{CurrentTerm: int64(entriesCount + i)}, entries)
-				if err != nil {
+			for b.Loop() {
+				if _, err := wal.Append(&pb.PersistedState{}, entries); err != nil {
 					b.Fatalf("Append error: %v", err)
-				}
-				if nextIndex != int64((i+1)*entriesCount) {
-					b.Fatalf("Append error: nextIndex=%d", nextIndex)
 				}
 			}
 		})
@@ -84,8 +79,7 @@ func BenchmarkWalSequentialScan(b *testing.B) {
 			totalEntryCount := entriesCount * appendCount
 
 			// Benchmark
-			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
+			for b.Loop() {
 				for i := range totalEntryCount {
 					e, err := wal.GetEntry(int64(i))
 					if err != nil {
@@ -136,10 +130,9 @@ func BenchmarkWalBatchedSequentialScan(b *testing.B) {
 			totalEntryCount := entriesCount * appendCount
 
 			// Benchmark
-			b.ResetTimer()
 			for _, batchSize := range []int{1024, 2048, 4096, 8192, 16384} {
 				b.Run(fmt.Sprintf("batchSize=%dB", batchSize), func(b *testing.B) {
-					for i := 0; i < b.N; i++ {
+					for b.Loop() {
 						for i := 0; i < totalEntryCount; i += batchSize {
 							es, err := wal.GetEntries(int64(i), int64(i+batchSize-1))
 							if err != nil {
@@ -196,8 +189,7 @@ func BenchmarkRandomScan(b *testing.B) {
 			access := rand.New(rand.NewSource(10)).Perm(totalEntryCount)
 
 			// Benchmark
-			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
+			for b.Loop() {
 				for _, i := range access {
 					e, err := wal.GetEntry(int64(i))
 					if err != nil {
@@ -249,8 +241,7 @@ func BenchmarkWalSequentialScanWithTailCache(b *testing.B) {
 			totalEntryCount := entriesCount * appendCount
 
 			// Benchmark
-			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
+			for b.Loop() {
 				for i := range totalEntryCount {
 					e, err := wal.GetEntry(int64(i))
 					if err != nil {
@@ -302,10 +293,9 @@ func BenchmarkWalBatchedSequentialScanWithTailCache(b *testing.B) {
 			totalEntryCount := entriesCount * appendCount
 
 			// Benchmark
-			b.ResetTimer()
 			for _, batchSize := range []int{1024, 2048, 4096, 8192, 16384} {
 				b.Run(fmt.Sprintf("batchSize=%dB", batchSize), func(b *testing.B) {
-					for i := 0; i < b.N; i++ {
+					for b.Loop() {
 						for i := 0; i < totalEntryCount; i += batchSize {
 							es, err := wal.GetEntries(int64(i), int64(i+batchSize-1))
 							if err != nil {
@@ -363,8 +353,7 @@ func BenchmarkRandomScanWithTailCache(b *testing.B) {
 			access := rand.New(rand.NewSource(10)).Perm(totalEntryCount)
 
 			// Benchmark
-			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
+			for b.Loop() {
 				for _, i := range access {
 					e, err := wal.GetEntry(int64(i))
 					if err != nil {

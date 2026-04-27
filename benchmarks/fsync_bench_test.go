@@ -32,8 +32,7 @@ func BenchmarkWriteWithFsync(b *testing.B) {
 			defer func() { errors.Join(file.Close(), os.Remove(file.Name())) }()
 
 			// Benchmark
-			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
+			for b.Loop() {
 				if _, err := file.WriteAt(data, 0); err != nil {
 					b.Fatalf("write error: %v", err)
 				}
@@ -76,8 +75,7 @@ func BenchmarkWriteWithMsync(b *testing.B) {
 			defer mem.Unmap()
 
 			// Benchmark
-			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
+			for b.Loop() {
 				copy(mem, data)
 				if err := mem.Flush(); err != nil {
 					b.Fatalf("flush error: %v", err)

@@ -9,8 +9,7 @@ func BenchmarkKvStorePut(b *testing.B) {
 	cluster, store := newClusterClient(b, 3, 0)
 	defer cluster.Shutdown()
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_, _, err := store.Put("k", "v")
 		if err != nil {
 			b.Fatalf("put error: %v", err)
