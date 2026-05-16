@@ -6,8 +6,8 @@ import (
 	"github.com/mizosoft/graft"
 )
 
-type StateMachine interface {
-	Apply(command Command) any
+type StateMachine[C any] interface {
+	Apply(command Command[C]) any
 
 	Restore(snapshot graft.Snapshot) error
 

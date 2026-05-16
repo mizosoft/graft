@@ -15,7 +15,7 @@ import (
 
 type MsgqService struct {
 	q      *msgq
-	server *server.Server
+	server *server.Server[MsgqCommand]
 }
 
 func (m *MsgqService) handleEnqueue(w http.ResponseWriter, r *http.Request) {
@@ -25,7 +25,7 @@ func (m *MsgqService) handleEnqueue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	m.server.Execute(req.ClientId, &MsgqCommand{
+	m.server.Execute(req.ClientId, MsgqCommand{
 		Type:  commandTypeEnqueue,
 		Topic: req.Topic,
 		Message: api.Message{
@@ -42,13 +42,13 @@ func (m *MsgqService) handleDeque(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	m.server.Execute(req.ClientId, &MsgqCommand{
+	m.server.Execute(req.ClientId, MsgqCommand{
 		Type:  commandTypeDeque,
 		Topic: req.Topic,
 	}, w)
 }
 
-func NewMsgqServer(address string, batchInterval time.Duration, config graft.Config) (*server.Server, error) {
+func NewMsgqServer(address string, batchInterval time.Duration, config graft.Config) (*server.Server[MsgqCommand], error) {
 	q := newMsgq(config.Logger.With(zap.String("id", config.Id)))
 	srv, err := server.NewServer("MsgqService", address, batchInterval, q, config)
 	if err != nil {

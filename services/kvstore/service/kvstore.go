@@ -37,8 +37,8 @@ type kvstore struct {
 	redundantOperations int32 // Number of operations increasing log unnecessarily.
 }
 
-func (s *kvstore) Apply(command server.Command) any {
-	cmd := command.SmCommand.(KvCommand)
+func (s *kvstore) Apply(command server.Command[KvCommand]) any {
+	cmd := command.SmCommand
 	switch cmd.Type {
 	case commandTypePut:
 		return s.put(cmd.Key, cmd.Value)

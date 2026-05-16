@@ -32,7 +32,9 @@ type Config struct {
 }
 
 // Factory creates a server from the given configuration.
-type Factory func(address string, batchInterval time.Duration, config graft.Config) (*Server, error)
+type Factory[C any] interface {
+	Create(address string, batchInterval time.Duration, config graft.Config) (*Server[C], error)
+}
 
 // RunServer runs a graft service with standard CLI flags and configuration.
 // This handles all the boilerplate: flag parsing, config loading, WAL setup, and graceful shutdown.
@@ -42,7 +44,7 @@ type Factory func(address string, batchInterval time.Duration, config graft.Conf
 //	func main() {
 //	    server.RunServer("kvstore", service.NewKvServer)
 //	}
-func RunServer(serviceName string, factory Factory) {
+func RunServer[C any](serviceName string, factory Factory[C]) {
 	app := &cli.App{
 		Name:  serviceName,
 		Usage: fmt.Sprintf("Run a %s server node", serviceName),
@@ -99,7 +101,7 @@ func RunServer(serviceName string, factory Factory) {
 	}
 }
 
-func runServer(c *cli.Context, factory Factory) error {
+func runServer[C any](c *cli.Context, factory Factory[C]) error {
 	id := c.String("id")
 	walDir := c.String("wal-dir")
 
@@ -143,7 +145,7 @@ func runServer(c *cli.Context, factory Factory) error {
 		return fmt.Errorf("opening WAL: %w", err)
 	}
 
-	srv, err := factory(c.String("service-addr"), c.Duration("batch-interval"), graft.Config{
+	srv, err := factory.Create(c.String("service-addr"), c.Duration("batch-interval"), graft.Config{
 		Id:                    id,
 		ClusterUrls:           clusterUrls,
 		ElectionTimeoutMillis: graft.IntRange{Low: 150, High: 300},

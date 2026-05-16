@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/mizosoft/graft"
-	"github.com/mizosoft/graft/infra/server"
 	infratesting "github.com/mizosoft/graft/infra/testing"
 	"github.com/mizosoft/graft/kvstore/client"
 	"github.com/mizosoft/graft/kvstore/service"
@@ -19,7 +18,7 @@ func newClusterClient(b *testing.B, nodeCount int, batchInterval time.Duration) 
 			NodeCount:             nodeCount,
 			HeartbeatMillis:       50,
 			ElectionTimeoutMillis: graft.IntRange{Low: 150, High: 300},
-			ServerFactory: func(address string, config graft.Config) (*server.Server, error) {
+			ServerFactory: func(address string, config graft.Config) (infratesting.BaseServer, error) {
 				return service.NewKvServer(address, batchInterval, config)
 			},
 			Logger: zap.NewNop(),
@@ -47,7 +46,7 @@ func newClusterClientWithWalPersistence(b *testing.B, nodeCount int, batchInterv
 			NodeCount:             nodeCount,
 			HeartbeatMillis:       50,
 			ElectionTimeoutMillis: graft.IntRange{Low: 150, High: 300},
-			ServerFactory: func(address string, config graft.Config) (*server.Server, error) {
+			ServerFactory: func(address string, config graft.Config) (infratesting.BaseServer, error) {
 				return service.NewKvServer(address, batchInterval, config)
 			},
 			PersistenceFactory: func(dir string) (graft.Persistence, error) {

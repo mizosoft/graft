@@ -3,6 +3,7 @@ package testing
 import (
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -11,25 +12,30 @@ import (
 	"time"
 
 	"github.com/mizosoft/graft"
-	"github.com/mizosoft/graft/infra/server"
 	"go.uber.org/zap"
 )
 
+type BaseServer interface {
+	Start()
+	io.Closer
+	Address() string
+}
+
 type node struct {
-	server       *server.Server
+	srv          BaseServer
 	config       NodeConfig
 	startErrChan chan error
 	mut          sync.Mutex
 }
 
 func (n *node) Start() {
-	n.server.Start()
+	n.srv.Start()
 }
 
 func (n *node) Close() error {
 	errChan := make(chan error)
 	go func() {
-		errChan <- n.server.Close()
+		errChan <- n.srv.Close()
 	}()
 
 	select {
@@ -51,7 +57,7 @@ type NodeConfig struct {
 	Logger                *zap.Logger
 	HeartbeatMillis       int
 	ElectionTimeoutMillis graft.IntRange
-	ServerFactory         func(address string, config graft.Config) (*server.Server, error)
+	ServerFactory         func(address string, config graft.Config) (BaseServer, error)
 	PersistenceFactory    func(dir string) (graft.Persistence, error)
 }
 
@@ -61,7 +67,7 @@ func newNode(config NodeConfig) (*node, error) {
 		return nil, err
 	}
 
-	server, err := config.ServerFactory(config.Address, graft.Config{
+	srv, err := config.ServerFactory(config.Address, graft.Config{
 		Id:                    config.Id,
 		ClusterUrls:           config.GraftAddresses,
 		ElectionTimeoutMillis: config.ElectionTimeoutMillis,
@@ -74,20 +80,20 @@ func newNode(config NodeConfig) (*node, error) {
 	}
 
 	return &node{
-		server: server,
+		srv:    srv,
 		config: config,
 	}, nil
 }
 
 type Cluster struct {
 	nodes         map[string]*node
-	serverFactory func(address string, config graft.Config) (*server.Server, error)
+	serverFactory func(address string, config graft.Config) (BaseServer, error)
 }
 
 func (c *Cluster) ServiceConfig() map[string]string {
 	config := make(map[string]string)
 	for id, node := range c.nodes {
-		config[id] = node.server.Address()
+		config[id] = node.srv.Address()
 	}
 	return config
 }
@@ -131,7 +137,7 @@ type ClusterConfig struct {
 	NodeCount             int
 	HeartbeatMillis       int
 	ElectionTimeoutMillis graft.IntRange
-	ServerFactory         func(address string, config graft.Config) (*server.Server, error)
+	ServerFactory         func(address string, config graft.Config) (BaseServer, error)
 	PersistenceFactory    func(dir string) (graft.Persistence, error)
 	Logger                *zap.Logger
 }

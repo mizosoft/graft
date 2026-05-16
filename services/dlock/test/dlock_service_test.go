@@ -655,7 +655,7 @@ func NewClusterClient(t *testing.T, nodeCount int, clock server.Clock) (*infrate
 			NodeCount:             nodeCount,
 			HeartbeatMillis:       50,
 			ElectionTimeoutMillis: graft.IntRange{Low: 150, High: 300},
-			ServerFactory: func(address string, config graft.Config) (*server.Server, error) {
+			ServerFactory: func(address string, config graft.Config) (infratesting.BaseServer, error) {
 				return service.NewDlockServer(address, 0, clock, config)
 			},
 			Logger: zap.NewExample(),

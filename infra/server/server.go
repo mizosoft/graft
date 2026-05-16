@@ -19,17 +19,17 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-type Command struct {
+type Command[C any] struct {
 	Id        string
 	ServerId  string
 	ClientId  string
-	SmCommand any
+	SmCommand C
 }
 
-type Server struct {
+type Server[C any] struct {
 	io.Closer
 
-	sm           StateMachine
+	sm           StateMachine[C]
 	started      atomic.Bool
 	publisher    *publisher
 	srv          *http.Server
@@ -43,11 +43,11 @@ type Server struct {
 	Init         func()
 }
 
-func (s *Server) Address() string {
+func (s *Server[C]) Address() string {
 	return s.srv.Addr
 }
 
-func (s *Server) Start() {
+func (s *Server[C]) Start() {
 	if !s.started.CompareAndSwap(false, true) {
 		return
 	}
@@ -75,7 +75,7 @@ func (s *Server) Start() {
 	go s.applyWorker()
 }
 
-func (s *Server) applyWorker() {
+func (s *Server[C]) applyWorker() {
 	for event := range s.applyChan {
 		if event.Entries != nil {
 			for _, entry := range event.Entries {
@@ -117,7 +117,7 @@ func (s *Server) applyWorker() {
 	}
 }
 
-func (s *Server) Close() error {
+func (s *Server[C]) Close() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	err := errors.Join(s.srv.Shutdown(ctx), s.G.Close(), s.G.Persistence().Close())
@@ -126,11 +126,11 @@ func (s *Server) Close() error {
 	return err
 }
 
-func (s *Server) RespondOk(w http.ResponseWriter, payload any) {
+func (s *Server[C]) RespondOk(w http.ResponseWriter, payload any) {
 	s.Respond(w, payload, http.StatusOK)
 }
 
-func (s *Server) Respond(w http.ResponseWriter, payload any, status int) {
+func (s *Server[C]) Respond(w http.ResponseWriter, payload any, status int) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(payload); err != nil {
@@ -139,10 +139,10 @@ func (s *Server) Respond(w http.ResponseWriter, payload any, status int) {
 	}
 }
 
-func (s *Server) apply(entry *pb.LogEntry) error {
+func (s *Server[C]) apply(entry *pb.LogEntry) error {
 	switch entry.Type {
 	case pb.LogEntry_COMMAND:
-		var command Command
+		var command Command[C]
 		decoder := gob.NewDecoder(bytes.NewReader(entry.Data))
 		err := decoder.Decode(&command)
 		if err != nil {
@@ -164,8 +164,8 @@ func (s *Server) apply(entry *pb.LogEntry) error {
 	return nil
 }
 
-func (s *Server) Execute(clientId string, smCommand any, w http.ResponseWriter) {
-	command := Command{
+func (s *Server[C]) Execute(clientId string, smCommand C, w http.ResponseWriter) {
+	command := Command[C]{
 		Id:        uuid.New().String(),
 		ServerId:  s.G.Id(),
 		ClientId:  clientId,
@@ -201,7 +201,7 @@ func DecodeJson[T any](r *http.Request) (T, error) {
 	return req, err
 }
 
-func serializeCommand(command Command) []byte {
+func serializeCommand[C any](command Command[C]) []byte {
 	buf := new(bytes.Buffer)
 	encoder := gob.NewEncoder(buf)
 	err := encoder.Encode(command)
@@ -211,7 +211,7 @@ func serializeCommand(command Command) []byte {
 	return buf.Bytes()
 }
 
-func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
+func (s *Server[C]) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 	req, err := DecodeJson[api.ConfigUpdateRequest](r)
 	if err != nil {
 		http.Error(w, "Invalid request format: "+err.Error(), http.StatusBadRequest)
@@ -252,20 +252,20 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 	http.Error(w, "Internal server error", http.StatusInternalServerError)
 }
 
-func (s *Server) handleGetConfig(w http.ResponseWriter, _ *http.Request) {
+func (s *Server[C]) handleGetConfig(w http.ResponseWriter, _ *http.Request) {
 	s.RespondOk(w, api.ConfigResponse{
 		Config: s.G.Config(),
 	})
 }
 
-func NewServer(serviceName string, address string, batchInterval time.Duration, sm StateMachine, config graft.Config) (*Server, error) {
+func NewServer[C any](serviceName string, address string, batchInterval time.Duration, sm StateMachine[C], config graft.Config) (*Server[C], error) {
 	g, err := graft.New(config)
 	if err != nil {
 		return nil, err
 	}
 
 	mux := http.NewServeMux()
-	server := &Server{
+	server := &Server[C]{
 		sm: sm,
 		publisher: &publisher{
 			listeners: make(map[string]chan any),

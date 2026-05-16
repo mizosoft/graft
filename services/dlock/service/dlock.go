@@ -169,8 +169,8 @@ type dlock struct {
 	mut                 sync.Mutex
 }
 
-func (d *dlock) Apply(command server.Command) any {
-	cmd := command.SmCommand.(LockCommand)
+func (d *dlock) Apply(command server.Command[LockCommand]) any {
+	cmd := command.SmCommand
 	switch cmd.Type {
 	case commandTypeLock:
 		return d.lock(cmd.Now, command.ClientId, cmd.Resource, cmd.Ttl, cmd.Fair)

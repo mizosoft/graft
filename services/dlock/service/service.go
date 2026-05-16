@@ -13,7 +13,7 @@ import (
 
 type DlockService struct {
 	lock   *dlock
-	server *server.Server
+	server *server.Server[LockCommand]
 	clock  server.Clock
 }
 
@@ -111,7 +111,7 @@ func (s *DlockService) handleRefreshRLock(w http.ResponseWriter, r *http.Request
 	}, w)
 }
 
-func NewDlockServer(address string, batchInterval time.Duration, clock server.Clock, config graft.Config) (*server.Server, error) {
+func NewDlockServer(address string, batchInterval time.Duration, clock server.Clock, config graft.Config) (*server.Server[LockCommand], error) {
 	lock := newDlock(config.Logger.With(zap.String("id", config.Id)))
 	srv, err := server.NewServer("DlockService", address, batchInterval, lock, config)
 	if err != nil {

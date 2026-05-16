@@ -35,8 +35,8 @@ type msgq struct {
 	mut                 sync.Mutex
 }
 
-func (m *msgq) Apply(command server.Command) any {
-	cmd := command.SmCommand.(MsgqCommand)
+func (m *msgq) Apply(command server.Command[MsgqCommand]) any {
+	cmd := command.SmCommand
 	switch cmd.Type {
 	case commandTypeEnqueue:
 		return m.enqueue(cmd.Topic, cmd.Message)

@@ -13,7 +13,7 @@ import (
 
 type KvService struct {
 	store  *kvstore
-	server *server.Server
+	server *server.Server[KvCommand]
 }
 
 func (s *KvService) handleGet(w http.ResponseWriter, r *http.Request) {
@@ -103,7 +103,7 @@ func (s *KvService) handleAppend(w http.ResponseWriter, r *http.Request) {
 	}, w)
 }
 
-func NewKvServer(address string, batchInterval time.Duration, config graft.Config) (*server.Server, error) {
+func NewKvServer(address string, batchInterval time.Duration, config graft.Config) (*server.Server[KvCommand], error) {
 	kvStore := newKvStore(config.Logger.With(zap.String("id", config.Id)))
 	srv, err := server.NewServer("KvService", address, batchInterval, kvStore, config)
 	if err != nil {

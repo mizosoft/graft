@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/mizosoft/graft"
-	"github.com/mizosoft/graft/infra/server"
 	infratesting "github.com/mizosoft/graft/infra/testing"
 	"github.com/mizosoft/graft/kvstore/client"
 	"github.com/mizosoft/graft/kvstore/service"
@@ -266,7 +265,7 @@ func NewClusterClient(t *testing.T, nodeCount int) (*infratesting.Cluster, *clie
 			NodeCount:             nodeCount,
 			HeartbeatMillis:       50,
 			ElectionTimeoutMillis: graft.IntRange{Low: 150, High: 300},
-			ServerFactory: func(address string, config graft.Config) (*server.Server, error) {
+			ServerFactory: func(address string, config graft.Config) (infratesting.BaseServer, error) {
 				return service.NewKvServer(address, 0, config)
 			},
 			Logger: logger,
