@@ -1331,6 +1331,8 @@ func (s *fileSnapshotWriter) Commit() error {
 
 	prevMetadata := s.w.lastSnapshotMetadata
 
+	// TODO save SnapshotCommitted record instead of SnapshotMetadata directly.
+
 	s.metadata.Size = s.lastOffset
 	if err := s.w.saveSnapshotMetadata(s.metadata); err != nil {
 		return err
