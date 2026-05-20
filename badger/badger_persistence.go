@@ -4,6 +4,8 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"hash/crc32"
+	"io"
 	"os"
 	"path"
 
@@ -13,6 +15,8 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
 )
+
+var snapshotCRCTable = crc32.MakeTable(crc32.Castagnoli)
 
 const (
 	logEntryPrefix      = "graft:log:"
@@ -432,6 +436,9 @@ type fileSnapshotWriter struct {
 	metadata   *pb.SnapshotMetadata
 	lastOffset int64
 	closed     bool
+	h          uint32
+	hashOffset int64
+	hashValid  bool
 }
 
 func (s *fileSnapshotWriter) WriteAt(p []byte, off int64) (n int, err error) {
@@ -445,8 +452,38 @@ func (s *fileSnapshotWriter) WriteAt(p []byte, off int64) (n int, err error) {
 	n, err = s.f.WriteAt(p, off)
 	if err == nil {
 		s.lastOffset = max(s.lastOffset, off+int64(n))
+		if s.hashValid {
+			if off == s.hashOffset {
+				s.h = crc32.Update(s.h, snapshotCRCTable, p[:n])
+				s.hashOffset += int64(n)
+			} else {
+				s.hashValid = false
+			}
+		}
 	}
 	return
+}
+
+func (s *fileSnapshotWriter) computeChecksum() (uint32, error) {
+	if s.hashValid && s.hashOffset == s.lastOffset {
+		return s.h, nil
+	}
+	// Fallback: stream the un-hashed tail through the running CRC.
+	h := s.h
+	buf := make([]byte, 32*1024)
+	r := io.NewSectionReader(s.f, s.hashOffset, s.lastOffset-s.hashOffset)
+	for {
+		n, err := r.Read(buf)
+		if n > 0 {
+			h = crc32.Update(h, snapshotCRCTable, buf[:n])
+		}
+		if err == io.EOF {
+			return h, nil
+		}
+		if err != nil {
+			return 0, err
+		}
+	}
 }
 
 func (s *fileSnapshotWriter) Metadata() *pb.SnapshotMetadata {
@@ -480,6 +517,12 @@ func (s *fileSnapshotWriter) Commit() error {
 	if err := s.f.Sync(); err != nil {
 		return err
 	}
+
+	checksum, err := s.computeChecksum()
+	if err != nil {
+		return err
+	}
+
 	if err := os.Rename(s.f.Name(), path.Join(s.b.dir, graft.SnapshotFilename(s.metadata))); err != nil {
 		return err
 	}
@@ -493,6 +536,7 @@ func (s *fileSnapshotWriter) Commit() error {
 	}
 
 	s.metadata.Size = s.lastOffset
+	s.metadata.Checksum = checksum
 	if err := s.b.saveSnapshotMetadata(s.metadata); err != nil {
 		return err
 	}
@@ -528,7 +572,7 @@ func (b *badgerPersistence) CreateSnapshot(metadata *pb.SnapshotMetadata) (graft
 	if err != nil {
 		return nil, err
 	}
-	return &fileSnapshotWriter{b: b, f: f, metadata: metadata}, nil
+	return &fileSnapshotWriter{b: b, f: f, metadata: metadata, hashValid: true}, nil
 }
 
 func (b *badgerPersistence) Close() error {

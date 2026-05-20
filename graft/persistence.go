@@ -4,11 +4,31 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"os"
 
 	"github.com/mizosoft/graft/pb"
 )
+
+var snapshotCRCTable = crc32.MakeTable(crc32.Castagnoli)
+
+type checksumVerifyingReader struct {
+	r        io.Reader
+	h        uint32
+	expected uint32
+}
+
+func (r *checksumVerifyingReader) Read(p []byte) (int, error) {
+	n, err := r.r.Read(p)
+	if n > 0 {
+		r.h = crc32.Update(r.h, snapshotCRCTable, p[:n])
+	}
+	if err == io.EOF && r.h != r.expected {
+		return n, ErrCorrupt
+	}
+	return n, err
+}
 
 var (
 	ErrClosed           = errors.New("closed")
@@ -336,9 +356,19 @@ func (b *fileSnapshot) Metadata() *pb.SnapshotMetadata {
 }
 
 func (b *fileSnapshot) ReadAll() ([]byte, error) {
-	return io.ReadAll(b.f)
+	data, err := io.ReadAll(b.f)
+	if err != nil {
+		return nil, err
+	}
+	if b.metadata.Checksum != 0 && crc32.Checksum(data, snapshotCRCTable) != b.metadata.Checksum {
+		return nil, ErrCorrupt
+	}
+	return data, nil
 }
 
 func (b *fileSnapshot) Reader() io.Reader {
-	return b.f
+	if b.metadata.Checksum == 0 {
+		return b.f
+	}
+	return &checksumVerifyingReader{r: b.f, expected: b.metadata.Checksum}
 }

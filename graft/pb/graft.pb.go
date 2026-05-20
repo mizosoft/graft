@@ -21,55 +21,6 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-type ConfigUpdate_Phase int32
-
-const (
-	ConfigUpdate_LEARNING ConfigUpdate_Phase = 0
-	ConfigUpdate_JOINT    ConfigUpdate_Phase = 1
-	ConfigUpdate_APPLIED  ConfigUpdate_Phase = 2
-)
-
-// Enum value maps for ConfigUpdate_Phase.
-var (
-	ConfigUpdate_Phase_name = map[int32]string{
-		0: "LEARNING",
-		1: "JOINT",
-		2: "APPLIED",
-	}
-	ConfigUpdate_Phase_value = map[string]int32{
-		"LEARNING": 0,
-		"JOINT":    1,
-		"APPLIED":  2,
-	}
-)
-
-func (x ConfigUpdate_Phase) Enum() *ConfigUpdate_Phase {
-	p := new(ConfigUpdate_Phase)
-	*p = x
-	return p
-}
-
-func (x ConfigUpdate_Phase) String() string {
-	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
-}
-
-func (ConfigUpdate_Phase) Descriptor() protoreflect.EnumDescriptor {
-	return file_graft_proto_enumTypes[0].Descriptor()
-}
-
-func (ConfigUpdate_Phase) Type() protoreflect.EnumType {
-	return &file_graft_proto_enumTypes[0]
-}
-
-func (x ConfigUpdate_Phase) Number() protoreflect.EnumNumber {
-	return protoreflect.EnumNumber(x)
-}
-
-// Deprecated: Use ConfigUpdate_Phase.Descriptor instead.
-func (ConfigUpdate_Phase) EnumDescriptor() ([]byte, []int) {
-	return file_graft_proto_rawDescGZIP(), []int{8, 0}
-}
-
 type LogEntry_Type int32
 
 const (
@@ -103,11 +54,11 @@ func (x LogEntry_Type) String() string {
 }
 
 func (LogEntry_Type) Descriptor() protoreflect.EnumDescriptor {
-	return file_graft_proto_enumTypes[1].Descriptor()
+	return file_graft_proto_enumTypes[0].Descriptor()
 }
 
 func (LogEntry_Type) Type() protoreflect.EnumType {
-	return &file_graft_proto_enumTypes[1]
+	return &file_graft_proto_enumTypes[0]
 }
 
 func (x LogEntry_Type) Number() protoreflect.EnumNumber {
@@ -116,6 +67,55 @@ func (x LogEntry_Type) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use LogEntry_Type.Descriptor instead.
 func (LogEntry_Type) EnumDescriptor() ([]byte, []int) {
+	return file_graft_proto_rawDescGZIP(), []int{3, 0}
+}
+
+type ConfigUpdate_Phase int32
+
+const (
+	ConfigUpdate_LEARNING ConfigUpdate_Phase = 0
+	ConfigUpdate_JOINT    ConfigUpdate_Phase = 1
+	ConfigUpdate_APPLIED  ConfigUpdate_Phase = 2
+)
+
+// Enum value maps for ConfigUpdate_Phase.
+var (
+	ConfigUpdate_Phase_name = map[int32]string{
+		0: "LEARNING",
+		1: "JOINT",
+		2: "APPLIED",
+	}
+	ConfigUpdate_Phase_value = map[string]int32{
+		"LEARNING": 0,
+		"JOINT":    1,
+		"APPLIED":  2,
+	}
+)
+
+func (x ConfigUpdate_Phase) Enum() *ConfigUpdate_Phase {
+	p := new(ConfigUpdate_Phase)
+	*p = x
+	return p
+}
+
+func (x ConfigUpdate_Phase) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (ConfigUpdate_Phase) Descriptor() protoreflect.EnumDescriptor {
+	return file_graft_proto_enumTypes[1].Descriptor()
+}
+
+func (ConfigUpdate_Phase) Type() protoreflect.EnumType {
+	return &file_graft_proto_enumTypes[1]
+}
+
+func (x ConfigUpdate_Phase) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use ConfigUpdate_Phase.Descriptor instead.
+func (ConfigUpdate_Phase) EnumDescriptor() ([]byte, []int) {
 	return file_graft_proto_rawDescGZIP(), []int{9, 0}
 }
 
@@ -323,6 +323,74 @@ func (x *AppendEntriesRequest) GetLeaderCommitIndex() int64 {
 	return 0
 }
 
+type LogEntry struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Term          int64                  `protobuf:"varint,1,opt,name=term,proto3" json:"term,omitempty"`
+	Index         int64                  `protobuf:"varint,2,opt,name=index,proto3" json:"index,omitempty"`
+	Data          []byte                 `protobuf:"bytes,3,opt,name=data,proto3" json:"data,omitempty"`
+	Type          LogEntry_Type          `protobuf:"varint,4,opt,name=type,proto3,enum=graft.LogEntry_Type" json:"type,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *LogEntry) Reset() {
+	*x = LogEntry{}
+	mi := &file_graft_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LogEntry) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LogEntry) ProtoMessage() {}
+
+func (x *LogEntry) ProtoReflect() protoreflect.Message {
+	mi := &file_graft_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LogEntry.ProtoReflect.Descriptor instead.
+func (*LogEntry) Descriptor() ([]byte, []int) {
+	return file_graft_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *LogEntry) GetTerm() int64 {
+	if x != nil {
+		return x.Term
+	}
+	return 0
+}
+
+func (x *LogEntry) GetIndex() int64 {
+	if x != nil {
+		return x.Index
+	}
+	return 0
+}
+
+func (x *LogEntry) GetData() []byte {
+	if x != nil {
+		return x.Data
+	}
+	return nil
+}
+
+func (x *LogEntry) GetType() LogEntry_Type {
+	if x != nil {
+		return x.Type
+	}
+	return LogEntry_COMMAND
+}
+
 type AppendEntriesResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Term          int64                  `protobuf:"varint,1,opt,name=term,proto3" json:"term,omitempty"`
@@ -333,7 +401,7 @@ type AppendEntriesResponse struct {
 
 func (x *AppendEntriesResponse) Reset() {
 	*x = AppendEntriesResponse{}
-	mi := &file_graft_proto_msgTypes[3]
+	mi := &file_graft_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -345,7 +413,7 @@ func (x *AppendEntriesResponse) String() string {
 func (*AppendEntriesResponse) ProtoMessage() {}
 
 func (x *AppendEntriesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_graft_proto_msgTypes[3]
+	mi := &file_graft_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -358,7 +426,7 @@ func (x *AppendEntriesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AppendEntriesResponse.ProtoReflect.Descriptor instead.
 func (*AppendEntriesResponse) Descriptor() ([]byte, []int) {
-	return file_graft_proto_rawDescGZIP(), []int{3}
+	return file_graft_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *AppendEntriesResponse) GetTerm() int64 {
@@ -389,7 +457,7 @@ type SnapshotRequest struct {
 
 func (x *SnapshotRequest) Reset() {
 	*x = SnapshotRequest{}
-	mi := &file_graft_proto_msgTypes[4]
+	mi := &file_graft_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -401,7 +469,7 @@ func (x *SnapshotRequest) String() string {
 func (*SnapshotRequest) ProtoMessage() {}
 
 func (x *SnapshotRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_graft_proto_msgTypes[4]
+	mi := &file_graft_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -414,7 +482,7 @@ func (x *SnapshotRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SnapshotRequest.ProtoReflect.Descriptor instead.
 func (*SnapshotRequest) Descriptor() ([]byte, []int) {
-	return file_graft_proto_rawDescGZIP(), []int{4}
+	return file_graft_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *SnapshotRequest) GetTerm() int64 {
@@ -468,7 +536,7 @@ type SnapshotResponse struct {
 
 func (x *SnapshotResponse) Reset() {
 	*x = SnapshotResponse{}
-	mi := &file_graft_proto_msgTypes[5]
+	mi := &file_graft_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -480,7 +548,7 @@ func (x *SnapshotResponse) String() string {
 func (*SnapshotResponse) ProtoMessage() {}
 
 func (x *SnapshotResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_graft_proto_msgTypes[5]
+	mi := &file_graft_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -493,7 +561,7 @@ func (x *SnapshotResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SnapshotResponse.ProtoReflect.Descriptor instead.
 func (*SnapshotResponse) Descriptor() ([]byte, []int) {
-	return file_graft_proto_rawDescGZIP(), []int{5}
+	return file_graft_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *SnapshotResponse) GetTerm() int64 {
@@ -510,13 +578,14 @@ type SnapshotMetadata struct {
 	Size              int64                  `protobuf:"varint,3,opt,name=size,proto3" json:"size,omitempty"`
 	ConfigUpdate      *ConfigUpdate          `protobuf:"bytes,4,opt,name=configUpdate,proto3" json:"configUpdate,omitempty"`
 	ConfigUpdateIndex int64                  `protobuf:"varint,5,opt,name=configUpdateIndex,proto3" json:"configUpdateIndex,omitempty"`
+	Checksum          uint32                 `protobuf:"varint,6,opt,name=checksum,proto3" json:"checksum,omitempty"`
 	unknownFields     protoimpl.UnknownFields
 	sizeCache         protoimpl.SizeCache
 }
 
 func (x *SnapshotMetadata) Reset() {
 	*x = SnapshotMetadata{}
-	mi := &file_graft_proto_msgTypes[6]
+	mi := &file_graft_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -528,7 +597,7 @@ func (x *SnapshotMetadata) String() string {
 func (*SnapshotMetadata) ProtoMessage() {}
 
 func (x *SnapshotMetadata) ProtoReflect() protoreflect.Message {
-	mi := &file_graft_proto_msgTypes[6]
+	mi := &file_graft_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -541,7 +610,7 @@ func (x *SnapshotMetadata) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SnapshotMetadata.ProtoReflect.Descriptor instead.
 func (*SnapshotMetadata) Descriptor() ([]byte, []int) {
-	return file_graft_proto_rawDescGZIP(), []int{6}
+	return file_graft_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *SnapshotMetadata) GetLastIncludedIndex() int64 {
@@ -579,6 +648,13 @@ func (x *SnapshotMetadata) GetConfigUpdateIndex() int64 {
 	return 0
 }
 
+func (x *SnapshotMetadata) GetChecksum() uint32 {
+	if x != nil {
+		return x.Checksum
+	}
+	return 0
+}
+
 type NodeConfig struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
@@ -589,7 +665,7 @@ type NodeConfig struct {
 
 func (x *NodeConfig) Reset() {
 	*x = NodeConfig{}
-	mi := &file_graft_proto_msgTypes[7]
+	mi := &file_graft_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -601,7 +677,7 @@ func (x *NodeConfig) String() string {
 func (*NodeConfig) ProtoMessage() {}
 
 func (x *NodeConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_graft_proto_msgTypes[7]
+	mi := &file_graft_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -614,7 +690,7 @@ func (x *NodeConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NodeConfig.ProtoReflect.Descriptor instead.
 func (*NodeConfig) Descriptor() ([]byte, []int) {
-	return file_graft_proto_rawDescGZIP(), []int{7}
+	return file_graft_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *NodeConfig) GetId() string {
@@ -643,7 +719,7 @@ type ConfigUpdate struct {
 
 func (x *ConfigUpdate) Reset() {
 	*x = ConfigUpdate{}
-	mi := &file_graft_proto_msgTypes[8]
+	mi := &file_graft_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -655,7 +731,7 @@ func (x *ConfigUpdate) String() string {
 func (*ConfigUpdate) ProtoMessage() {}
 
 func (x *ConfigUpdate) ProtoReflect() protoreflect.Message {
-	mi := &file_graft_proto_msgTypes[8]
+	mi := &file_graft_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -668,7 +744,7 @@ func (x *ConfigUpdate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConfigUpdate.ProtoReflect.Descriptor instead.
 func (*ConfigUpdate) Descriptor() ([]byte, []int) {
-	return file_graft_proto_rawDescGZIP(), []int{8}
+	return file_graft_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *ConfigUpdate) GetOld() []*NodeConfig {
@@ -697,74 +773,6 @@ func (x *ConfigUpdate) GetId() string {
 		return x.Id
 	}
 	return ""
-}
-
-type LogEntry struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Term          int64                  `protobuf:"varint,1,opt,name=term,proto3" json:"term,omitempty"`
-	Index         int64                  `protobuf:"varint,2,opt,name=index,proto3" json:"index,omitempty"`
-	Data          []byte                 `protobuf:"bytes,3,opt,name=data,proto3" json:"data,omitempty"`
-	Type          LogEntry_Type          `protobuf:"varint,4,opt,name=type,proto3,enum=graft.LogEntry_Type" json:"type,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *LogEntry) Reset() {
-	*x = LogEntry{}
-	mi := &file_graft_proto_msgTypes[9]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *LogEntry) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*LogEntry) ProtoMessage() {}
-
-func (x *LogEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_graft_proto_msgTypes[9]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use LogEntry.ProtoReflect.Descriptor instead.
-func (*LogEntry) Descriptor() ([]byte, []int) {
-	return file_graft_proto_rawDescGZIP(), []int{9}
-}
-
-func (x *LogEntry) GetTerm() int64 {
-	if x != nil {
-		return x.Term
-	}
-	return 0
-}
-
-func (x *LogEntry) GetIndex() int64 {
-	if x != nil {
-		return x.Index
-	}
-	return 0
-}
-
-func (x *LogEntry) GetData() []byte {
-	if x != nil {
-		return x.Data
-	}
-	return nil
-}
-
-func (x *LogEntry) GetType() LogEntry_Type {
-	if x != nil {
-		return x.Type
-	}
-	return LogEntry_COMMAND
 }
 
 type PersistedState struct {
@@ -1026,7 +1034,17 @@ const file_graft_proto_rawDesc = "" +
 	"\fprevLogIndex\x18\x03 \x01(\x03R\fprevLogIndex\x12 \n" +
 	"\vprevLogTerm\x18\x04 \x01(\x03R\vprevLogTerm\x12)\n" +
 	"\aentries\x18\x05 \x03(\v2\x0f.graft.LogEntryR\aentries\x12,\n" +
-	"\x11leaderCommitIndex\x18\x06 \x01(\x03R\x11leaderCommitIndex\"E\n" +
+	"\x11leaderCommitIndex\x18\x06 \x01(\x03R\x11leaderCommitIndex\"\x9d\x01\n" +
+	"\bLogEntry\x12\x12\n" +
+	"\x04term\x18\x01 \x01(\x03R\x04term\x12\x14\n" +
+	"\x05index\x18\x02 \x01(\x03R\x05index\x12\x12\n" +
+	"\x04data\x18\x03 \x01(\fR\x04data\x12(\n" +
+	"\x04type\x18\x04 \x01(\x0e2\x14.graft.LogEntry.TypeR\x04type\")\n" +
+	"\x04Type\x12\v\n" +
+	"\aCOMMAND\x10\x00\x12\b\n" +
+	"\x04NOOP\x10\x01\x12\n" +
+	"\n" +
+	"\x06CONFIG\x10\x02\"E\n" +
 	"\x15AppendEntriesResponse\x12\x12\n" +
 	"\x04term\x18\x01 \x01(\x03R\x04term\x12\x18\n" +
 	"\asuccess\x18\x02 \x01(\bR\asuccess\"\xb6\x01\n" +
@@ -1038,13 +1056,14 @@ const file_graft_proto_rawDesc = "" +
 	"\x04done\x18\x05 \x01(\bR\x04done\x123\n" +
 	"\bmetadata\x18\x06 \x01(\v2\x17.graft.SnapshotMetadataR\bmetadata\"&\n" +
 	"\x10SnapshotResponse\x12\x12\n" +
-	"\x04term\x18\x01 \x01(\x03R\x04term\"\xe7\x01\n" +
+	"\x04term\x18\x01 \x01(\x03R\x04term\"\x83\x02\n" +
 	"\x10SnapshotMetadata\x12,\n" +
 	"\x11lastIncludedIndex\x18\x01 \x01(\x03R\x11lastIncludedIndex\x12*\n" +
 	"\x10lastIncludedTerm\x18\x02 \x01(\x03R\x10lastIncludedTerm\x12\x12\n" +
 	"\x04size\x18\x03 \x01(\x03R\x04size\x127\n" +
 	"\fconfigUpdate\x18\x04 \x01(\v2\x13.graft.ConfigUpdateR\fconfigUpdate\x12,\n" +
-	"\x11configUpdateIndex\x18\x05 \x01(\x03R\x11configUpdateIndex\".\n" +
+	"\x11configUpdateIndex\x18\x05 \x01(\x03R\x11configUpdateIndex\x12\x1a\n" +
+	"\bchecksum\x18\x06 \x01(\rR\bchecksum\".\n" +
 	"\n" +
 	"NodeConfig\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x10\n" +
@@ -1057,17 +1076,7 @@ const file_graft_proto_rawDesc = "" +
 	"\x05Phase\x12\f\n" +
 	"\bLEARNING\x10\x00\x12\t\n" +
 	"\x05JOINT\x10\x01\x12\v\n" +
-	"\aAPPLIED\x10\x02\"\x9d\x01\n" +
-	"\bLogEntry\x12\x12\n" +
-	"\x04term\x18\x01 \x01(\x03R\x04term\x12\x14\n" +
-	"\x05index\x18\x02 \x01(\x03R\x05index\x12\x12\n" +
-	"\x04data\x18\x03 \x01(\fR\x04data\x12(\n" +
-	"\x04type\x18\x04 \x01(\x0e2\x14.graft.LogEntry.TypeR\x04type\")\n" +
-	"\x04Type\x12\v\n" +
-	"\aCOMMAND\x10\x00\x12\b\n" +
-	"\x04NOOP\x10\x01\x12\n" +
-	"\n" +
-	"\x06CONFIG\x10\x02\"p\n" +
+	"\aAPPLIED\x10\x02\"p\n" +
 	"\x0ePersistedState\x12 \n" +
 	"\vcurrentTerm\x18\x01 \x01(\x03R\vcurrentTerm\x12\x1a\n" +
 	"\bvotedFor\x18\x02 \x01(\tR\bvotedFor\x12 \n" +
@@ -1106,37 +1115,37 @@ func file_graft_proto_rawDescGZIP() []byte {
 var file_graft_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
 var file_graft_proto_msgTypes = make([]protoimpl.MessageInfo, 14)
 var file_graft_proto_goTypes = []any{
-	(ConfigUpdate_Phase)(0),       // 0: graft.ConfigUpdate.Phase
-	(LogEntry_Type)(0),            // 1: graft.LogEntry.Type
+	(LogEntry_Type)(0),            // 0: graft.LogEntry.Type
+	(ConfigUpdate_Phase)(0),       // 1: graft.ConfigUpdate.Phase
 	(*RequestVoteRequest)(nil),    // 2: graft.RequestVoteRequest
 	(*RequestVoteResponse)(nil),   // 3: graft.RequestVoteResponse
 	(*AppendEntriesRequest)(nil),  // 4: graft.AppendEntriesRequest
-	(*AppendEntriesResponse)(nil), // 5: graft.AppendEntriesResponse
-	(*SnapshotRequest)(nil),       // 6: graft.SnapshotRequest
-	(*SnapshotResponse)(nil),      // 7: graft.SnapshotResponse
-	(*SnapshotMetadata)(nil),      // 8: graft.SnapshotMetadata
-	(*NodeConfig)(nil),            // 9: graft.NodeConfig
-	(*ConfigUpdate)(nil),          // 10: graft.ConfigUpdate
-	(*LogEntry)(nil),              // 11: graft.LogEntry
+	(*LogEntry)(nil),              // 5: graft.LogEntry
+	(*AppendEntriesResponse)(nil), // 6: graft.AppendEntriesResponse
+	(*SnapshotRequest)(nil),       // 7: graft.SnapshotRequest
+	(*SnapshotResponse)(nil),      // 8: graft.SnapshotResponse
+	(*SnapshotMetadata)(nil),      // 9: graft.SnapshotMetadata
+	(*NodeConfig)(nil),            // 10: graft.NodeConfig
+	(*ConfigUpdate)(nil),          // 11: graft.ConfigUpdate
 	(*PersistedState)(nil),        // 12: graft.PersistedState
 	(*WalRecord)(nil),             // 13: graft.WalRecord
 	(*WalSegmentHeader)(nil),      // 14: graft.WalSegmentHeader
 	(*WalSegmentTrailer)(nil),     // 15: graft.WalSegmentTrailer
 }
 var file_graft_proto_depIdxs = []int32{
-	11, // 0: graft.AppendEntriesRequest.entries:type_name -> graft.LogEntry
-	8,  // 1: graft.SnapshotRequest.metadata:type_name -> graft.SnapshotMetadata
-	10, // 2: graft.SnapshotMetadata.configUpdate:type_name -> graft.ConfigUpdate
-	9,  // 3: graft.ConfigUpdate.old:type_name -> graft.NodeConfig
-	9,  // 4: graft.ConfigUpdate.new:type_name -> graft.NodeConfig
-	0,  // 5: graft.ConfigUpdate.phase:type_name -> graft.ConfigUpdate.Phase
-	1,  // 6: graft.LogEntry.type:type_name -> graft.LogEntry.Type
+	5,  // 0: graft.AppendEntriesRequest.entries:type_name -> graft.LogEntry
+	0,  // 1: graft.LogEntry.type:type_name -> graft.LogEntry.Type
+	9,  // 2: graft.SnapshotRequest.metadata:type_name -> graft.SnapshotMetadata
+	11, // 3: graft.SnapshotMetadata.configUpdate:type_name -> graft.ConfigUpdate
+	10, // 4: graft.ConfigUpdate.old:type_name -> graft.NodeConfig
+	10, // 5: graft.ConfigUpdate.new:type_name -> graft.NodeConfig
+	1,  // 6: graft.ConfigUpdate.phase:type_name -> graft.ConfigUpdate.Phase
 	2,  // 7: graft.Raft.RequestVote:input_type -> graft.RequestVoteRequest
 	4,  // 8: graft.Raft.AppendEntries:input_type -> graft.AppendEntriesRequest
-	6,  // 9: graft.Raft.InstallSnapshot:input_type -> graft.SnapshotRequest
+	7,  // 9: graft.Raft.InstallSnapshot:input_type -> graft.SnapshotRequest
 	3,  // 10: graft.Raft.RequestVote:output_type -> graft.RequestVoteResponse
-	5,  // 11: graft.Raft.AppendEntries:output_type -> graft.AppendEntriesResponse
-	7,  // 12: graft.Raft.InstallSnapshot:output_type -> graft.SnapshotResponse
+	6,  // 11: graft.Raft.AppendEntries:output_type -> graft.AppendEntriesResponse
+	8,  // 12: graft.Raft.InstallSnapshot:output_type -> graft.SnapshotResponse
 	10, // [10:13] is the sub-list for method output_type
 	7,  // [7:10] is the sub-list for method input_type
 	7,  // [7:7] is the sub-list for extension type_name

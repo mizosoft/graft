@@ -2,6 +2,7 @@ package graft
 
 import (
 	"fmt"
+	"io"
 	"math/rand"
 	"os"
 	"path"
@@ -1102,6 +1103,102 @@ func TestWalRetrieveSnapshotOnReopen(t *testing.T) {
 
 			retrievedData, err := retrievedSnapshot.ReadAll()
 			assert.Equal(t, string(retrievedData), string(data))
+		})
+	}
+}
+
+func TestWalSnapshotChecksumIsSet(t *testing.T) {
+	for _, memoryMapped := range []bool{false, true} {
+		t.Run(fmt.Sprintf("MemoryMapped=%t", memoryMapped), func(t *testing.T) {
+			dir := t.TempDir()
+			w, err := openWal(WalOptions{Dir: dir, MemoryMapped: memoryMapped, SegmentSize: 512})
+			assert.NilError(t, err)
+			defer w.Close()
+
+			data := []byte("Squirtle")
+			metadata := &pb.SnapshotMetadata{LastIncludedIndex: 1, LastIncludedTerm: 1}
+			writer, err := w.CreateSnapshot(metadata)
+			assert.NilError(t, err)
+
+			_, err = writer.WriteAt(data, 0)
+			assert.NilError(t, err)
+			assert.NilError(t, writer.Commit())
+
+			retrieved, err := w.LastSnapshotMetadata()
+			assert.NilError(t, err)
+			assert.Assert(t, retrieved.Checksum != 0)
+		})
+	}
+}
+
+func TestWalSnapshotChecksumVerifiedOnReadAll(t *testing.T) {
+	for _, memoryMapped := range []bool{false, true} {
+		t.Run(fmt.Sprintf("MemoryMapped=%t", memoryMapped), func(t *testing.T) {
+			dir := t.TempDir()
+			w, err := openWal(WalOptions{Dir: dir, MemoryMapped: memoryMapped, SegmentSize: 512})
+			assert.NilError(t, err)
+			defer w.Close()
+
+			data := []byte("Bulbasaur")
+			metadata := &pb.SnapshotMetadata{LastIncludedIndex: 1, LastIncludedTerm: 1}
+			writer, err := w.CreateSnapshot(metadata)
+			assert.NilError(t, err)
+			_, err = writer.WriteAt(data, 0)
+			assert.NilError(t, err)
+			assert.NilError(t, writer.Commit())
+
+			// Corrupt the snapshot file.
+			snapPath := path.Join(dir, SnapshotFilename(metadata))
+			f, err := os.OpenFile(snapPath, os.O_RDWR, 0644)
+			assert.NilError(t, err)
+			_, err = f.WriteAt([]byte{0xFF}, 0)
+			assert.NilError(t, err)
+			assert.NilError(t, f.Close())
+
+			retrieved, err := w.LastSnapshotMetadata()
+			assert.NilError(t, err)
+			snap, err := w.OpenSnapshot(retrieved)
+			assert.NilError(t, err)
+			defer snap.Close()
+
+			_, err = snap.ReadAll()
+			assert.ErrorIs(t, err, ErrCorrupt)
+		})
+	}
+}
+
+func TestWalSnapshotChecksumVerifiedOnReader(t *testing.T) {
+	for _, memoryMapped := range []bool{false, true} {
+		t.Run(fmt.Sprintf("MemoryMapped=%t", memoryMapped), func(t *testing.T) {
+			dir := t.TempDir()
+			w, err := openWal(WalOptions{Dir: dir, MemoryMapped: memoryMapped, SegmentSize: 512})
+			assert.NilError(t, err)
+			defer w.Close()
+
+			data := []byte("Charmander")
+			metadata := &pb.SnapshotMetadata{LastIncludedIndex: 1, LastIncludedTerm: 1}
+			writer, err := w.CreateSnapshot(metadata)
+			assert.NilError(t, err)
+			_, err = writer.WriteAt(data, 0)
+			assert.NilError(t, err)
+			assert.NilError(t, writer.Commit())
+
+			// Corrupt the snapshot file.
+			snapPath := path.Join(dir, SnapshotFilename(metadata))
+			f, err := os.OpenFile(snapPath, os.O_RDWR, 0644)
+			assert.NilError(t, err)
+			_, err = f.WriteAt([]byte{0xFF}, 0)
+			assert.NilError(t, err)
+			assert.NilError(t, f.Close())
+
+			retrieved, err := w.LastSnapshotMetadata()
+			assert.NilError(t, err)
+			snap, err := w.OpenSnapshot(retrieved)
+			assert.NilError(t, err)
+			defer snap.Close()
+
+			_, err = io.ReadAll(snap.Reader())
+			assert.ErrorIs(t, err, ErrCorrupt)
 		})
 	}
 }

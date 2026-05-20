@@ -1258,11 +1258,11 @@ func (w *wal) CreateSnapshot(metadata *pb.SnapshotMetadata) (SnapshotWriter, err
 	}
 
 	fpath := path.Join(w.dir, SnapshotFilename(metadata)+".tmp")
-	f, err := os.OpenFile(fpath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644) // Create atomically.
+	f, err := os.OpenFile(fpath, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0644) // Create atomically.
 	if err != nil {
 		return nil, err
 	}
-	return &fileSnapshotWriter{w: w, metadata: metadata, f: f}, nil
+	return &fileSnapshotWriter{w: w, metadata: metadata, f: f, hashValid: true}, nil
 }
 
 type fileSnapshotWriter struct {
@@ -1271,6 +1271,9 @@ type fileSnapshotWriter struct {
 	metadata   *pb.SnapshotMetadata
 	lastOffset int64
 	closed     bool
+	h          uint32 // running CRC32-Castagnoli; only valid when hashValid is true
+	hashOffset int64  // how far h covers; advances only on sequential writes
+	hashValid  bool
 }
 
 func (s *fileSnapshotWriter) WriteAt(p []byte, off int64) (n int, err error) {
@@ -1284,8 +1287,38 @@ func (s *fileSnapshotWriter) WriteAt(p []byte, off int64) (n int, err error) {
 	n, err = s.f.WriteAt(p, off)
 	if err == nil {
 		s.lastOffset = max(s.lastOffset, off+int64(n))
+		if s.hashValid {
+			if off == s.hashOffset {
+				s.h = crc32.Update(s.h, s.w.crcTable, p[:n])
+				s.hashOffset += int64(n)
+			} else {
+				s.hashValid = false
+			}
+		}
 	}
 	return
+}
+
+func (s *fileSnapshotWriter) computeChecksum() (uint32, error) {
+	if s.hashValid && s.hashOffset == s.lastOffset {
+		return s.h, nil
+	}
+	// Fallback: stream the un-hashed tail through the running CRC.
+	h := s.h
+	r := newBufferedReader(io.NewSectionReader(s.f, s.hashOffset, s.lastOffset-s.hashOffset))
+	buf := make([]byte, bufferSize)
+	for {
+		n, err := r.Read(buf)
+		if n > 0 {
+			h = crc32.Update(h, s.w.crcTable, buf[:n])
+		}
+		if err == io.EOF {
+			return h, nil
+		}
+		if err != nil {
+			return 0, err
+		}
+	}
 }
 
 func (s *fileSnapshotWriter) Metadata() *pb.SnapshotMetadata {
@@ -1319,6 +1352,12 @@ func (s *fileSnapshotWriter) Commit() error {
 	if err := s.f.Sync(); err != nil {
 		return err
 	}
+
+	checksum, err := s.computeChecksum()
+	if err != nil {
+		return err
+	}
+
 	if err := os.Rename(s.f.Name(), path.Join(s.w.dir, SnapshotFilename(s.metadata))); err != nil {
 		return err
 	}
@@ -1334,6 +1373,7 @@ func (s *fileSnapshotWriter) Commit() error {
 	// TODO save SnapshotCommitted record instead of SnapshotMetadata directly.
 
 	s.metadata.Size = s.lastOffset
+	s.metadata.Checksum = checksum
 	if err := s.w.saveSnapshotMetadata(s.metadata); err != nil {
 		return err
 	}
@@ -1365,9 +1405,7 @@ func (w *wal) findSegment(entryIndex int64) (int, error) {
 }
 
 func (w *wal) crc32Of(data []byte) uint32 {
-	hash := crc32.New(w.crcTable)
-	hash.Write(data)
-	return hash.Sum32()
+	return crc32.Checksum(data, w.crcTable)
 }
 
 func (w *wal) appendRecordTo(buf []byte, recordType uint32, msg proto.Message) []byte {

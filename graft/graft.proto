@@ -33,6 +33,19 @@ message AppendEntriesRequest {
   int64 leaderCommitIndex = 6;
 }
 
+message LogEntry {
+  enum Type {
+    COMMAND = 0;
+    NOOP = 1;
+    CONFIG = 2;
+  }
+
+  int64 term = 1;
+  int64 index = 2;
+  bytes data = 3;
+  Type type = 4;
+}
+
 message AppendEntriesResponse {
   int64 term = 1;
   bool success = 2;
@@ -57,6 +70,7 @@ message SnapshotMetadata {
   int64 size = 3;
   ConfigUpdate configUpdate = 4;
   int64 configUpdateIndex = 5;
+  uint32 checksum = 6;
 }
 
 message NodeConfig {
@@ -77,20 +91,7 @@ message ConfigUpdate {
   }
 }
 
-// WAL entries.
-
-message LogEntry {
-  enum Type {
-    COMMAND = 0;
-    NOOP = 1;
-    CONFIG = 2;
-  }
-
-  int64 term = 1;
-  int64 index = 2;
-  bytes data = 3;
-  Type type = 4;
-}
+// WAL records.
 
 message PersistedState {
   int64 currentTerm = 1;
