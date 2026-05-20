@@ -2,6 +2,7 @@ package graft
 
 import (
 	"errors"
+	"hash/crc32"
 	"io"
 	"log"
 	"os"
@@ -9,6 +10,25 @@ import (
 
 	"google.golang.org/protobuf/proto"
 )
+
+var snapshotCRCTable = crc32.MakeTable(crc32.Castagnoli)
+
+type checksumVerifyingReader struct {
+	r        io.Reader
+	h        uint32
+	expected uint32
+}
+
+func (r *checksumVerifyingReader) Read(p []byte) (int, error) {
+	n, err := r.r.Read(p)
+	if n > 0 {
+		r.h = crc32.Update(r.h, snapshotCRCTable, p[:n])
+	}
+	if err == io.EOF && r.h != r.expected {
+		return n, ErrCorrupt
+	}
+	return n, err
+}
 
 type uncopyable struct {
 	_ sync.Mutex
