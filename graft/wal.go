@@ -517,12 +517,10 @@ func openWal(options WalOptions) (*wal, error) {
 	w.trailerRecord = w.appendRecordTo(nil, trailerRecordType, &pb.WalSegmentTrailer{Magic: walMagic})
 
 	// Find segments.
-	var segments []*segment
-
 	allGood := false
 	defer func() {
 		if !allGood {
-			for _, s := range segments {
+			for _, s := range w.segments {
 				if err := s.close(); err != nil {
 					w.logger.Warnf("Error closing segment %s: %v", s.fpath, err)
 				}
@@ -654,8 +652,8 @@ func openWal(options WalOptions) (*wal, error) {
 	}
 
 	// Sort segment files.
-	sort.Slice(segments, func(i, j int) bool {
-		return segments[i].number < segments[j].number
+	sort.Slice(w.segments, func(i, j int) bool {
+		return w.segments[i].number < w.segments[j].number
 	})
 
 	// Verify index continuity.
@@ -718,7 +716,6 @@ func (w *wal) SaveState(state *pb.PersistedState) error {
 	if w.closed {
 		return ErrClosed
 	}
-
 	if proto.Equal(state, w.lastState) {
 		return nil
 	}
@@ -744,7 +741,7 @@ func (w *wal) Append(state *pb.PersistedState, entries []*pb.LogEntry) (int64, e
 	}
 
 	if len(entries) == 0 {
-		return nextIndex, w.SaveState(state)
+		return nextIndex, w.saveState(state)
 	}
 
 	for _, entry := range entries {
