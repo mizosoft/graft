@@ -361,7 +361,7 @@ func (s *segment) truncateEntriesTo(index int64) (removeHead bool, err error) {
 		return false, err
 	}
 	if err := tempF.Truncate(s.w.segmentSize); err != nil {
-		return false, err
+		return false, removeOnErr(tempNewFpath, closeOnErr(tempF, err))
 	}
 
 	var newLastOffset int64
