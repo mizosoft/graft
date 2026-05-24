@@ -115,14 +115,14 @@ func (c *entryCache) lastIndex() int64 {
 type wal struct {
 	dir                  string
 	segmentSize          int64
-	segments             []*segment
+	segments             []*segment `protected_by:"mut"`
 	crcTable             *crc32.Table
-	closed               bool
+	closed               bool `protected_by:"mut"`
 	trailerRecord        []byte
 	memoryMapped         bool
-	lastState            *pb.PersistedState
-	lastSnapshotMetadata *pb.SnapshotMetadata
-	cache                *entryCache
+	lastState            *pb.PersistedState   `protected_by:"mut"`
+	lastSnapshotMetadata *pb.SnapshotMetadata `protected_by:"mut"`
+	cache                *entryCache          `protected_by:"mut"`
 	mut                  sync.RWMutex
 	logger               *zap.SugaredLogger
 }
@@ -757,8 +757,8 @@ func (w *wal) Append(state *pb.PersistedState, entries []*pb.LogEntry) (int64, e
 		w.appendRecordToBuffer(&buf, entryRecordType, entry)
 
 		if w.tail().lastOffset+int64(buf.Len()) > w.segmentSize-int64(len(w.trailerRecord)) {
-			// We'll exceed the current segment's capacity by appending up to this entry. Append prior entries to current segment
-			// then create a new one.
+			// We'll exceed the current segment's capacity by appending up to this entry. Append prior entries to current
+			// segment then create a new one.
 			if len(offsets) > 1 {
 				writtenCount := offsets[len(offsets)-1]
 				if err := w.tail().appendBytes(copyAppend(buf.Next(writtenCount), w.trailerRecord...)); err != nil {
@@ -780,6 +780,7 @@ func (w *wal) Append(state *pb.PersistedState, entries []*pb.LogEntry) (int64, e
 				return 0, err
 			}
 		}
+
 		if w.tail().lastOffset+int64(buf.Len()) > w.segmentSize-int64(len(w.trailerRecord)) {
 			return 0, ErrLargeRecord
 		}
