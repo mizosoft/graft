@@ -3,7 +3,12 @@
 /bin/
 *.out
 .idea/
-./TODO
+/TODO
+/TODO.md
+/DESIGN.md
+/IMPROVEMENTS.md
+/PLAN.md
+/ROADMAP.md
 .vscode
 /target/
 /classes/
