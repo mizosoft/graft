@@ -7,6 +7,8 @@ import (
 	"hash/crc32"
 	"io"
 	"os"
+	"slices"
+	"sync"
 
 	"github.com/mizosoft/graft/pb"
 )
@@ -93,36 +95,29 @@ type SnapshotWriter interface {
 	Commit() error
 }
 
-type snapshot struct {
+type memorySnapshot struct {
 	metadata   *pb.SnapshotMetadata
 	data       []byte
 	lazyReader io.Reader
 }
 
-func (s *snapshot) Metadata() *pb.SnapshotMetadata {
+func (s *memorySnapshot) Metadata() *pb.SnapshotMetadata {
 	return s.metadata
 }
 
-func (s *snapshot) ReadAll() ([]byte, error) {
+func (s *memorySnapshot) ReadAll() ([]byte, error) {
 	return s.data, nil
 }
 
-func (s *snapshot) Reader() io.Reader {
+func (s *memorySnapshot) Reader() io.Reader {
 	if s.lazyReader == nil {
 		s.lazyReader = bytes.NewReader(s.data)
 	}
 	return s.lazyReader
 }
 
-func (s *snapshot) Close() error {
+func (s *memorySnapshot) Close() error {
 	return nil
-}
-
-func NewMemorySnapshot(metadata *pb.SnapshotMetadata, data []byte) Snapshot {
-	return &snapshot{
-		metadata: metadata,
-		data:     data,
-	}
 }
 
 func MemoryPersistence() Persistence {
@@ -130,50 +125,115 @@ func MemoryPersistence() Persistence {
 }
 
 type memoryPersistence struct {
-	log      []*pb.LogEntry
-	state    *pb.PersistedState
-	snapshot Snapshot
+	mut       sync.RWMutex
+	log       []*pb.LogEntry
+	nextIndex int64
+	state     *pb.PersistedState
+	snapshot  *memorySnapshot
 }
 
 func (w *memoryPersistence) RetrieveState() (*pb.PersistedState, error) {
+	w.mut.RLock()
+	defer w.mut.RUnlock()
 	return w.state, nil
 }
 
 func (w *memoryPersistence) SaveState(state *pb.PersistedState) error {
+	w.mut.Lock()
+	defer w.mut.Unlock()
 	w.state = state
 	return nil
 }
 
 func (w *memoryPersistence) Append(state *pb.PersistedState, entries []*pb.LogEntry) (int64, error) {
+	w.mut.Lock()
+	defer w.mut.Unlock()
+
 	w.state = state
-	nextIndex := len(w.log)
 	for _, entry := range entries {
-		entry.Index = int64(nextIndex)
-		nextIndex++
+		entry.Index = w.nextIndex
+		w.nextIndex++
 	}
 	w.log = append(w.log, entries...)
-	return int64(nextIndex), nil
+	return w.nextIndex, nil
 }
 
 func (w *memoryPersistence) TruncateEntriesFrom(index int64) error {
-	w.log = w.log[:index]
+	w.mut.Lock()
+	defer w.mut.Unlock()
+
+	if firstIndex := w.firstIndex(); firstIndex >= 0 {
+		if index <= firstIndex {
+			w.log = nil
+		} else if off := w.logOffset(index); off >= 0 {
+			w.log = w.log[:off]
+		} else {
+			return IndexOutOfRange(index)
+		}
+	}
+	if index < w.nextIndex {
+		w.nextIndex = index
+	}
 	return nil
 }
 
 func (w *memoryPersistence) TruncateEntriesTo(index int64) error {
-	w.log = w.log[index+1:]
+	w.mut.Lock()
+	defer w.mut.Unlock()
+
+	firstIndex := w.firstIndex()
+	if firstIndex < 0 || index < firstIndex {
+		return IndexOutOfRange(index)
+	}
+	if index >= w.lastIndex() {
+		w.log = nil
+		return nil
+	}
+	w.log = w.log[index-firstIndex+1:]
 	return nil
 }
 
 func (w *memoryPersistence) EntryCount() int64 {
+	w.mut.RLock()
+	defer w.mut.RUnlock()
 	return int64(len(w.log))
 }
 
-func (w *memoryPersistence) GetEntry(index int64) (*pb.LogEntry, error) {
-	if index >= w.EntryCount() {
-		return nil, IndexOutOfRangeWithCount(index, w.EntryCount())
+func (w *memoryPersistence) firstIndex() int64 {
+	if len(w.log) == 0 {
+		return -1
 	}
-	return w.log[index], nil
+	return w.log[0].Index
+}
+
+func (w *memoryPersistence) lastIndex() int64 {
+	if len(w.log) == 0 {
+		return -1
+	}
+	return w.log[len(w.log)-1].Index
+}
+
+func (w *memoryPersistence) logOffset(index int64) int64 {
+	firstIndex := w.firstIndex()
+	if firstIndex < 0 || index < firstIndex {
+		return -1
+	}
+	off := index - firstIndex
+	if off >= int64(len(w.log)) {
+		return -1
+	}
+	return off
+}
+
+func (w *memoryPersistence) GetEntry(index int64) (*pb.LogEntry, error) {
+	w.mut.RLock()
+	defer w.mut.RUnlock()
+
+	off := w.logOffset(index)
+	if off < 0 {
+		return nil, IndexOutOfRangeWithCount(index, int64(len(w.log)))
+	}
+	return w.log[off], nil
 }
 
 func (w *memoryPersistence) GetEntryTerm(index int64) (int64, error) {
@@ -185,58 +245,52 @@ func (w *memoryPersistence) GetEntryTerm(index int64) (int64, error) {
 }
 
 func (w *memoryPersistence) GetEntriesFrom(index int64) ([]*pb.LogEntry, error) {
-	if index >= w.EntryCount() {
-		panic(IndexOutOfRangeWithCount(index, w.EntryCount()))
+	w.mut.RLock()
+	defer w.mut.RUnlock()
+
+	off := w.logOffset(index)
+	if off < 0 {
+		return nil, IndexOutOfRangeWithCount(index, int64(len(w.log)))
 	}
-	return w.log[index:], nil
+	return slices.Clone(w.log[off:]), nil
 }
 
 func (w *memoryPersistence) GetEntries(from, to int64) ([]*pb.LogEntry, error) {
-	firstIndex, _ := w.FirstEntryIndex()
-	if from < firstIndex {
-		return nil, IndexOutOfRange(firstIndex)
+	if from > to {
+		return nil, fmt.Errorf("from (%d) must be smaller than or equal to (%d)", from, to)
 	}
 
-	lastIndex, _ := w.LastEntryIndex()
-	if to > lastIndex {
-		return nil, IndexOutOfRange(firstIndex)
+	w.mut.RLock()
+	defer w.mut.RUnlock()
+
+	fromOff := w.logOffset(from)
+	if fromOff < 0 {
+		return nil, IndexOutOfRange(from)
 	}
 
-	return w.log[from:to], nil
-}
-
-func (w *memoryPersistence) headEntry() *pb.LogEntry {
-	if len(w.log) == 0 {
-		return nil
+	toOff := w.logOffset(to)
+	if toOff < 0 {
+		return nil, IndexOutOfRange(to)
 	}
-	return w.log[0]
-}
-
-func (w *memoryPersistence) tailEntry() *pb.LogEntry {
-	lastIndex := len(w.log) - 1
-	if lastIndex < 0 {
-		return nil
-	}
-	return w.log[lastIndex]
+	return slices.Clone(w.log[fromOff : toOff+1]), nil
 }
 
 func (w *memoryPersistence) FirstEntryIndex() (int64, error) {
-	entry := w.headEntry()
-	if entry == nil {
-		return -1, nil
-	}
-	return entry.Index, nil
+	w.mut.RLock()
+	defer w.mut.RUnlock()
+	return w.firstIndex(), nil
 }
 
 func (w *memoryPersistence) LastEntryIndex() (int64, error) {
-	entry := w.tailEntry()
-	if entry == nil {
-		return -1, nil
-	}
-	return entry.Index, nil
+	w.mut.RLock()
+	defer w.mut.RUnlock()
+	return w.lastIndex(), nil
 }
 
 func (w *memoryPersistence) LastSnapshotMetadata() (*pb.SnapshotMetadata, error) {
+	w.mut.RLock()
+	defer w.mut.RUnlock()
+
 	if w.snapshot == nil {
 		return nil, nil
 	}
@@ -244,6 +298,9 @@ func (w *memoryPersistence) LastSnapshotMetadata() (*pb.SnapshotMetadata, error)
 }
 
 func (w *memoryPersistence) OpenSnapshot(metadata *pb.SnapshotMetadata) (Snapshot, error) {
+	w.mut.RLock()
+	defer w.mut.RUnlock()
+
 	if w.snapshot == nil {
 		return nil, ErrNoSuchSnapshot
 	}
@@ -291,10 +348,16 @@ func (w *memorySnapshotWriter) Commit() error {
 		return ErrClosed
 	}
 
-	w.metadata.Size = int64(w.buffer.Len())
-	snapshot := NewMemorySnapshot(w.metadata, w.buffer.Bytes())
-	w.m.snapshot = snapshot
 	w.closed = true
+
+	w.m.mut.Lock()
+	defer w.m.mut.Unlock()
+
+	w.metadata.Size = int64(w.buffer.Len())
+	w.m.snapshot = &memorySnapshot{
+		metadata: w.metadata,
+		data:     w.buffer.Bytes(),
+	}
 	return nil
 }
 
