@@ -115,14 +115,14 @@ func (c *entryCache) lastIndex() int64 {
 type wal struct {
 	dir                  string
 	segmentSize          int64
-	segments             []*segment `protected_by:"mut"`
+	segments             []*segment
 	crcTable             *crc32.Table
-	closed               bool `protected_by:"mut"`
+	closed               bool
 	trailerRecord        []byte
 	memoryMapped         bool
-	lastState            *pb.PersistedState   `protected_by:"mut"`
-	lastSnapshotMetadata *pb.SnapshotMetadata `protected_by:"mut"`
-	cache                *entryCache          `protected_by:"mut"`
+	lastState            *pb.PersistedState
+	lastSnapshotMetadata *pb.SnapshotMetadata
+	cache                *entryCache
 	mut                  sync.RWMutex
 	logger               *zap.SugaredLogger
 }
@@ -1240,7 +1240,7 @@ func (w *wal) OpenSnapshot(metadata *pb.SnapshotMetadata) (Snapshot, error) {
 		return nil, ErrNoSuchSnapshot
 	}
 	if metadata.LastIncludedIndex != myMetadata.LastIncludedIndex ||
-		metadata.LastIncludedTerm != myMetadata.LastIncludedTerm {
+			metadata.LastIncludedTerm != myMetadata.LastIncludedTerm {
 		return nil, ErrNoSuchSnapshot
 	}
 	return NewFileSnapshot(metadata, path.Join(w.dir, SnapshotFilename(metadata)))
@@ -1301,6 +1301,7 @@ func (s *fileSnapshotWriter) computeChecksum() (uint32, error) {
 	if s.hashValid && s.hashOffset == s.lastOffset {
 		return s.h, nil
 	}
+
 	// Fallback: stream the un-hashed tail through the running CRC.
 	h := s.h
 	r := newBufferedReader(io.NewSectionReader(s.f, s.hashOffset, s.lastOffset-s.hashOffset))

@@ -248,7 +248,7 @@ func (w *memoryPersistence) OpenSnapshot(metadata *pb.SnapshotMetadata) (Snapsho
 		return nil, ErrNoSuchSnapshot
 	}
 	if metadata.LastIncludedIndex != w.snapshot.Metadata().LastIncludedIndex ||
-		metadata.LastIncludedTerm != w.snapshot.Metadata().LastIncludedTerm {
+			metadata.LastIncludedTerm != w.snapshot.Metadata().LastIncludedTerm {
 		return nil, ErrNoSuchSnapshot
 	}
 	return w.snapshot, nil
