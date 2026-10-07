@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path"
+	"sync"
 
 	"github.com/dgraph-io/badger/v4"
 	"github.com/mizosoft/graft"
@@ -51,6 +52,9 @@ type badgerPersistence struct {
 	logger *zap.SugaredLogger
 	dir    string
 	closed bool
+
+	// snapshotMut serializes snapshot commits, which read the current snapshot's metadata, then replace it.
+	snapshotMut sync.Mutex
 }
 
 func OpenBadgerPersistence(dir string, logger *zap.Logger) (graft.Persistence, error) {
@@ -502,15 +506,22 @@ func (s *fileSnapshotWriter) Commit() error {
 	if s.closed {
 		return graft.ErrClosed
 	}
-
 	s.closed = true
 
+	fpath := s.f.Name()
+	fileClosed := false
 	committed := false
 	defer func() {
-		if !committed {
-			if err := errors.Join(s.f.Close(), os.Remove(s.f.Name())); err != nil {
-				s.b.logger.Error("Failed to close and/or delete snapshot file", zap.Error(err))
-			}
+		if committed {
+			return
+		}
+
+		var closeErr error
+		if !fileClosed {
+			closeErr = s.f.Close()
+		}
+		if err := errors.Join(closeErr, os.Remove(fpath)); err != nil {
+			s.b.logger.Error("Failed to close and/or delete snapshot file", zap.Error(err))
 		}
 	}()
 
@@ -523,17 +534,28 @@ func (s *fileSnapshotWriter) Commit() error {
 		return err
 	}
 
-	if err := os.Rename(s.f.Name(), path.Join(s.b.dir, graft.SnapshotFilename(s.metadata))); err != nil {
-		return err
-	}
+	fileClosed = true // Even on error: a second Close would only report the file as already closed.
 	if err := s.f.Close(); err != nil {
 		return err
 	}
 
+	s.b.snapshotMut.Lock()
+	defer s.b.snapshotMut.Unlock()
+
+	// Reject snapshot if it moves backwards.
 	prevMetadata, err := s.b.LastSnapshotMetadata()
 	if err != nil {
 		return err
 	}
+	if prevMetadata != nil && s.metadata.LastIncludedIndex <= prevMetadata.LastIncludedIndex {
+		return graft.ErrSnapOutOfDate
+	}
+
+	committedFpath := path.Join(s.b.dir, graft.SnapshotFilename(s.metadata))
+	if err := os.Rename(fpath, committedFpath); err != nil {
+		return err
+	}
+	fpath = committedFpath
 
 	s.metadata.Size = s.lastOffset
 	s.metadata.Checksum = checksum
@@ -567,10 +589,13 @@ func (b *badgerPersistence) saveSnapshotMetadata(metadata *pb.SnapshotMetadata) 
 }
 
 func (b *badgerPersistence) CreateSnapshot(metadata *pb.SnapshotMetadata) (graft.SnapshotWriter, error) {
-	fpath := path.Join(b.dir, graft.SnapshotFilename(metadata)+".tmp")
-	f, err := os.Create(fpath)
+	// Named uniquely: two writers can hold the same metadata, e.g. a local snapshot and one installed by the leader.
+	f, err := os.CreateTemp(b.dir, graft.SnapshotFilename(metadata)+".*")
 	if err != nil {
 		return nil, err
+	}
+	if err := f.Chmod(0644); err != nil {
+		return nil, errors.Join(err, f.Close(), os.Remove(f.Name()))
 	}
 	return &fileSnapshotWriter{b: b, f: f, metadata: metadata, hashValid: true}, nil
 }

@@ -19,6 +19,7 @@ var (
 	ErrCorrupt          = errors.New("log is corrupt")
 	ErrOffsetOutOfRange = errors.New("offset out of range")
 	ErrNoSuchSnapshot   = errors.New("no such snapshot")
+	ErrSnapOutOfDate    = errors.New("snapshot is out of date")
 )
 
 type IndexOutOfRangeError struct {
@@ -92,6 +93,8 @@ type SnapshotWriter interface {
 
 	Metadata() *pb.SnapshotMetadata
 
+	// Commit makes the snapshot the current one, unless it's not newer than the current one, in which case it's discarded
+	// with ErrSnapOutOfDate.
 	Commit() error
 }
 
@@ -353,6 +356,9 @@ func (w *memorySnapshotWriter) Commit() error {
 	w.m.mut.Lock()
 	defer w.m.mut.Unlock()
 
+	if current := w.m.snapshot; current != nil && w.metadata.LastIncludedIndex <= current.Metadata().LastIncludedIndex {
+		return ErrSnapOutOfDate
+	}
 	w.metadata.Size = int64(w.buffer.Len())
 	w.m.snapshot = &memorySnapshot{
 		metadata: w.metadata,

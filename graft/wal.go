@@ -1252,10 +1252,13 @@ func (w *wal) CreateSnapshot(metadata *pb.SnapshotMetadata) (SnapshotWriter, err
 		return nil, ErrClosed
 	}
 
-	fpath := path.Join(w.dir, SnapshotFilename(metadata)+".tmp")
-	f, err := os.OpenFile(fpath, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0644) // Create atomically.
+	// Named uniquely: two writers can hold the same metadata, e.g. a local snapshot and one installed by the leader.
+	f, err := os.CreateTemp(w.dir, SnapshotFilename(metadata)+".*")
 	if err != nil {
 		return nil, err
+	}
+	if err := f.Chmod(0644); err != nil {
+		return nil, errors.Join(err, f.Close(), os.Remove(f.Name()))
 	}
 	return &fileSnapshotWriter{w: w, metadata: metadata, f: f, hashValid: true}, nil
 }
@@ -1333,15 +1336,22 @@ func (s *fileSnapshotWriter) Commit() error {
 	if s.closed {
 		return ErrClosed
 	}
-
 	s.closed = true
 
+	fpath := s.f.Name()
+	fileClosed := false
 	committed := false
 	defer func() {
-		if !committed {
-			if err := errors.Join(s.f.Close(), os.Remove(s.f.Name())); err != nil {
-				s.w.logger.Error("Failed to close and/or delete snapshot file", zap.Error(err))
-			}
+		if committed {
+			return
+		}
+
+		var closeErr error
+		if !fileClosed {
+			closeErr = s.f.Close()
+		}
+		if err := errors.Join(closeErr, os.Remove(fpath)); err != nil {
+			s.w.logger.Error("Failed to close and/or delete snapshot file", zap.Error(err))
 		}
 	}()
 
@@ -1354,9 +1364,7 @@ func (s *fileSnapshotWriter) Commit() error {
 		return err
 	}
 
-	if err := os.Rename(s.f.Name(), path.Join(s.w.dir, SnapshotFilename(s.metadata))); err != nil {
-		return err
-	}
+	fileClosed = true // Even on error: a second Close would only report the file as already closed.
 	if err := s.f.Close(); err != nil {
 		return err
 	}
@@ -1364,7 +1372,17 @@ func (s *fileSnapshotWriter) Commit() error {
 	s.w.mut.Lock()
 	defer s.w.mut.Unlock()
 
+	// Reject snapshot if it moves backwards.
 	prevMetadata := s.w.lastSnapshotMetadata
+	if prevMetadata != nil && s.metadata.LastIncludedIndex <= prevMetadata.LastIncludedIndex {
+		return ErrSnapOutOfDate
+	}
+
+	commitedFpath := path.Join(s.w.dir, SnapshotFilename(s.metadata))
+	if err := os.Rename(fpath, commitedFpath); err != nil {
+		return err
+	}
+	fpath = commitedFpath
 
 	// TODO save SnapshotCommitted record instead of SnapshotMetadata directly.
 

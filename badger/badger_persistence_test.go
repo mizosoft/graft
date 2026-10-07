@@ -1,11 +1,14 @@
 package badger
 
 import (
+	"errors"
+	"fmt"
 	"math/rand"
 	"os"
 	"strings"
 	"testing"
 
+	"github.com/mizosoft/graft"
 	"github.com/mizosoft/graft/pb"
 	"github.com/mizosoft/graft/testutil"
 	"google.golang.org/protobuf/proto"
@@ -589,4 +592,91 @@ func TestWalFirstAndLastEntryIndex(t *testing.T) {
 	lastIndex, err = w.LastEntryIndex()
 	assert.NilError(t, err)
 	assert.Equal(t, int64(2), lastIndex)
+}
+
+// Mirrors graft's snapshot contract tests (graft/persistence_test.go), which can't include this backend without an
+// import cycle.
+
+func openTestPersistence(t *testing.T) graft.Persistence {
+	t.Helper()
+	p, err := OpenBadgerPersistence(t.TempDir(), nil)
+	assert.NilError(t, err)
+	t.Cleanup(func() { _ = p.Close() })
+	return p
+}
+
+func commitSnapshot(p graft.Persistence, index int64, data string) error {
+	writer, err := p.CreateSnapshot(&pb.SnapshotMetadata{LastIncludedIndex: index, LastIncludedTerm: 1})
+	if err != nil {
+		return err
+	}
+	if _, err := writer.WriteAt([]byte(data), 0); err != nil {
+		return errors.Join(err, writer.Close())
+	}
+	return writer.Commit()
+}
+
+func assertCurrentSnapshot(t *testing.T, p graft.Persistence, index int64, data string) {
+	t.Helper()
+
+	metadata, err := p.LastSnapshotMetadata()
+	assert.NilError(t, err)
+	assert.Assert(t, metadata != nil)
+	assert.Equal(t, metadata.LastIncludedIndex, index)
+
+	snapshot, err := p.OpenSnapshot(metadata)
+	assert.NilError(t, err, "the current snapshot's data is gone")
+	defer snapshot.Close()
+	got, err := snapshot.ReadAll()
+	assert.NilError(t, err)
+	assert.Equal(t, string(got), data)
+}
+
+func TestSnapshotCommitRejectsOlder(t *testing.T) {
+	p := openTestPersistence(t)
+	assert.NilError(t, commitSnapshot(p, 5, "five"))
+	assert.ErrorIs(t, commitSnapshot(p, 3, "three"), graft.ErrSnapOutOfDate)
+	assertCurrentSnapshot(t, p, 5, "five")
+}
+
+func TestSnapshotCommitRejectsSameIndex(t *testing.T) {
+	p := openTestPersistence(t)
+	assert.NilError(t, commitSnapshot(p, 5, "first"))
+	assert.ErrorIs(t, commitSnapshot(p, 5, "second"), graft.ErrSnapOutOfDate)
+	assertCurrentSnapshot(t, p, 5, "first")
+}
+
+func TestSnapshotWritersWithSameMetadataCoexist(t *testing.T) {
+	p := openTestPersistence(t)
+
+	metadata := &pb.SnapshotMetadata{LastIncludedIndex: 5, LastIncludedTerm: 1}
+	w1, err := p.CreateSnapshot(metadata)
+	assert.NilError(t, err)
+	w2, err := p.CreateSnapshot(proto.Clone(metadata).(*pb.SnapshotMetadata))
+	assert.NilError(t, err)
+
+	_, err = w1.WriteAt([]byte("one"), 0)
+	assert.NilError(t, err)
+	_, err = w2.WriteAt([]byte("two"), 0)
+	assert.NilError(t, err)
+
+	assert.NilError(t, w1.Commit())
+	assert.ErrorIs(t, w2.Commit(), graft.ErrSnapOutOfDate)
+	assertCurrentSnapshot(t, p, 5, "one")
+}
+
+func TestConcurrentSnapshotCommitsLeaveNewestCurrent(t *testing.T) {
+	p := openTestPersistence(t)
+
+	const n = 16
+	errs := make(chan error, n)
+	for i := range n {
+		go func() { errs <- commitSnapshot(p, int64(i), fmt.Sprint(i)) }()
+	}
+	for range n {
+		if err := <-errs; err != nil {
+			assert.ErrorIs(t, err, graft.ErrSnapOutOfDate)
+		}
+	}
+	assertCurrentSnapshot(t, p, n-1, fmt.Sprint(n-1))
 }

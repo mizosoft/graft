@@ -2,9 +2,11 @@ package graft
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/mizosoft/graft/pb"
+	"google.golang.org/protobuf/proto"
 	"gotest.tools/v3/assert"
 )
 
@@ -132,6 +134,70 @@ func TestGetEntriesAfterCompaction(t *testing.T) {
 
 			_, err = p.GetEntries(4, 6)
 			assert.Assert(t, err != nil, "from below FirstEntryIndex must fail")
+		})
+	}
+}
+
+// A local snapshot and one installed by the leader can commit in either order. The older one landing last must neither
+// become current nor delete the newer one as its predecessor.
+func TestSnapshotCommitRejectsOlder(t *testing.T) {
+	for name, p := range persistenceBackends(t) {
+		t.Run(name, func(t *testing.T) {
+			assert.NilError(t, commitSnapshot(p, 5, "five"))
+			assert.ErrorIs(t, commitSnapshot(p, 3, "three"), ErrSnapOutOfDate)
+			assertCurrentSnapshot(t, p, 5, "five")
+		})
+	}
+}
+
+// Same index means same name on disk, so committing it would replace the current file and then delete it as the
+// predecessor.
+func TestSnapshotCommitRejectsSameIndex(t *testing.T) {
+	for name, p := range persistenceBackends(t) {
+		t.Run(name, func(t *testing.T) {
+			assert.NilError(t, commitSnapshot(p, 5, "first"))
+			assert.ErrorIs(t, commitSnapshot(p, 5, "second"), ErrSnapOutOfDate)
+			assertCurrentSnapshot(t, p, 5, "first")
+		})
+	}
+}
+
+// Two writers can hold the same metadata at once, e.g. a local snapshot and a leader's install at the same index.
+func TestSnapshotWritersWithSameMetadataCoexist(t *testing.T) {
+	for name, p := range persistenceBackends(t) {
+		t.Run(name, func(t *testing.T) {
+			metadata := &pb.SnapshotMetadata{LastIncludedIndex: 5, LastIncludedTerm: 1}
+			w1, err := p.CreateSnapshot(metadata)
+			assert.NilError(t, err)
+			w2, err := p.CreateSnapshot(proto.Clone(metadata).(*pb.SnapshotMetadata))
+			assert.NilError(t, err, "a second writer for the same snapshot couldn't be created")
+
+			_, err = w1.WriteAt([]byte("one"), 0)
+			assert.NilError(t, err)
+			_, err = w2.WriteAt([]byte("two"), 0)
+			assert.NilError(t, err)
+
+			assert.NilError(t, w1.Commit())
+			assert.ErrorIs(t, w2.Commit(), ErrSnapOutOfDate)
+			assertCurrentSnapshot(t, p, 5, "one")
+		})
+	}
+}
+
+func TestConcurrentSnapshotCommitsLeaveNewestCurrent(t *testing.T) {
+	for name, p := range persistenceBackends(t) {
+		t.Run(name, func(t *testing.T) {
+			const n = 16
+			errs := make(chan error, n)
+			for i := range n {
+				go func() { errs <- commitSnapshot(p, int64(i), fmt.Sprint(i)) }()
+			}
+			for range n {
+				if err := <-errs; err != nil {
+					assert.ErrorIs(t, err, ErrSnapOutOfDate)
+				}
+			}
+			assertCurrentSnapshot(t, p, n-1, fmt.Sprint(n-1))
 		})
 	}
 }

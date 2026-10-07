@@ -1357,3 +1357,46 @@ func TestWalAppendAfterTruncate(t *testing.T) {
 		})
 	}
 }
+
+// A failure after the rename must remove the renamed file: os.File.Name still reports the .tmp path, and cleaning that
+// up instead leaves a snapshot on disk that nothing references and nothing ever deletes.
+func TestWalSnapshotCommitFailureAfterRenameLeavesNoFile(t *testing.T) {
+	for _, memoryMapped := range []bool{false, true} {
+		t.Run(fmt.Sprintf("MemoryMapped=%t", memoryMapped), func(t *testing.T) {
+			dir := t.TempDir()
+			w, err := openWal(WalOptions{
+				Dir:          dir,
+				MemoryMapped: memoryMapped,
+				SegmentSize:  512,
+			})
+			assert.NilError(t, err)
+			defer w.Close()
+
+			// Too large for a segment, so saveSnapshotMetadata fails with ErrLargeRecord - after the rename.
+			metadata := &pb.SnapshotMetadata{
+				LastIncludedIndex: 1,
+				LastIncludedTerm:  1,
+				ConfigUpdate: &pb.ConfigUpdate{
+					New:   []*pb.NodeConfig{{Id: "s1", Url: strings.Repeat("x", 1024)}},
+					Phase: pb.ConfigUpdate_APPLIED,
+				},
+			}
+			writer, err := w.CreateSnapshot(metadata)
+			assert.NilError(t, err)
+			_, err = writer.WriteAt([]byte("abc"), 0)
+			assert.NilError(t, err)
+
+			assert.ErrorIs(t, writer.Commit(), ErrLargeRecord)
+
+			entries, err := os.ReadDir(dir)
+			assert.NilError(t, err)
+			for _, e := range entries {
+				assert.Assert(t, !strings.HasPrefix(e.Name(), "snap_"), "orphaned snapshot file left behind: %s", e.Name())
+			}
+
+			retrievedMetadata, err := w.LastSnapshotMetadata()
+			assert.NilError(t, err)
+			testutil.AssertNil(t, retrievedMetadata)
+		})
+	}
+}
