@@ -13,6 +13,7 @@ import (
 	"github.com/mizosoft/graft/testutil"
 	"google.golang.org/protobuf/proto"
 	"gotest.tools/v3/assert"
+	"gotest.tools/v3/assert/cmp"
 )
 
 func TestWalNewWalOpen(t *testing.T) {
@@ -597,6 +598,16 @@ func TestWalFirstAndLastEntryIndex(t *testing.T) {
 // Mirrors graft's snapshot contract tests (graft/persistence_test.go), which can't include this backend without an
 // import cycle.
 
+func appendCommands(t *testing.T, p graft.Persistence, count int) {
+	t.Helper()
+	entries := make([]*pb.LogEntry, count)
+	for i := range entries {
+		entries[i] = &pb.LogEntry{Term: 1, Type: pb.LogEntry_COMMAND, Data: []byte{byte(i)}}
+	}
+	_, err := p.Append(&pb.PersistedState{CurrentTerm: 1, CommitIndex: -1}, entries)
+	assert.NilError(t, err)
+}
+
 func openTestPersistence(t *testing.T) graft.Persistence {
 	t.Helper()
 	p, err := OpenBadgerPersistence(t.TempDir(), nil)
@@ -679,4 +690,48 @@ func TestConcurrentSnapshotCommitsLeaveNewestCurrent(t *testing.T) {
 		}
 	}
 	assertCurrentSnapshot(t, p, n-1, fmt.Sprint(n-1))
+}
+
+// A range ending past the log, or running backwards, is a bug in the caller, so it panics where it's found.
+func TestLogAccessPastTheEndPanics(t *testing.T) {
+	p := openTestPersistence(t)
+	appendCommands(t, p, 5)
+
+	assert.Assert(t, cmp.Panics(func() { _, _ = p.GetEntries(0, 5) }))
+	assert.Assert(t, cmp.Panics(func() { _, _ = p.GetEntry(5) }))
+	assert.Assert(t, cmp.Panics(func() { _, _ = p.GetEntriesFrom(5) }))
+	assert.Assert(t, cmp.Panics(func() { _ = p.TruncateEntriesFrom(5) }))
+	assert.Assert(t, cmp.Panics(func() { _, _ = p.GetEntries(3, 2) }))
+}
+
+// Before the first index is where a compaction lands between a caller's bounds check and its read.
+func TestLogAccessBeforeTheFirstIndexIsCompacted(t *testing.T) {
+	p := openTestPersistence(t)
+	appendCommands(t, p, 10)
+	assert.NilError(t, p.TruncateEntriesTo(4))
+
+	_, err := p.GetEntries(3, 6)
+	assert.ErrorIs(t, err, graft.ErrCompacted)
+	_, err = p.GetEntry(4)
+	assert.ErrorIs(t, err, graft.ErrCompacted)
+	_, err = p.GetEntriesFrom(0)
+	assert.ErrorIs(t, err, graft.ErrCompacted)
+	assert.ErrorIs(t, p.TruncateEntriesFrom(2), graft.ErrCompacted)
+
+	entries, err := p.GetEntries(5, 9)
+	assert.NilError(t, err)
+	assert.Equal(t, entries[0].Index, int64(5))
+}
+
+func TestTruncateEntriesToClamps(t *testing.T) {
+	p := openTestPersistence(t)
+	appendCommands(t, p, 10)
+	assert.NilError(t, p.TruncateEntriesTo(4))
+	assert.NilError(t, p.TruncateEntriesTo(2))
+	first, err := p.FirstEntryIndex()
+	assert.NilError(t, err)
+	assert.Equal(t, first, int64(5))
+
+	assert.NilError(t, p.TruncateEntriesTo(100))
+	assert.Equal(t, p.EntryCount(), int64(0))
 }

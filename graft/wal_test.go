@@ -381,8 +381,7 @@ func TestWalErrorCases(t *testing.T) {
 			defer w.Close()
 			assert.NilError(t, err)
 
-			_, err = w.GetEntry(100)
-			assert.Assert(t, err != nil)
+			assertPanics(t, "ends past the last index -1", func() { _, _ = w.GetEntry(100) })
 
 			// Test using closed WAL
 			w.Close()

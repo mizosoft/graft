@@ -226,7 +226,7 @@ func (s *segment) entryCount() int {
 func (s *segment) getEntry(index int64) (*pb.LogEntry, error) {
 	localIndex := int(index - s.firstIndex)
 	if localIndex < 0 || localIndex >= s.entryCount() {
-		return nil, IndexOutOfRange(index)
+		panic(fmt.Sprintf("the segment from %d doesn't hold index %d", s.firstIndex, index))
 	}
 	return s.getEntryAtOffset(localIndex)
 }
@@ -908,10 +908,11 @@ func (w *wal) TruncateEntriesFrom(index int64) error {
 		return ErrClosed
 	}
 
-	segIndex, err := w.findSegment(index)
-	if err != nil {
+	first, last := w.bounds()
+	if err := CheckRange(index, index, first, last); err != nil {
 		return err
 	}
+	segIndex := w.findSegment(index)
 
 	removedSegments := w.segments[segIndex+1:]
 	for _, seg := range removedSegments {
@@ -952,10 +953,11 @@ func (w *wal) TruncateEntriesTo(index int64) error {
 
 	w.logger.Info("TruncateEntriesTo ", index, " ", w.dir)
 
-	segIndex, err := w.findSegment(index)
-	if err != nil {
-		return err
+	first, last := w.bounds()
+	if index = min(index, last); index < first {
+		return nil
 	}
+	segIndex := w.findSegment(index)
 
 	removedSegments := w.segments[:segIndex]
 	for _, seg := range removedSegments {
@@ -1016,6 +1018,10 @@ func (w *wal) GetEntry(index int64) (*pb.LogEntry, error) {
 		return nil, ErrClosed
 	}
 
+	first, last := w.bounds()
+	if err := CheckRange(index, index, first, last); err != nil {
+		return nil, err
+	}
 	e := w.cache.get(index)
 	if e != nil {
 		return e, nil
@@ -1025,10 +1031,7 @@ func (w *wal) GetEntry(index int64) (*pb.LogEntry, error) {
 }
 
 func (w *wal) getEntry(index int64) (*pb.LogEntry, error) {
-	segIndex, err := w.findSegment(index)
-	if err != nil {
-		return nil, err
-	}
+	segIndex := w.findSegment(index)
 
 	entry, err := w.segments[segIndex].getEntry(index)
 	if err != nil {
@@ -1050,8 +1053,9 @@ func (w *wal) GetEntries(from, to int64) ([]*pb.LogEntry, error) {
 	w.mut.RLock()
 	defer w.mut.RUnlock()
 
-	if from > to {
-		return nil, fmt.Errorf("from (%d) must be smaller than or equal to (%d)", from, to)
+	first, last := w.bounds()
+	if err := CheckRange(from, to, first, last); err != nil {
+		return nil, err
 	}
 
 	if w.cache.firstIndex() >= 0 && to >= w.cache.firstIndex() {
@@ -1080,15 +1084,8 @@ func (w *wal) getEntries(from, to int64) ([]*pb.LogEntry, error) {
 		}
 	}
 
-	firstSegIndex, err := w.findSegment(from)
-	if err != nil {
-		return nil, err
-	}
-
-	lastSegIndex, err := w.findSegment(to)
-	if err != nil {
-		return nil, err
-	}
+	firstSegIndex := w.findSegment(from)
+	lastSegIndex := w.findSegment(to)
 
 	entries, err := w.segments[firstSegIndex].getEntriesFrom(from)
 	if err != nil {
@@ -1123,6 +1120,10 @@ func (w *wal) GetEntriesFrom(from int64) ([]*pb.LogEntry, error) {
 		return nil, ErrClosed
 	}
 
+	first, last := w.bounds()
+	if err := CheckRange(from, from, first, last); err != nil {
+		return nil, err
+	}
 	if w.cache.firstIndex() >= 0 && from >= w.cache.firstIndex() {
 		return w.cache.getEntries(from, w.cache.lastIndex()), nil
 	} else if w.cache.firstIndex() >= 0 {
@@ -1138,10 +1139,7 @@ func (w *wal) GetEntriesFrom(from int64) ([]*pb.LogEntry, error) {
 }
 
 func (w *wal) getEntriesFrom(from int64) ([]*pb.LogEntry, error) {
-	segIndex, err := w.findSegment(from)
-	if err != nil {
-		return nil, err
-	}
+	segIndex := w.findSegment(from)
 
 	entries, err := w.segments[segIndex].getEntriesFrom(from)
 	if err != nil {
@@ -1403,7 +1401,7 @@ func (s *fileSnapshotWriter) Commit() error {
 	return nil
 }
 
-func (w *wal) findSegment(entryIndex int64) (int, error) {
+func (w *wal) findSegment(entryIndex int64) int {
 	lo, hi := 0, len(w.segments)
 	for lo < hi {
 		mid := (lo + hi) / 2
@@ -1412,10 +1410,15 @@ func (w *wal) findSegment(entryIndex int64) (int, error) {
 		} else if entryIndex < w.segments[mid].firstIndex {
 			hi = mid
 		} else {
-			return mid, nil
+			return mid
 		}
 	}
-	return -1, IndexOutOfRange(entryIndex)
+	panic(fmt.Sprintf("no segment holds index %d", entryIndex))
+}
+
+// bounds returns the first and last index, first being where the log continues when it's empty.
+func (w *wal) bounds() (first, last int64) {
+	return w.segments[0].firstIndex, w.segments[len(w.segments)-1].nextIndex - 1
 }
 
 func (w *wal) crc32Of(data []byte) uint32 {

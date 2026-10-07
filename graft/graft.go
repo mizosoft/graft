@@ -504,7 +504,7 @@ outer:
 			for i := e.from; i <= e.to; i += defaultEntryBatchSize {
 				entries, err := g.persistence.GetEntries(i, min(e.to, i+defaultEntryBatchSize))
 				if err != nil {
-					if _, ok := errors.AsType[IndexOutOfRangeError](err); ok {
+					if errors.Is(err, ErrCompacted) {
 						// A concurrent truncation (due to snapshotting) could've occurred. We can proceed towards getting the next event.
 						continue outer
 					}

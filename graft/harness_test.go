@@ -2,6 +2,7 @@ package graft
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/mizosoft/graft/pb"
@@ -33,4 +34,20 @@ func assertCurrentSnapshot(t *testing.T, p Persistence, index int64, data string
 	got, err := snapshot.ReadAll()
 	assert.NilError(t, err)
 	assert.Equal(t, string(got), data)
+}
+
+func assertPanics(t *testing.T, want string, f func()) {
+	t.Helper()
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatalf("expected a panic mentioning %q", want)
+		}
+		msg, ok := r.(string)
+		assert.Assert(t, ok, "want a string panic, got %T: %v", r, r)
+		if !strings.Contains(msg, want) {
+			t.Fatalf("panic %q does not mention %q", msg, want)
+		}
+	}()
+	f()
 }

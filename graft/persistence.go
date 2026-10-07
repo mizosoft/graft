@@ -20,27 +20,22 @@ var (
 	ErrOffsetOutOfRange = errors.New("offset out of range")
 	ErrNoSuchSnapshot   = errors.New("no such snapshot")
 	ErrSnapOutOfDate    = errors.New("snapshot is out of date")
+	ErrCompacted        = errors.New("index is compacted")
 )
 
-type IndexOutOfRangeError struct {
-	Index int64
-	Count int64
-}
-
-func (e IndexOutOfRangeError) Error() string {
-	s := fmt.Sprintf("index out of range: [%d]", e.Index)
-	if e.Count >= 0 {
-		s += fmt.Sprintf("with count %d", e.Count)
+// CheckRange checks an entry range. ErrCompacted is returned if the range starts before first, a panic occurs if it's
+// invalid or ends past last. For an empty log, first is where it continues and last is first - 1.
+func CheckRange(from, to, first, last int64) error {
+	if from < 0 || from > to {
+		panic(fmt.Sprintf("invalid index range [%d, %d]", from, to))
 	}
-	return s
-}
-
-func IndexOutOfRange(index int64) error {
-	return IndexOutOfRangeError{index, -1}
-}
-
-func IndexOutOfRangeWithCount(index int64, count int64) error {
-	return IndexOutOfRangeError{index, count}
+	if to > last {
+		panic(fmt.Sprintf("index range [%d, %d] ends past the last index %d", from, to, last))
+	}
+	if from < first {
+		return ErrCompacted
+	}
+	return nil
 }
 
 type Persistence interface {
@@ -52,8 +47,12 @@ type Persistence interface {
 
 	Append(state *pb.PersistedState, entries []*pb.LogEntry) (int64, error)
 
+	// TruncateEntriesFrom removes the entries from given index to the end of the log. It returns ErrCompacted for an
+	// index before the first entry, and panics on one past the last.
 	TruncateEntriesFrom(index int64) error
 
+	// TruncateEntriesTo compacts the entries up to the given index. An index before the first entry does nothing, and one
+	// past the last compacts them all.
 	TruncateEntriesTo(index int64) error
 
 	EntryCount() int64
@@ -165,18 +164,12 @@ func (w *memoryPersistence) TruncateEntriesFrom(index int64) error {
 	w.mut.Lock()
 	defer w.mut.Unlock()
 
-	if firstIndex := w.firstIndex(); firstIndex >= 0 {
-		if index <= firstIndex {
-			w.log = nil
-		} else if off := w.logOffset(index); off >= 0 {
-			w.log = w.log[:off]
-		} else {
-			return IndexOutOfRange(index)
-		}
+	first, last := w.bounds()
+	if err := CheckRange(index, index, first, last); err != nil {
+		return err
 	}
-	if index < w.nextIndex {
-		w.nextIndex = index
-	}
+	w.log = w.log[:index-first]
+	w.nextIndex = index
 	return nil
 }
 
@@ -184,15 +177,10 @@ func (w *memoryPersistence) TruncateEntriesTo(index int64) error {
 	w.mut.Lock()
 	defer w.mut.Unlock()
 
-	firstIndex := w.firstIndex()
-	if firstIndex < 0 || index < firstIndex {
-		return IndexOutOfRange(index)
+	first, last := w.bounds()
+	if index = min(index, last); index >= first {
+		w.log = w.log[index-first+1:]
 	}
-	if index >= w.lastIndex() {
-		w.log = nil
-		return nil
-	}
-	w.log = w.log[index-firstIndex+1:]
 	return nil
 }
 
@@ -200,6 +188,14 @@ func (w *memoryPersistence) EntryCount() int64 {
 	w.mut.RLock()
 	defer w.mut.RUnlock()
 	return int64(len(w.log))
+}
+
+// bounds returns the first and last index, first being where the log continues when it's empty.
+func (w *memoryPersistence) bounds() (first, last int64) {
+	if len(w.log) == 0 {
+		return w.nextIndex, w.nextIndex - 1
+	}
+	return w.log[0].Index, w.nextIndex - 1
 }
 
 func (w *memoryPersistence) firstIndex() int64 {
@@ -216,27 +212,15 @@ func (w *memoryPersistence) lastIndex() int64 {
 	return w.log[len(w.log)-1].Index
 }
 
-func (w *memoryPersistence) logOffset(index int64) int64 {
-	firstIndex := w.firstIndex()
-	if firstIndex < 0 || index < firstIndex {
-		return -1
-	}
-	off := index - firstIndex
-	if off >= int64(len(w.log)) {
-		return -1
-	}
-	return off
-}
-
 func (w *memoryPersistence) GetEntry(index int64) (*pb.LogEntry, error) {
 	w.mut.RLock()
 	defer w.mut.RUnlock()
 
-	off := w.logOffset(index)
-	if off < 0 {
-		return nil, IndexOutOfRangeWithCount(index, int64(len(w.log)))
+	first, last := w.bounds()
+	if err := CheckRange(index, index, first, last); err != nil {
+		return nil, err
 	}
-	return w.log[off], nil
+	return w.log[index-first], nil
 }
 
 func (w *memoryPersistence) GetEntryTerm(index int64) (int64, error) {
@@ -251,31 +235,22 @@ func (w *memoryPersistence) GetEntriesFrom(index int64) ([]*pb.LogEntry, error) 
 	w.mut.RLock()
 	defer w.mut.RUnlock()
 
-	off := w.logOffset(index)
-	if off < 0 {
-		return nil, IndexOutOfRangeWithCount(index, int64(len(w.log)))
+	first, last := w.bounds()
+	if err := CheckRange(index, index, first, last); err != nil {
+		return nil, err
 	}
-	return slices.Clone(w.log[off:]), nil
+	return slices.Clone(w.log[index-first:]), nil
 }
 
 func (w *memoryPersistence) GetEntries(from, to int64) ([]*pb.LogEntry, error) {
-	if from > to {
-		return nil, fmt.Errorf("from (%d) must be smaller than or equal to (%d)", from, to)
-	}
-
 	w.mut.RLock()
 	defer w.mut.RUnlock()
 
-	fromOff := w.logOffset(from)
-	if fromOff < 0 {
-		return nil, IndexOutOfRange(from)
+	first, last := w.bounds()
+	if err := CheckRange(from, to, first, last); err != nil {
+		return nil, err
 	}
-
-	toOff := w.logOffset(to)
-	if toOff < 0 {
-		return nil, IndexOutOfRange(to)
-	}
-	return slices.Clone(w.log[fromOff : toOff+1]), nil
+	return slices.Clone(w.log[from-first : to-first+1]), nil
 }
 
 func (w *memoryPersistence) FirstEntryIndex() (int64, error) {

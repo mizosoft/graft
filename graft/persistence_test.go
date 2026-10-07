@@ -10,12 +10,6 @@ import (
 	"gotest.tools/v3/assert"
 )
 
-func errAsIndexOutOfRange(err error) (IndexOutOfRangeError, bool) {
-	var target IndexOutOfRangeError
-	ok := errors.As(err, &target)
-	return target, ok
-}
-
 // Both Persistence backends must agree on GetEntries' bounds. They did not: wal
 // treats `to` as inclusive, memoryPersistence returned log[from:to]. The apply
 // loop cannot be correct against both, so the contract is pinned on the interface
@@ -72,21 +66,61 @@ func TestGetEntriesBoundsAreInclusive(t *testing.T) {
 	}
 }
 
-func TestGetEntriesRejectsOutOfRange(t *testing.T) {
+// A range ending past the log, or running backwards, is a bug in the caller, so it panics where it's found.
+func TestLogAccessPastTheEndPanics(t *testing.T) {
 	for name, p := range persistenceBackends(t) {
 		t.Run(name, func(t *testing.T) {
 			appendCommands(t, p, 5)
 
-			// Past the tail. The apply loop relies on this being an
-			// IndexOutOfRangeError so it can treat a concurrent truncation as
-			// "skip to the next event" rather than as a fatal fault.
-			_, err := p.GetEntries(0, 5)
-			assert.Assert(t, err != nil, "to beyond LastEntryIndex must fail")
-			_, ok := errAsIndexOutOfRange(err)
-			assert.Assert(t, ok, "want IndexOutOfRangeError, got %T: %v", err, err)
+			assertPanics(t, "ends past the last index 4", func() { _, _ = p.GetEntries(0, 5) })
+			assertPanics(t, "ends past the last index 4", func() { _, _ = p.GetEntry(5) })
+			assertPanics(t, "ends past the last index 4", func() { _, _ = p.GetEntriesFrom(5) })
+			assertPanics(t, "ends past the last index 4", func() { _ = p.TruncateEntriesFrom(5) })
+			assertPanics(t, "invalid index range [3, 2]", func() { _, _ = p.GetEntries(3, 2) })
+		})
+	}
+}
 
-			_, err = p.GetEntries(3, 2)
-			assert.Assert(t, err != nil, "from > to must fail")
+// Before the first index is where a compaction lands between a caller's bounds check and its read.
+func TestLogAccessBeforeTheFirstIndexIsCompacted(t *testing.T) {
+	for name, p := range persistenceBackends(t) {
+		t.Run(name, func(t *testing.T) {
+			appendCommands(t, p, 10)
+			assert.NilError(t, p.TruncateEntriesTo(4))
+
+			_, err := p.GetEntries(3, 6)
+			assert.ErrorIs(t, err, ErrCompacted)
+			_, err = p.GetEntry(4)
+			assert.ErrorIs(t, err, ErrCompacted)
+			_, err = p.GetEntryTerm(4)
+			assert.ErrorIs(t, err, ErrCompacted)
+			_, err = p.GetEntriesFrom(0)
+			assert.ErrorIs(t, err, ErrCompacted)
+			assert.ErrorIs(t, p.TruncateEntriesFrom(2), ErrCompacted)
+
+			entries, err := p.GetEntries(5, 9)
+			assert.NilError(t, err)
+			assert.Equal(t, entries[0].Index, int64(5))
+		})
+	}
+}
+
+// Compaction can be requested again, or beyond the log: before the first index does nothing, past the last compacts
+// everything, and the log keeps its position.
+func TestTruncateEntriesToClamps(t *testing.T) {
+	for name, p := range persistenceBackends(t) {
+		t.Run(name, func(t *testing.T) {
+			appendCommands(t, p, 10)
+			assert.NilError(t, p.TruncateEntriesTo(4))
+			assert.NilError(t, p.TruncateEntriesTo(2))
+			first, err := p.FirstEntryIndex()
+			assert.NilError(t, err)
+			assert.Equal(t, first, int64(5))
+
+			assert.NilError(t, p.TruncateEntriesTo(100))
+			assert.Equal(t, p.EntryCount(), int64(0))
+			_, err = p.GetEntry(9)
+			assert.ErrorIs(t, err, ErrCompacted)
 		})
 	}
 }
@@ -235,7 +269,7 @@ func TestConcurrentLogAccess(t *testing.T) {
 				}
 
 				entries, err := p.GetEntries(first, last)
-				if _, ok := errAsIndexOutOfRange(err); ok {
+				if errors.Is(err, ErrCompacted) {
 					continue // Compacted between the reads above and this one.
 				}
 				assert.NilError(t, err)

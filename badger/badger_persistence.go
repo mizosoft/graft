@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"hash/crc32"
 	"io"
+	"math"
 	"os"
 	"path"
 	"sync"
@@ -167,12 +168,12 @@ func (b *badgerPersistence) Append(state *pb.PersistedState, entries []*pb.LogEn
 
 func (b *badgerPersistence) TruncateEntriesFrom(index int64) error {
 	return b.db.Update(func(txn *badger.Txn) error {
+		if err := b.checkRangeInTxn(txn, index, index); err != nil {
+			return err
+		}
 		lastIndex, err := b.getLastIndexInTxn(txn)
 		if err != nil {
 			return err
-		}
-		if lastIndex < index {
-			return nil
 		}
 
 		// Delete entries from index onwards.
@@ -205,16 +206,12 @@ func (b *badgerPersistence) TruncateEntriesTo(index int64) error {
 		if err != nil {
 			return err
 		}
-		if firstIndex > index {
-			return graft.IndexOutOfRange(index)
-		}
-
 		lastIndex, err := b.getLastIndexInTxn(txn)
 		if err != nil {
 			return err
 		}
-		if lastIndex < index {
-			return graft.IndexOutOfRange(index)
+		if index = min(index, lastIndex); firstIndex < 0 || index < firstIndex {
+			return nil
 		}
 
 		// Delete entries up to and including index.
@@ -265,12 +262,11 @@ func (b *badgerPersistence) EntryCount() int64 {
 func (b *badgerPersistence) GetEntry(index int64) (*pb.LogEntry, error) {
 	var entry *pb.LogEntry
 	err := b.db.View(func(txn *badger.Txn) error {
-		key := b.logEntryKey(index)
-		item, err := txn.Get(key)
+		if err := b.checkRangeInTxn(txn, index, index); err != nil {
+			return err
+		}
+		item, err := txn.Get(b.logEntryKey(index))
 		if err != nil {
-			if errors.Is(err, badger.ErrKeyNotFound) {
-				return graft.IndexOutOfRange(index)
-			}
 			return err
 		}
 
@@ -293,12 +289,12 @@ func (b *badgerPersistence) GetEntryTerm(index int64) (int64, error) {
 func (b *badgerPersistence) GetEntriesFrom(index int64) ([]*pb.LogEntry, error) {
 	var entries []*pb.LogEntry
 	if err := b.db.View(func(txn *badger.Txn) error {
+		if err := b.checkRangeInTxn(txn, index, index); err != nil {
+			return err
+		}
 		lastIndex, err := b.getLastIndexInTxn(txn)
 		if err != nil {
 			return err
-		}
-		if index > lastIndex {
-			return graft.IndexOutOfRange(index)
 		}
 
 		for i := index; i <= lastIndex; i++ {
@@ -329,21 +325,8 @@ func (b *badgerPersistence) GetEntriesFrom(index int64) ([]*pb.LogEntry, error) 
 func (b *badgerPersistence) GetEntries(from, to int64) ([]*pb.LogEntry, error) {
 	var entries []*pb.LogEntry
 	if err := b.db.View(func(txn *badger.Txn) error {
-		var err error
-		firstIndex, err := b.getFirstIndexInTxn(txn)
-		if err != nil {
+		if err := b.checkRangeInTxn(txn, from, to); err != nil {
 			return err
-		}
-		lastIndex, err := b.getLastIndexInTxn(txn)
-		if err != nil {
-			return err
-		}
-
-		if from < firstIndex {
-			return graft.IndexOutOfRange(from)
-		}
-		if to > lastIndex {
-			return graft.IndexOutOfRange(to)
 		}
 
 		for i := from; i <= to; i++ {
@@ -609,6 +592,23 @@ func (b *badgerPersistence) logEntryKey(index int64) []byte {
 	copy(key, logEntryPrefix)
 	binary.BigEndian.PutUint64(key[len(logEntryPrefix):], uint64(index))
 	return key
+}
+
+// checkRangeInTxn checks the range with graft.CheckRange. An empty log keeps no position to tell a compacted index from
+// one past the end (#24), so it takes every range as compacted.
+func (b *badgerPersistence) checkRangeInTxn(txn *badger.Txn, from, to int64) error {
+	first, err := b.getFirstIndexInTxn(txn)
+	if err != nil {
+		return err
+	}
+	last, err := b.getLastIndexInTxn(txn)
+	if err != nil {
+		return err
+	}
+	if first < 0 {
+		first, last = math.MaxInt64, math.MaxInt64-1
+	}
+	return graft.CheckRange(from, to, first, last)
 }
 
 func (b *badgerPersistence) getFirstIndexInTxn(txn *badger.Txn) (int64, error) {
