@@ -1038,9 +1038,6 @@ func (w *wal) getEntry(index int64) (*pb.LogEntry, error) {
 }
 
 func (w *wal) GetEntryTerm(index int64) (int64, error) {
-	w.mut.RLock()
-	defer w.mut.RUnlock()
-
 	e, err := w.GetEntry(index)
 	if err != nil {
 		return 0, err
