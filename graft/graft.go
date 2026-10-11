@@ -1445,7 +1445,7 @@ func (g *Graft) installSnapshotBlock(request *pb.SnapshotRequest, writer Snapsho
 	}
 
 	if request.Done {
-		if err := writer.Commit(); errors.Is(err, ErrSnapOutOfDate) {
+		if err := writer.Commit(); errors.Is(err, ErrSnapshotOutOfDate) {
 			return true, nil // Snapshot was old, ok to discard.
 		} else if err != nil {
 			panic(err)

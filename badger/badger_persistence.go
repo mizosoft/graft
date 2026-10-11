@@ -4,11 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"hash/crc32"
-	"io"
 	"math"
-	"os"
-	"path"
 	"sync"
 
 	"github.com/dgraph-io/badger/v4"
@@ -17,8 +13,6 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
 )
-
-var snapshotCRCTable = crc32.MakeTable(crc32.Castagnoli)
 
 const (
 	logEntryPrefix      = "graft:log:"
@@ -49,13 +43,12 @@ func (z *zapLogger) Debugf(s string, i ...interface{}) {
 }
 
 type badgerPersistence struct {
-	db     *badger.DB
-	logger *zap.SugaredLogger
-	dir    string
-	closed bool
-
-	// snapshotMut serializes snapshot commits, which read the current snapshot's metadata, then replace it.
-	snapshotMut sync.Mutex
+	db          *badger.DB
+	logger      *zap.SugaredLogger
+	dir         string
+	closed      bool
+	snapshotMut sync.RWMutex
+	snapshots   *graft.FileSnapshotter
 }
 
 func OpenBadgerPersistence(dir string, logger *zap.Logger) (graft.Persistence, error) {
@@ -74,11 +67,13 @@ func OpenBadgerPersistence(dir string, logger *zap.Logger) (graft.Persistence, e
 		return nil, fmt.Errorf("failed to open badger db: %w", err)
 	}
 
-	return &badgerPersistence{
+	b := &badgerPersistence{
 		db:     db,
 		dir:    dir,
 		logger: sugaredLogger,
-	}, nil
+	}
+	b.snapshots = graft.NewFileSnapshotter(dir, &b.snapshotMut, b.LastSnapshotMetadata, b.saveSnapshotMetadata, logger)
+	return b, nil
 }
 
 func (b *badgerPersistence) RetrieveState() (*pb.PersistedState, error) {
@@ -402,159 +397,7 @@ func (b *badgerPersistence) LastSnapshotMetadata() (*pb.SnapshotMetadata, error)
 }
 
 func (b *badgerPersistence) OpenSnapshot(metadata *pb.SnapshotMetadata) (graft.Snapshot, error) {
-	myMetadata, err := b.LastSnapshotMetadata()
-	if err != nil {
-		return nil, err
-	}
-
-	if myMetadata == nil {
-		return nil, graft.ErrNoSuchSnapshot
-	}
-	if metadata.LastIncludedIndex != myMetadata.LastIncludedIndex ||
-		metadata.LastIncludedTerm != myMetadata.LastIncludedTerm {
-		return nil, graft.ErrNoSuchSnapshot
-	}
-	return graft.NewFileSnapshot(metadata, path.Join(b.dir, graft.SnapshotFilename(metadata)))
-}
-
-type fileSnapshotWriter struct {
-	b          *badgerPersistence
-	f          *os.File
-	metadata   *pb.SnapshotMetadata
-	lastOffset int64
-	closed     bool
-	h          uint32
-	hashOffset int64
-	hashValid  bool
-}
-
-func (s *fileSnapshotWriter) WriteAt(p []byte, off int64) (n int, err error) {
-	if s.closed {
-		return 0, graft.ErrClosed
-	}
-
-	if off < 0 || off > s.lastOffset {
-		return 0, graft.ErrOffsetOutOfRange
-	}
-	n, err = s.f.WriteAt(p, off)
-	if err == nil {
-		s.lastOffset = max(s.lastOffset, off+int64(n))
-		if s.hashValid {
-			if off == s.hashOffset {
-				s.h = crc32.Update(s.h, snapshotCRCTable, p[:n])
-				s.hashOffset += int64(n)
-			} else {
-				s.hashValid = false
-			}
-		}
-	}
-	return
-}
-
-func (s *fileSnapshotWriter) computeChecksum() (uint32, error) {
-	if s.hashValid && s.hashOffset == s.lastOffset {
-		return s.h, nil
-	}
-	// Fallback: stream the un-hashed tail through the running CRC.
-	h := s.h
-	buf := make([]byte, 32*1024)
-	r := io.NewSectionReader(s.f, s.hashOffset, s.lastOffset-s.hashOffset)
-	for {
-		n, err := r.Read(buf)
-		if n > 0 {
-			h = crc32.Update(h, snapshotCRCTable, buf[:n])
-		}
-		if err == io.EOF {
-			return h, nil
-		}
-		if err != nil {
-			return 0, err
-		}
-	}
-}
-
-func (s *fileSnapshotWriter) Metadata() *pb.SnapshotMetadata {
-	return s.metadata
-}
-
-func (s *fileSnapshotWriter) Close() error {
-	if s.closed {
-		return nil
-	}
-	s.closed = true
-	return errors.Join(s.f.Close(), os.Remove(s.f.Name()))
-}
-
-func (s *fileSnapshotWriter) Commit() error {
-	if s.closed {
-		return graft.ErrClosed
-	}
-	s.closed = true
-
-	fpath := s.f.Name()
-	fileClosed := false
-	committed := false
-	defer func() {
-		if committed {
-			return
-		}
-
-		var closeErr error
-		if !fileClosed {
-			closeErr = s.f.Close()
-		}
-		if err := errors.Join(closeErr, os.Remove(fpath)); err != nil {
-			s.b.logger.Error("Failed to close and/or delete snapshot file", zap.Error(err))
-		}
-	}()
-
-	if err := s.f.Sync(); err != nil {
-		return err
-	}
-
-	checksum, err := s.computeChecksum()
-	if err != nil {
-		return err
-	}
-
-	fileClosed = true // Even on error: a second Close would only report the file as already closed.
-	if err := s.f.Close(); err != nil {
-		return err
-	}
-
-	s.b.snapshotMut.Lock()
-	defer s.b.snapshotMut.Unlock()
-
-	// Reject snapshot if it moves backwards.
-	prevMetadata, err := s.b.LastSnapshotMetadata()
-	if err != nil {
-		return err
-	}
-	if prevMetadata != nil && s.metadata.LastIncludedIndex <= prevMetadata.LastIncludedIndex {
-		return graft.ErrSnapOutOfDate
-	}
-
-	committedFpath := path.Join(s.b.dir, graft.SnapshotFilename(s.metadata))
-	if err := os.Rename(fpath, committedFpath); err != nil {
-		return err
-	}
-	fpath = committedFpath
-
-	s.metadata.Size = s.lastOffset
-	s.metadata.Checksum = checksum
-	if err := s.b.saveSnapshotMetadata(s.metadata); err != nil {
-		return err
-	}
-	committed = true
-
-	// Delete previous snapshot.
-	if prevMetadata != nil {
-		if err := os.Remove(path.Join(s.b.dir, graft.SnapshotFilename(prevMetadata))); err != nil {
-			s.b.logger.Error("Failed to delete previous snapshot file", zap.Error(err))
-		}
-	}
-
-	return nil
+	return b.snapshots.Open(metadata)
 }
 
 func (b *badgerPersistence) saveSnapshotMetadata(metadata *pb.SnapshotMetadata) error {
@@ -572,15 +415,7 @@ func (b *badgerPersistence) saveSnapshotMetadata(metadata *pb.SnapshotMetadata) 
 }
 
 func (b *badgerPersistence) CreateSnapshot(metadata *pb.SnapshotMetadata) (graft.SnapshotWriter, error) {
-	// Named uniquely: two writers can hold the same metadata, e.g. a local snapshot and one installed by the leader.
-	f, err := os.CreateTemp(b.dir, graft.SnapshotFilename(metadata)+".*")
-	if err != nil {
-		return nil, err
-	}
-	if err := f.Chmod(0644); err != nil {
-		return nil, errors.Join(err, f.Close(), os.Remove(f.Name()))
-	}
-	return &fileSnapshotWriter{b: b, f: f, metadata: metadata, hashValid: true}, nil
+	return b.snapshots.Create(metadata)
 }
 
 func (b *badgerPersistence) Close() error {

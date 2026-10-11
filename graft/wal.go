@@ -125,6 +125,7 @@ type wal struct {
 	cache                *entryCache
 	mut                  sync.RWMutex
 	logger               *zap.SugaredLogger
+	snapshots            *FileSnapshotter
 }
 
 type segment struct {
@@ -406,11 +407,11 @@ func (s *segment) truncateEntriesTo(index int64) (removeHead bool, err error) {
 	// Close, do atomic replace, re-open.
 
 	if err := s.close(); err != nil {
-		return false, removeOnErr(tempNewFpath, closeOnErr(tempF, err))
+		return false, removeOnErr(tempNewFpath, err)
 	}
 
 	if err := os.Rename(tempNewFpath, newFpath); err != nil {
-		return false, removeOnErr(tempNewFpath, closeOnErr(tempF, err))
+		return false, removeOnErr(tempNewFpath, err)
 	}
 
 	s.entryOffsets = s.entryOffsets[localIndex+1:]
@@ -513,7 +514,12 @@ func openWal(options WalOptions) (*wal, error) {
 		memoryMapped: options.MemoryMapped,
 		logger:       options.Logger.With(zap.String("name", "WAL")).Sugar(),
 	}
-
+	w.snapshots = NewFileSnapshotter(options.Dir, &w.mut, func() (*pb.SnapshotMetadata, error) {
+		if w.closed {
+			return nil, ErrClosed
+		}
+		return w.lastSnapshotMetadata, nil
+	}, w.saveSnapshotMetadata, w.logger.Desugar())
 	w.trailerRecord = w.appendRecordTo(nil, trailerRecordType, &pb.WalSegmentTrailer{Magic: walMagic})
 
 	// Find segments.
@@ -1223,182 +1229,11 @@ func (w *wal) LastSnapshotMetadata() (*pb.SnapshotMetadata, error) {
 }
 
 func (w *wal) OpenSnapshot(metadata *pb.SnapshotMetadata) (Snapshot, error) {
-	w.mut.RLock()
-	defer w.mut.RUnlock()
-
-	if w.closed {
-		return nil, ErrClosed
-	}
-
-	myMetadata := w.lastSnapshotMetadata
-	if myMetadata == nil {
-		return nil, ErrNoSuchSnapshot
-	}
-	if metadata.LastIncludedIndex != myMetadata.LastIncludedIndex ||
-			metadata.LastIncludedTerm != myMetadata.LastIncludedTerm {
-		return nil, ErrNoSuchSnapshot
-	}
-	return NewFileSnapshot(metadata, path.Join(w.dir, SnapshotFilename(metadata)))
+	return w.snapshots.Open(metadata)
 }
 
 func (w *wal) CreateSnapshot(metadata *pb.SnapshotMetadata) (SnapshotWriter, error) {
-	// We'll only need the exclusive lock when the snapshot is committed.
-	w.mut.RLock()
-	defer w.mut.RUnlock()
-
-	if w.closed {
-		return nil, ErrClosed
-	}
-
-	// Named uniquely: two writers can hold the same metadata, e.g. a local snapshot and one installed by the leader.
-	f, err := os.CreateTemp(w.dir, SnapshotFilename(metadata)+".*")
-	if err != nil {
-		return nil, err
-	}
-	if err := f.Chmod(0644); err != nil {
-		return nil, errors.Join(err, f.Close(), os.Remove(f.Name()))
-	}
-	return &fileSnapshotWriter{w: w, metadata: metadata, f: f, hashValid: true}, nil
-}
-
-type fileSnapshotWriter struct {
-	w          *wal
-	f          *os.File
-	metadata   *pb.SnapshotMetadata
-	lastOffset int64
-	closed     bool
-	h          uint32 // running CRC32-Castagnoli; only valid when hashValid is true
-	hashOffset int64  // how far h covers; advances only on sequential writes
-	hashValid  bool
-}
-
-func (s *fileSnapshotWriter) WriteAt(p []byte, off int64) (n int, err error) {
-	if s.closed {
-		return 0, ErrClosed
-	}
-
-	if off < 0 || off > s.lastOffset {
-		return 0, ErrOffsetOutOfRange
-	}
-	n, err = s.f.WriteAt(p, off)
-	if err == nil {
-		s.lastOffset = max(s.lastOffset, off+int64(n))
-		if s.hashValid {
-			if off == s.hashOffset {
-				s.h = crc32.Update(s.h, s.w.crcTable, p[:n])
-				s.hashOffset += int64(n)
-			} else {
-				s.hashValid = false
-			}
-		}
-	}
-	return
-}
-
-func (s *fileSnapshotWriter) computeChecksum() (uint32, error) {
-	if s.hashValid && s.hashOffset == s.lastOffset {
-		return s.h, nil
-	}
-
-	// Fallback: stream the un-hashed tail through the running CRC.
-	h := s.h
-	r := newBufferedReader(io.NewSectionReader(s.f, s.hashOffset, s.lastOffset-s.hashOffset))
-	buf := make([]byte, bufferSize)
-	for {
-		n, err := r.Read(buf)
-		if n > 0 {
-			h = crc32.Update(h, s.w.crcTable, buf[:n])
-		}
-		if err == io.EOF {
-			return h, nil
-		}
-		if err != nil {
-			return 0, err
-		}
-	}
-}
-
-func (s *fileSnapshotWriter) Metadata() *pb.SnapshotMetadata {
-	return s.metadata
-}
-
-func (s *fileSnapshotWriter) Close() error {
-	if s.closed {
-		return nil
-	}
-	s.closed = true
-	return errors.Join(s.f.Close(), os.Remove(s.f.Name()))
-}
-
-func (s *fileSnapshotWriter) Commit() error {
-	if s.closed {
-		return ErrClosed
-	}
-	s.closed = true
-
-	fpath := s.f.Name()
-	fileClosed := false
-	committed := false
-	defer func() {
-		if committed {
-			return
-		}
-
-		var closeErr error
-		if !fileClosed {
-			closeErr = s.f.Close()
-		}
-		if err := errors.Join(closeErr, os.Remove(fpath)); err != nil {
-			s.w.logger.Error("Failed to close and/or delete snapshot file", zap.Error(err))
-		}
-	}()
-
-	if err := s.f.Sync(); err != nil {
-		return err
-	}
-
-	checksum, err := s.computeChecksum()
-	if err != nil {
-		return err
-	}
-
-	fileClosed = true // Even on error: a second Close would only report the file as already closed.
-	if err := s.f.Close(); err != nil {
-		return err
-	}
-
-	s.w.mut.Lock()
-	defer s.w.mut.Unlock()
-
-	// Reject snapshot if it moves backwards.
-	prevMetadata := s.w.lastSnapshotMetadata
-	if prevMetadata != nil && s.metadata.LastIncludedIndex <= prevMetadata.LastIncludedIndex {
-		return ErrSnapOutOfDate
-	}
-
-	commitedFpath := path.Join(s.w.dir, SnapshotFilename(s.metadata))
-	if err := os.Rename(fpath, commitedFpath); err != nil {
-		return err
-	}
-	fpath = commitedFpath
-
-	// TODO save SnapshotCommitted record instead of SnapshotMetadata directly.
-
-	s.metadata.Size = s.lastOffset
-	s.metadata.Checksum = checksum
-	if err := s.w.saveSnapshotMetadata(s.metadata); err != nil {
-		return err
-	}
-	committed = true
-
-	// Delete previous snapshot.
-	if prevMetadata != nil {
-		if err := os.Remove(path.Join(s.w.dir, SnapshotFilename(prevMetadata))); err != nil {
-			s.w.logger.Error("Failed to delete previous snapshot file", zap.Error(err))
-		}
-	}
-
-	return nil
+	return w.snapshots.Create(metadata)
 }
 
 func (w *wal) findSegment(entryIndex int64) int {

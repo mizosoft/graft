@@ -3,17 +3,16 @@ package graft
 import (
 	"errors"
 	"fmt"
+	"os"
+	"path"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/mizosoft/graft/pb"
 	"google.golang.org/protobuf/proto"
 	"gotest.tools/v3/assert"
 )
-
-// Both Persistence backends must agree on GetEntries' bounds. They did not: wal
-// treats `to` as inclusive, memoryPersistence returned log[from:to]. The apply
-// loop cannot be correct against both, so the contract is pinned on the interface
-// and checked here.
 
 func persistenceBackends(t *testing.T) map[string]Persistence {
 	t.Helper()
@@ -177,21 +176,28 @@ func TestGetEntriesAfterCompaction(t *testing.T) {
 func TestSnapshotCommitRejectsOlder(t *testing.T) {
 	for name, p := range persistenceBackends(t) {
 		t.Run(name, func(t *testing.T) {
+			older, err := p.CreateSnapshot(&pb.SnapshotMetadata{LastIncludedIndex: 3, LastIncludedTerm: 1})
+			assert.NilError(t, err)
+			_, err = older.WriteAt([]byte("three"), 0)
+			assert.NilError(t, err)
+
 			assert.NilError(t, commitSnapshot(p, 5, "five"))
-			assert.ErrorIs(t, commitSnapshot(p, 3, "three"), ErrSnapOutOfDate)
+			assert.ErrorIs(t, older.Commit(), ErrSnapshotOutOfDate)
 			assertCurrentSnapshot(t, p, 5, "five")
 		})
 	}
 }
 
-// Same index means same name on disk, so committing it would replace the current file and then delete it as the
-// predecessor.
-func TestSnapshotCommitRejectsSameIndex(t *testing.T) {
+// A snapshot that isn't newer than the current one would be rejected on commit, so it isn't written at all.
+func TestSnapshotCreateRejectsNotNewer(t *testing.T) {
 	for name, p := range persistenceBackends(t) {
 		t.Run(name, func(t *testing.T) {
-			assert.NilError(t, commitSnapshot(p, 5, "first"))
-			assert.ErrorIs(t, commitSnapshot(p, 5, "second"), ErrSnapOutOfDate)
-			assertCurrentSnapshot(t, p, 5, "first")
+			assert.NilError(t, commitSnapshot(p, 5, "five"))
+			for _, index := range []int64{3, 5} {
+				_, err := p.CreateSnapshot(&pb.SnapshotMetadata{LastIncludedIndex: index, LastIncludedTerm: 1})
+				assert.ErrorIs(t, err, ErrSnapshotOutOfDate)
+			}
+			assertCurrentSnapshot(t, p, 5, "five")
 		})
 	}
 }
@@ -212,8 +218,27 @@ func TestSnapshotWritersWithSameMetadataCoexist(t *testing.T) {
 			assert.NilError(t, err)
 
 			assert.NilError(t, w1.Commit())
-			assert.ErrorIs(t, w2.Commit(), ErrSnapOutOfDate)
+			assert.ErrorIs(t, w2.Commit(), ErrSnapshotOutOfDate)
 			assertCurrentSnapshot(t, p, 5, "one")
+		})
+	}
+}
+
+// A write can jump back over bytes written already, and the snapshot reads back as finally written.
+func TestSnapshotWritesCanJumpBack(t *testing.T) {
+	for name, p := range persistenceBackends(t) {
+		t.Run(name, func(t *testing.T) {
+			writer, err := p.CreateSnapshot(&pb.SnapshotMetadata{LastIncludedIndex: 1, LastIncludedTerm: 1})
+			assert.NilError(t, err)
+			for _, write := range []struct {
+				data string
+				off  int64
+			}{{"aaaa", 0}, {"bbbb", 4}, {"cc", 2}} {
+				_, err := writer.WriteAt([]byte(write.data), write.off)
+				assert.NilError(t, err)
+			}
+			assert.NilError(t, writer.Commit())
+			assertCurrentSnapshot(t, p, 1, "aaccbbbb")
 		})
 	}
 }
@@ -228,7 +253,7 @@ func TestConcurrentSnapshotCommitsLeaveNewestCurrent(t *testing.T) {
 			}
 			for range n {
 				if err := <-errs; err != nil {
-					assert.ErrorIs(t, err, ErrSnapOutOfDate)
+					assert.ErrorIs(t, err, ErrSnapshotOutOfDate)
 				}
 			}
 			assertCurrentSnapshot(t, p, n-1, fmt.Sprint(n-1))
@@ -279,4 +304,106 @@ func TestConcurrentLogAccess(t *testing.T) {
 			}
 		})
 	}
+}
+
+// getMetadata runs under the lock, and commitMetadata under the write lock, on commit and on open alike, so a commit
+// can't delete a file between Open's check and its open.
+func TestFileSnapshotterCallsBackUnderLock(t *testing.T) {
+	var mut sync.RWMutex
+	var current *pb.SnapshotMetadata
+	files := NewFileSnapshotter(t.TempDir(), &mut, func() (*pb.SnapshotMetadata, error) {
+		if mut.TryLock() {
+			mut.Unlock()
+			t.Error("got metadata without the lock")
+		}
+		return current, nil
+	}, func(metadata *pb.SnapshotMetadata) error {
+		if mut.TryRLock() {
+			mut.RUnlock()
+			t.Error("committed metadata without the write lock")
+		}
+		current = metadata
+		return nil
+	}, nil)
+
+	metadata := &pb.SnapshotMetadata{LastIncludedIndex: 1, LastIncludedTerm: 1}
+	writer, err := files.Create(metadata)
+	assert.NilError(t, err)
+	_, err = writer.WriteAt([]byte("abc"), 0)
+	assert.NilError(t, err)
+	assert.NilError(t, writer.Commit())
+
+	snapshot, err := files.Open(metadata)
+	assert.NilError(t, err)
+	defer snapshot.Close()
+	data, err := snapshot.ReadAll()
+	assert.NilError(t, err)
+	assert.Equal(t, string(data), "abc")
+}
+
+// Create and Open only read the metadata, so they don't wait for the Persistence's own readers.
+func TestFileSnapshotterSharesTheLockWithReaders(t *testing.T) {
+	var mut sync.RWMutex
+	files := NewFileSnapshotter(t.TempDir(), &mut, func() (*pb.SnapshotMetadata, error) { return nil, nil },
+		func(*pb.SnapshotMetadata) error { return nil }, nil)
+	metadata := &pb.SnapshotMetadata{LastIncludedIndex: 1, LastIncludedTerm: 1}
+
+	mut.RLock()
+	defer mut.RUnlock()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if writer, err := files.Create(metadata); assert.Check(t, err) {
+			assert.Check(t, writer.Close())
+		}
+		_, err := files.Open(metadata)
+		assert.Check(t, errors.Is(err, ErrNoSuchSnapshot))
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Create or Open waited for a reader")
+	}
+}
+
+// Only snapshots being written end in .tmp, so they can't be mistaken for the current one.
+func TestFileSnapshotterFileNames(t *testing.T) {
+	dir := t.TempDir()
+	files := NewFileSnapshotter(dir, &sync.RWMutex{}, func() (*pb.SnapshotMetadata, error) { return nil, nil },
+		func(*pb.SnapshotMetadata) error { return nil }, nil)
+	names := func() []string {
+		entries, err := os.ReadDir(dir)
+		assert.NilError(t, err)
+		var names []string
+		for _, entry := range entries {
+			names = append(names, entry.Name())
+		}
+		return names
+	}
+
+	writer, err := files.Create(&pb.SnapshotMetadata{LastIncludedIndex: 1, LastIncludedTerm: 2})
+	assert.NilError(t, err)
+	assert.DeepEqual(t, names(), []string{"snap_1_2.1.tmp"})
+	assert.NilError(t, writer.Commit())
+	assert.DeepEqual(t, names(), []string{"snap_1_2.snap"})
+}
+
+// Snapshot files are created like segments: with os.Create's mode, under the umask.
+func TestSnapshotFilesAreCreatedLikeSegments(t *testing.T) {
+	dir := t.TempDir()
+	files := NewFileSnapshotter(dir, &sync.RWMutex{}, func() (*pb.SnapshotMetadata, error) { return nil, nil },
+		func(*pb.SnapshotMetadata) error { return nil }, nil)
+	metadata := &pb.SnapshotMetadata{LastIncludedIndex: 1, LastIncludedTerm: 1}
+	writer, err := files.Create(metadata)
+	assert.NilError(t, err)
+	assert.NilError(t, writer.Commit())
+
+	ref, err := os.Create(path.Join(dir, "ref"))
+	assert.NilError(t, err)
+	assert.NilError(t, ref.Close())
+	want, err := os.Stat(ref.Name())
+	assert.NilError(t, err)
+	got, err := os.Stat(path.Join(dir, snapshotFilename(metadata)))
+	assert.NilError(t, err)
+	assert.Equal(t, got.Mode().Perm(), want.Mode().Perm())
 }

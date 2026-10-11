@@ -1016,7 +1016,7 @@ func TestWalDiscardedSnapshotAfterCommittedSnapshot(t *testing.T) {
 
 			metadata2 := cloneMsg(metadata1)
 			metadata2.LastIncludedIndex, metadata2.LastIncludedTerm = 2, 2
-			writer2, err := w.CreateSnapshot(metadata1)
+			writer2, err := w.CreateSnapshot(metadata2)
 			assert.NilError(t, err)
 
 			n, err = writer2.WriteAt([]byte("bde"), 0)
@@ -1147,7 +1147,7 @@ func TestWalSnapshotChecksumVerifiedOnReadAll(t *testing.T) {
 			assert.NilError(t, writer.Commit())
 
 			// Corrupt the snapshot file.
-			snapPath := path.Join(dir, SnapshotFilename(metadata))
+			snapPath := path.Join(dir, snapshotFilename(metadata))
 			f, err := os.OpenFile(snapPath, os.O_RDWR, 0644)
 			assert.NilError(t, err)
 			_, err = f.WriteAt([]byte{0xFF}, 0)
@@ -1183,7 +1183,7 @@ func TestWalSnapshotChecksumVerifiedOnReader(t *testing.T) {
 			assert.NilError(t, writer.Commit())
 
 			// Corrupt the snapshot file.
-			snapPath := path.Join(dir, SnapshotFilename(metadata))
+			snapPath := path.Join(dir, snapshotFilename(metadata))
 			f, err := os.OpenFile(snapPath, os.O_RDWR, 0644)
 			assert.NilError(t, err)
 			_, err = f.WriteAt([]byte{0xFF}, 0)

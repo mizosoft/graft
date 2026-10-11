@@ -7,24 +7,27 @@ import (
 	"hash/crc32"
 	"io"
 	"os"
+	"path"
 	"slices"
 	"sync"
+	"sync/atomic"
 
 	"github.com/mizosoft/graft/pb"
+	"go.uber.org/zap"
 )
 
 var (
-	ErrClosed           = errors.New("closed")
-	ErrLargeRecord      = errors.New("record is too large")
-	ErrCorrupt          = errors.New("log is corrupt")
-	ErrOffsetOutOfRange = errors.New("offset out of range")
-	ErrNoSuchSnapshot   = errors.New("no such snapshot")
-	ErrSnapOutOfDate    = errors.New("snapshot is out of date")
-	ErrCompacted        = errors.New("index is compacted")
+	ErrClosed            = errors.New("closed")
+	ErrLargeRecord       = errors.New("record is too large")
+	ErrCorrupt           = errors.New("log is corrupt")
+	ErrOffsetOutOfRange  = errors.New("offset out of range")
+	ErrNoSuchSnapshot    = errors.New("no such snapshot")
+	ErrSnapshotOutOfDate = errors.New("snapshot is out of date")
+	ErrCompacted         = errors.New("index is compacted")
 )
 
-// CheckRange checks an entry range. ErrCompacted is returned if the range starts before first, a panic occurs if it's
-// invalid or ends past last. For an empty log, first is where it continues and last is first - 1.
+// CheckRange checks an entry range given log bounds. ErrCompacted is returned if the range starts before first, a panic
+// occurs if it's invalid or ends past last. For an empty log, first indicates next index, and last is first-1.
 func CheckRange(from, to, first, last int64) error {
 	if from < 0 || from > to {
 		panic(fmt.Sprintf("invalid index range [%d, %d]", from, to))
@@ -52,7 +55,7 @@ type Persistence interface {
 	TruncateEntriesFrom(index int64) error
 
 	// TruncateEntriesTo compacts the entries up to the given index. An index before the first entry does nothing, and one
-	// past the last compacts them all.
+	// past the last deletes the log.
 	TruncateEntriesTo(index int64) error
 
 	EntryCount() int64
@@ -73,6 +76,8 @@ type Persistence interface {
 
 	OpenSnapshot(metadata *pb.SnapshotMetadata) (Snapshot, error)
 
+	// CreateSnapshot starts writing a snapshot, unless it's not newer than the current one, in which case
+	// ErrSnapshotOutOfDate is returned.
 	CreateSnapshot(metadata *pb.SnapshotMetadata) (SnapshotWriter, error)
 }
 
@@ -92,8 +97,8 @@ type SnapshotWriter interface {
 
 	Metadata() *pb.SnapshotMetadata
 
-	// Commit makes the snapshot the current one, unless it's not newer than the current one, in which case it's discarded
-	// with ErrSnapOutOfDate.
+	// Commit commits the snapshot, unless it's not newer than the current one, in which case it is discarded and
+	// ErrSnapshotOutOfDate is returned
 	Commit() error
 }
 
@@ -290,6 +295,12 @@ func (w *memoryPersistence) OpenSnapshot(metadata *pb.SnapshotMetadata) (Snapsho
 }
 
 func (w *memoryPersistence) CreateSnapshot(metadata *pb.SnapshotMetadata) (SnapshotWriter, error) {
+	w.mut.Lock()
+	defer w.mut.Unlock()
+
+	if current := w.snapshot; current != nil && current.Metadata().LastIncludedIndex >= metadata.LastIncludedIndex {
+		return nil, ErrSnapshotOutOfDate
+	}
 	return &memorySnapshotWriter{m: w, metadata: metadata, buffer: &bytes.Buffer{}}, nil
 }
 
@@ -332,7 +343,7 @@ func (w *memorySnapshotWriter) Commit() error {
 	defer w.m.mut.Unlock()
 
 	if current := w.m.snapshot; current != nil && w.metadata.LastIncludedIndex <= current.Metadata().LastIncludedIndex {
-		return ErrSnapOutOfDate
+		return ErrSnapshotOutOfDate
 	}
 	w.metadata.Size = int64(w.buffer.Len())
 	w.m.snapshot = &memorySnapshot{
@@ -354,16 +365,218 @@ func (w *memoryPersistence) Close() error {
 	return nil
 }
 
-func SnapshotFilename(metadata *pb.SnapshotMetadata) string {
-	return fmt.Sprintf("snap_%d_%d.tmp", metadata.LastIncludedIndex, metadata.LastIncludedTerm)
+// FileSnapshotter manages opening, creating and committing snapshots for a disk-based Persistence that stores snapshots
+// as files in a directory. Saving metadata is left to the Persistence implementation.
+type FileSnapshotter struct {
+	dir            string
+	lock           *sync.RWMutex
+	getMetadata    func() (*pb.SnapshotMetadata, error)
+	commitMetadata func(*pb.SnapshotMetadata) error
+	logger         *zap.Logger
+	tempSeq        atomic.Uint64
 }
 
-func NewFileSnapshot(metadata *pb.SnapshotMetadata, path string) (Snapshot, error) {
-	f, err := os.Open(path)
+// NewFileSnapshotter creates a FileSnapshotter. `getMetadata` and `commitMetadata` are provided by the Persistence to
+// get and commit the current snapshot's metadata respectively. getMetadata is called with the given lock held, for
+// reading at least, and commitMetadata with it held for writing. A nil logger is a no-op.
+func NewFileSnapshotter(
+		dir string, lock *sync.RWMutex, getMetadata func() (*pb.SnapshotMetadata, error),
+		commitMetadata func(*pb.SnapshotMetadata) error, logger *zap.Logger) *FileSnapshotter {
+	if logger == nil {
+		logger = zap.NewNop()
+	}
+	return &FileSnapshotter{
+		dir:            dir,
+		lock:           lock,
+		getMetadata:    getMetadata,
+		commitMetadata: commitMetadata,
+		logger:         logger,
+	}
+}
+
+// Create creates a SnapshotWriter for a snapshot represented by the given metadata, returning ErrSnapshotOutOfDate if
+// the given metadata is not newer than the committed snapshot's metadata.
+func (s *FileSnapshotter) Create(metadata *pb.SnapshotMetadata) (SnapshotWriter, error) {
+	s.lock.RLock()
+	current, err := s.getMetadata()
+	s.lock.RUnlock()
+	if err != nil {
+		return nil, err
+	}
+	if current != nil && current.LastIncludedIndex >= metadata.LastIncludedIndex {
+		return nil, ErrSnapshotOutOfDate
+	}
+
+	// Name snaps uniquely as two writers can hold the same metadata, e.g. a local snapshot and one installed by the leader.
+	name := fmt.Sprintf("snap_%d_%d.%d.tmp", metadata.LastIncludedIndex, metadata.LastIncludedTerm, s.tempSeq.Add(1))
+	f, err := os.Create(path.Join(s.dir, name))
+	if err != nil {
+		return nil, err
+	}
+	return &fileSnapshotWriter{files: s, metadata: metadata, f: f, hashValid: true}, nil
+}
+
+// Open opens the snapshot matching the given metadata, returning ErrNoSuchSnapshot if no such snapshot is found.
+func (s *FileSnapshotter) Open(metadata *pb.SnapshotMetadata) (Snapshot, error) {
+	s.lock.RLock()
+	defer s.lock.RUnlock() // A commit can't delete the file between the check and the open.
+
+	current, err := s.getMetadata()
+	if err != nil {
+		return nil, err
+	}
+	if current == nil || current.LastIncludedIndex != metadata.LastIncludedIndex ||
+			current.LastIncludedTerm != metadata.LastIncludedTerm {
+		return nil, ErrNoSuchSnapshot
+	}
+	f, err := os.Open(path.Join(s.dir, snapshotFilename(metadata)))
 	if err != nil {
 		return nil, err
 	}
 	return &fileSnapshot{f: f, metadata: metadata}, nil
+}
+
+func snapshotFilename(metadata *pb.SnapshotMetadata) string {
+	return fmt.Sprintf("snap_%d_%d.snap", metadata.LastIncludedIndex, metadata.LastIncludedTerm)
+}
+
+type fileSnapshotWriter struct {
+	files      *FileSnapshotter
+	f          *os.File
+	metadata   *pb.SnapshotMetadata
+	lastOffset int64
+	closed     bool
+	h          uint32 // Running CRC32 of [0, lastOffset), only valid when hashValid is true.
+	hashValid  bool   // Set to false when writes jump back.
+}
+
+func (s *fileSnapshotWriter) WriteAt(p []byte, off int64) (n int, err error) {
+	if s.closed {
+		return 0, ErrClosed
+	}
+
+	if off < 0 || off > s.lastOffset {
+		return 0, ErrOffsetOutOfRange
+	}
+	n, err = s.f.WriteAt(p, off)
+	if err == nil {
+		if s.hashValid {
+			if off == s.lastOffset {
+				s.h = crc32.Update(s.h, snapshotCRCTable, p[:n])
+			} else {
+				s.hashValid = false
+			}
+		}
+		s.lastOffset = max(s.lastOffset, off+int64(n))
+	}
+	return
+}
+
+func (s *fileSnapshotWriter) computeChecksum() (uint32, error) {
+	if s.hashValid {
+		return s.h, nil
+	}
+
+	// A write jumped back over hashed bytes, so hash the file again.
+	h := uint32(0)
+	r := newBufferedReader(io.NewSectionReader(s.f, 0, s.lastOffset))
+	buf := make([]byte, bufferSize)
+	for {
+		n, err := r.Read(buf)
+		if n > 0 {
+			h = crc32.Update(h, snapshotCRCTable, buf[:n])
+		}
+		if err == io.EOF {
+			return h, nil
+		}
+		if err != nil {
+			return 0, err
+		}
+	}
+}
+
+func (s *fileSnapshotWriter) Metadata() *pb.SnapshotMetadata {
+	return s.metadata
+}
+
+func (s *fileSnapshotWriter) Close() error {
+	if s.closed {
+		return nil
+	}
+	s.closed = true
+	return errors.Join(s.f.Close(), os.Remove(s.f.Name()))
+}
+
+func (s *fileSnapshotWriter) Commit() error {
+	if s.closed {
+		return ErrClosed
+	}
+	s.closed = true
+
+	fpath := s.f.Name()
+	fileClosed := false
+	committed := false
+	defer func() {
+		if committed {
+			return
+		}
+
+		var closeErr error
+		if !fileClosed {
+			closeErr = s.f.Close()
+		}
+		if err := errors.Join(closeErr, os.Remove(fpath)); err != nil {
+			s.files.logger.Error("Failed to close and/or delete snapshot file", zap.Error(err))
+		}
+	}()
+
+	if err := s.f.Sync(); err != nil {
+		return err
+	}
+
+	checksum, err := s.computeChecksum()
+	if err != nil {
+		return err
+	}
+
+	fileClosed = true // Even on error: a second Close would only report the file as already closed.
+	if err := s.f.Close(); err != nil {
+		return err
+	}
+
+	s.files.lock.Lock()
+	defer s.files.lock.Unlock()
+
+	// Reject snapshot if it moves backwards.
+	prevMetadata, err := s.files.getMetadata()
+	if err != nil {
+		return err
+	}
+	if prevMetadata != nil && s.metadata.LastIncludedIndex <= prevMetadata.LastIncludedIndex {
+		return ErrSnapshotOutOfDate
+	}
+
+	committedFpath := path.Join(s.files.dir, snapshotFilename(s.metadata))
+	if err := os.Rename(fpath, committedFpath); err != nil {
+		return err
+	}
+	fpath = committedFpath
+
+	s.metadata.Size = s.lastOffset
+	s.metadata.Checksum = checksum
+	if err := s.files.commitMetadata(s.metadata); err != nil {
+		return err
+	}
+	committed = true
+
+	// Delete previous snapshot.
+	if prevMetadata != nil {
+		if err := os.Remove(path.Join(s.files.dir, snapshotFilename(prevMetadata))); err != nil {
+			s.files.logger.Error("Failed to delete previous snapshot file", zap.Error(err))
+		}
+	}
+
+	return nil
 }
 
 type fileSnapshot struct {

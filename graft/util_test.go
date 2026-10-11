@@ -2,9 +2,11 @@ package graft
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"os"
 	"path"
+	"strings"
 	"testing"
 
 	"gotest.tools/v3/assert"
@@ -88,3 +90,29 @@ func TestBufferedReaderFallThrough(t *testing.T) {
 	assert.Equal(t, n, 2)
 	assert.Equal(t, string(p[0:2]), "12")
 }
+
+// A failure to close is attached after the error being returned, which comes back as is if closing succeeds, or if the
+// closer is closed already.
+func TestCloseOnErr(t *testing.T) {
+	err := errors.New("primary")
+	assert.Equal(t, closeOnErr(errCloser{}, err), err)
+	assert.Equal(t, closeOnErr(errCloser{errors.New("close failed")}, err).Error(), "primary\nclose failed")
+	closed := &os.PathError{Op: "close", Path: "file", Err: os.ErrClosed}
+	assert.Equal(t, closeOnErr(errCloser{closed}, err), err)
+}
+
+// A failure to remove is attached after the error being returned, which comes back as is if removing succeeds.
+func TestRemoveOnErr(t *testing.T) {
+	err := errors.New("primary")
+	fname := path.Join(t.TempDir(), "file")
+	assert.NilError(t, os.WriteFile(fname, nil, 0644))
+	assert.Equal(t, removeOnErr(fname, err), err)
+
+	joined := removeOnErr(fname, err) // Removed already.
+	assert.ErrorIs(t, joined, os.ErrNotExist)
+	assert.Assert(t, strings.HasPrefix(joined.Error(), "primary\n"), joined.Error())
+}
+
+type errCloser struct{ err error }
+
+func (c errCloser) Close() error { return c.err }

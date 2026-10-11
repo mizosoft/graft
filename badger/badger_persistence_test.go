@@ -645,16 +645,24 @@ func assertCurrentSnapshot(t *testing.T, p graft.Persistence, index int64, data 
 
 func TestSnapshotCommitRejectsOlder(t *testing.T) {
 	p := openTestPersistence(t)
+	older, err := p.CreateSnapshot(&pb.SnapshotMetadata{LastIncludedIndex: 3, LastIncludedTerm: 1})
+	assert.NilError(t, err)
+	_, err = older.WriteAt([]byte("three"), 0)
+	assert.NilError(t, err)
+
 	assert.NilError(t, commitSnapshot(p, 5, "five"))
-	assert.ErrorIs(t, commitSnapshot(p, 3, "three"), graft.ErrSnapOutOfDate)
+	assert.ErrorIs(t, older.Commit(), graft.ErrSnapshotOutOfDate)
 	assertCurrentSnapshot(t, p, 5, "five")
 }
 
-func TestSnapshotCommitRejectsSameIndex(t *testing.T) {
+func TestSnapshotCreateRejectsNotNewer(t *testing.T) {
 	p := openTestPersistence(t)
-	assert.NilError(t, commitSnapshot(p, 5, "first"))
-	assert.ErrorIs(t, commitSnapshot(p, 5, "second"), graft.ErrSnapOutOfDate)
-	assertCurrentSnapshot(t, p, 5, "first")
+	assert.NilError(t, commitSnapshot(p, 5, "five"))
+	for _, index := range []int64{3, 5} {
+		_, err := p.CreateSnapshot(&pb.SnapshotMetadata{LastIncludedIndex: index, LastIncludedTerm: 1})
+		assert.ErrorIs(t, err, graft.ErrSnapshotOutOfDate)
+	}
+	assertCurrentSnapshot(t, p, 5, "five")
 }
 
 func TestSnapshotWritersWithSameMetadataCoexist(t *testing.T) {
@@ -672,8 +680,23 @@ func TestSnapshotWritersWithSameMetadataCoexist(t *testing.T) {
 	assert.NilError(t, err)
 
 	assert.NilError(t, w1.Commit())
-	assert.ErrorIs(t, w2.Commit(), graft.ErrSnapOutOfDate)
+	assert.ErrorIs(t, w2.Commit(), graft.ErrSnapshotOutOfDate)
 	assertCurrentSnapshot(t, p, 5, "one")
+}
+
+func TestSnapshotWritesCanJumpBack(t *testing.T) {
+	p := openTestPersistence(t)
+	writer, err := p.CreateSnapshot(&pb.SnapshotMetadata{LastIncludedIndex: 1, LastIncludedTerm: 1})
+	assert.NilError(t, err)
+	for _, write := range []struct {
+		data string
+		off  int64
+	}{{"aaaa", 0}, {"bbbb", 4}, {"cc", 2}} {
+		_, err := writer.WriteAt([]byte(write.data), write.off)
+		assert.NilError(t, err)
+	}
+	assert.NilError(t, writer.Commit())
+	assertCurrentSnapshot(t, p, 1, "aaccbbbb")
 }
 
 func TestConcurrentSnapshotCommitsLeaveNewestCurrent(t *testing.T) {
@@ -686,7 +709,7 @@ func TestConcurrentSnapshotCommitsLeaveNewestCurrent(t *testing.T) {
 	}
 	for range n {
 		if err := <-errs; err != nil {
-			assert.ErrorIs(t, err, graft.ErrSnapOutOfDate)
+			assert.ErrorIs(t, err, graft.ErrSnapshotOutOfDate)
 		}
 	}
 	assertCurrentSnapshot(t, p, n-1, fmt.Sprint(n-1))

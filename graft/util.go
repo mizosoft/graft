@@ -2,12 +2,14 @@ package graft
 
 import (
 	"errors"
+	"fmt"
 	"hash/crc32"
 	"io"
 	"log"
 	"os"
 	"sync"
 
+	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -132,17 +134,23 @@ func protoUnmarshal(data []byte, msg proto.Message) {
 func removeOnErr(fname string, currErr error) error {
 	err := os.Remove(fname)
 	if err != nil {
-		return errors.Join(err, currErr)
+		return errors.Join(currErr, err)
 	}
 	return currErr
 }
 
 func closeOnErr(closer io.Closer, curErr error) error {
-	err := closer.Close()
-	if err != nil {
-		return errors.Join(err, curErr)
+	// Being closed already, e.g. by the step that failed, isn't a failure to report.
+	if err := closer.Close(); err != nil && !errors.Is(err, os.ErrClosed) {
+		return errors.Join(curErr, err)
 	}
 	return curErr
+}
+
+func closeQuietly(closer io.Closer, logger *zap.SugaredLogger) {
+	if err := closer.Close(); err != nil {
+		logger.Errorw("Error closing", "closer", fmt.Sprintf("%T", closer), zap.Error(err))
+	}
 }
 
 func cloneMsgs[T proto.Message](msgs []T) []T {
