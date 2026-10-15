@@ -48,7 +48,7 @@ type badgerPersistence struct {
 	dir         string
 	closed      bool
 	snapshotMut sync.RWMutex
-	snapshots   *graft.FileSnapshotter
+	snapshotter *graft.FileSnapshotter
 }
 
 func OpenBadgerPersistence(dir string, logger *zap.Logger) (graft.Persistence, error) {
@@ -72,7 +72,11 @@ func OpenBadgerPersistence(dir string, logger *zap.Logger) (graft.Persistence, e
 		dir:    dir,
 		logger: sugaredLogger,
 	}
-	b.snapshots = graft.NewFileSnapshotter(dir, &b.snapshotMut, b.LastSnapshotMetadata, b.saveSnapshotMetadata, logger)
+	b.snapshotter, err = graft.OpenFileSnapshotter(
+			dir, &b.snapshotMut, b.LastSnapshotMetadata, b.saveSnapshotMetadata, logger)
+	if err != nil {
+		return nil, errors.Join(err, db.Close())
+	}
 	return b, nil
 }
 
@@ -397,7 +401,7 @@ func (b *badgerPersistence) LastSnapshotMetadata() (*pb.SnapshotMetadata, error)
 }
 
 func (b *badgerPersistence) OpenSnapshot(metadata *pb.SnapshotMetadata) (graft.Snapshot, error) {
-	return b.snapshots.Open(metadata)
+	return b.snapshotter.Open(metadata)
 }
 
 func (b *badgerPersistence) saveSnapshotMetadata(metadata *pb.SnapshotMetadata) error {
@@ -415,10 +419,11 @@ func (b *badgerPersistence) saveSnapshotMetadata(metadata *pb.SnapshotMetadata) 
 }
 
 func (b *badgerPersistence) CreateSnapshot(metadata *pb.SnapshotMetadata) (graft.SnapshotWriter, error) {
-	return b.snapshots.Create(metadata)
+	return b.snapshotter.Create(metadata)
 }
 
 func (b *badgerPersistence) Close() error {
+	b.snapshotter.Close()
 	return b.db.Close()
 }
 

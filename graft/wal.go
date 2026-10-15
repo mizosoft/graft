@@ -125,7 +125,7 @@ type wal struct {
 	cache                *entryCache
 	mut                  sync.RWMutex
 	logger               *zap.SugaredLogger
-	snapshots            *FileSnapshotter
+	snapshotter          *FileSnapshotter
 }
 
 type segment struct {
@@ -514,12 +514,6 @@ func openWal(options WalOptions) (*wal, error) {
 		memoryMapped: options.MemoryMapped,
 		logger:       options.Logger.With(zap.String("name", "WAL")).Sugar(),
 	}
-	w.snapshots = NewFileSnapshotter(options.Dir, &w.mut, func() (*pb.SnapshotMetadata, error) {
-		if w.closed {
-			return nil, ErrClosed
-		}
-		return w.lastSnapshotMetadata, nil
-	}, w.saveSnapshotMetadata, w.logger.Desugar())
 	w.trailerRecord = w.appendRecordTo(nil, trailerRecordType, &pb.WalSegmentTrailer{Magic: walMagic})
 
 	// Find segments.
@@ -538,6 +532,9 @@ func openWal(options WalOptions) (*wal, error) {
 		if file.IsDir() {
 			w.logger.Warnf("Warning: unexpected directory found in WAL directory: %s", file.Name())
 			continue
+		}
+		if snapshotFilePattern.MatchString(file.Name()) {
+			continue // The FileSnapshotter's.
 		}
 
 		var segNum int
@@ -681,6 +678,16 @@ func openWal(options WalOptions) (*wal, error) {
 		if err := w.appendSegment(); err != nil {
 			return nil, err
 		}
+	}
+
+	w.snapshotter, err = OpenFileSnapshotter(options.Dir, &w.mut, func() (*pb.SnapshotMetadata, error) {
+		if w.closed {
+			return nil, ErrClosed
+		}
+		return w.lastSnapshotMetadata, nil
+	}, w.saveSnapshotMetadata, w.logger.Desugar())
+	if err != nil {
+		return nil, err
 	}
 	allGood = true
 	return w, nil
@@ -1204,6 +1211,7 @@ func (w *wal) Close() error {
 		return ErrClosed
 	}
 
+	w.snapshotter.Close()
 	var errs []error
 	for _, s := range w.segments {
 		if err := s.close(); err != nil {
@@ -1229,11 +1237,11 @@ func (w *wal) LastSnapshotMetadata() (*pb.SnapshotMetadata, error) {
 }
 
 func (w *wal) OpenSnapshot(metadata *pb.SnapshotMetadata) (Snapshot, error) {
-	return w.snapshots.Open(metadata)
+	return w.snapshotter.Open(metadata)
 }
 
 func (w *wal) CreateSnapshot(metadata *pb.SnapshotMetadata) (SnapshotWriter, error) {
-	return w.snapshots.Create(metadata)
+	return w.snapshotter.Create(metadata)
 }
 
 func (w *wal) findSegment(entryIndex int64) int {

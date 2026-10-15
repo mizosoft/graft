@@ -699,6 +699,35 @@ func TestSnapshotWritesCanJumpBack(t *testing.T) {
 	assertCurrentSnapshot(t, p, 1, "aaccbbbb")
 }
 
+func TestSnapshotWritersAreDiscardedByNewerCommits(t *testing.T) {
+	p := openTestPersistence(t)
+	older, err := p.CreateSnapshot(&pb.SnapshotMetadata{LastIncludedIndex: 3, LastIncludedTerm: 1})
+	assert.NilError(t, err)
+	newer, err := p.CreateSnapshot(&pb.SnapshotMetadata{LastIncludedIndex: 7, LastIncludedTerm: 1})
+	assert.NilError(t, err)
+
+	assert.NilError(t, commitSnapshot(p, 5, "five"))
+	_, err = older.WriteAt([]byte("three"), 0)
+	assert.ErrorIs(t, err, graft.ErrSnapshotOutOfDate)
+	assert.ErrorIs(t, older.Commit(), graft.ErrSnapshotOutOfDate)
+
+	_, err = newer.WriteAt([]byte("seven"), 0)
+	assert.NilError(t, err)
+	assert.NilError(t, newer.Commit())
+	assertCurrentSnapshot(t, p, 7, "seven")
+}
+
+func TestSnapshotWritersFailOnceClosed(t *testing.T) {
+	p := openTestPersistence(t)
+	writer, err := p.CreateSnapshot(&pb.SnapshotMetadata{LastIncludedIndex: 1, LastIncludedTerm: 1})
+	assert.NilError(t, err)
+	assert.NilError(t, p.Close())
+
+	_, err = writer.WriteAt([]byte("one"), 0)
+	assert.ErrorIs(t, err, graft.ErrClosed)
+	assert.ErrorIs(t, writer.Commit(), graft.ErrClosed)
+}
+
 func TestConcurrentSnapshotCommitsLeaveNewestCurrent(t *testing.T) {
 	p := openTestPersistence(t)
 
