@@ -8,5 +8,5 @@ use (
 	./services/dlock
 	./services/kvstore
 	./services/msgq
-	./testutil
+	./testing
 )

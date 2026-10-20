@@ -4,7 +4,6 @@ go 1.26.0
 
 require (
 	github.com/edsrzf/mmap-go v1.2.0
-	github.com/mizosoft/graft/testutil v0.0.0-20260417172715-a67699babbbc
 	go.uber.org/zap v1.28.0
 	google.golang.org/grpc v1.80.0
 	google.golang.org/protobuf v1.36.11

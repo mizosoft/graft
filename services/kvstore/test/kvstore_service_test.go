@@ -12,7 +12,7 @@ import (
 	infratesting "github.com/mizosoft/graft/infra/testing"
 	"github.com/mizosoft/graft/kvstore/client"
 	"github.com/mizosoft/graft/kvstore/service"
-	"github.com/mizosoft/graft/testutil"
+	graft_testing "github.com/mizosoft/graft/testing"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"gotest.tools/v3/assert"
@@ -25,12 +25,12 @@ func TestKvServicePut(t *testing.T) {
 	s, exists, err := kvClient.Get("k1")
 	assert.NilError(t, err)
 	assert.Assert(t, !exists)
-	testutil.AssertNil(t, s)
+	graft_testing.AssertNil(t, s)
 
 	s, exists, err = kvClient.Put("k1", "v1")
 	assert.NilError(t, err)
 	assert.Assert(t, !exists)
-	testutil.AssertNil(t, s)
+	graft_testing.AssertNil(t, s)
 
 	s, exists, err = kvClient.Get("k1")
 	assert.NilError(t, err)
@@ -91,12 +91,12 @@ func TestKvServiceDelete(t *testing.T) {
 	s, exists, err := kvClient.Delete("k1")
 	assert.NilError(t, err)
 	assert.Assert(t, !exists)
-	testutil.AssertNil(t, s)
+	graft_testing.AssertNil(t, s)
 
 	s, exists, err = kvClient.Put("k1", "v1")
 	assert.NilError(t, err)
 	assert.Assert(t, !exists)
-	testutil.AssertNil(t, s)
+	graft_testing.AssertNil(t, s)
 
 	s, exists, err = kvClient.Delete("k1")
 	assert.NilError(t, err)
@@ -167,12 +167,12 @@ func TestKvServiceCas(t *testing.T) {
 	ok, s, err := kvClient.Cas("k1", "a", "aa")
 	assert.NilError(t, err)
 	assert.Assert(t, !ok)
-	testutil.AssertNil(t, s)
+	graft_testing.AssertNil(t, s)
 
 	s, exists, err := kvClient.Get("k1")
 	assert.NilError(t, err)
 	assert.Assert(t, !exists)
-	testutil.AssertNil(t, s)
+	graft_testing.AssertNil(t, s)
 
 	ok, s, err = kvClient.Cas("k1", "", "a")
 	assert.NilError(t, err)

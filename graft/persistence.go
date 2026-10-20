@@ -50,6 +50,8 @@ type Persistence interface {
 
 	SaveState(state *pb.PersistedState) error
 
+	// Append appends entries to the log and returns the index the next one will take. If not nil, the given state will be
+	// saved to replace the current one (if any).
 	Append(state *pb.PersistedState, entries []*pb.LogEntry) (int64, error)
 
 	// TruncateEntriesFrom removes the entries from given index to the end of the log. It returns ErrCompacted for an
@@ -159,7 +161,9 @@ func (w *memoryPersistence) Append(state *pb.PersistedState, entries []*pb.LogEn
 	w.mut.Lock()
 	defer w.mut.Unlock()
 
-	w.state = state
+	if state != nil {
+		w.state = state
+	}
 	for _, entry := range entries {
 		entry.Index = w.nextIndex
 		w.nextIndex++
@@ -291,7 +295,7 @@ func (w *memoryPersistence) OpenSnapshot(metadata *pb.SnapshotMetadata) (Snapsho
 		return nil, ErrNoSuchSnapshot
 	}
 	if metadata.LastIncludedIndex != w.snapshot.Metadata().LastIncludedIndex ||
-			metadata.LastIncludedTerm != w.snapshot.Metadata().LastIncludedTerm {
+		metadata.LastIncludedTerm != w.snapshot.Metadata().LastIncludedTerm {
 		return nil, ErrNoSuchSnapshot
 	}
 	return w.snapshot, nil
@@ -422,8 +426,8 @@ type FileSnapshotter struct {
 // current, left by writes that never committed or deletes that failed, are removed. If the current snapshot's file is
 // missing, an error is returned.
 func OpenFileSnapshotter(
-		dir string, lock *sync.RWMutex, getMetadata func() (*pb.SnapshotMetadata, error),
-		commitMetadata func(*pb.SnapshotMetadata) error, logger *zap.Logger) (*FileSnapshotter, error) {
+	dir string, lock *sync.RWMutex, getMetadata func() (*pb.SnapshotMetadata, error),
+	commitMetadata func(*pb.SnapshotMetadata) error, logger *zap.Logger) (*FileSnapshotter, error) {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
@@ -507,7 +511,7 @@ func (s *FileSnapshotter) Open(metadata *pb.SnapshotMetadata) (Snapshot, error) 
 		return nil, err
 	}
 	if current == nil || current.LastIncludedIndex != metadata.LastIncludedIndex ||
-			current.LastIncludedTerm != metadata.LastIncludedTerm {
+		current.LastIncludedTerm != metadata.LastIncludedTerm {
 		return nil, ErrNoSuchSnapshot
 	}
 	f, err := openSnapshotFile(path.Join(s.dir, snapshotFilename(metadata)))

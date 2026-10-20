@@ -42,7 +42,7 @@ dlock/       Distributed read-write lock
 msgq/        Distributed message queue
 badger/      Persistence layer (BadgerDB-backed)
 benchmarks/  Performance benchmarks
-testutil/    Shared test utilities
+testing/     Shared test utilities
 ```
 
 ## License

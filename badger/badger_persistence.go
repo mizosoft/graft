@@ -110,8 +110,10 @@ func (b *badgerPersistence) SaveState(state *pb.PersistedState) error {
 }
 
 func (b *badgerPersistence) Append(state *pb.PersistedState, entries []*pb.LogEntry) (int64, error) {
-	if err := b.SaveState(state); err != nil {
-		return 0, err
+	if state != nil {
+		if err := b.SaveState(state); err != nil {
+			return 0, err
+		}
 	}
 
 	if len(entries) == 0 {
