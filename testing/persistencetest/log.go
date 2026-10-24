@@ -2,7 +2,6 @@ package persistencetest
 
 import (
 	"errors"
-	"strings"
 	"testing"
 
 	"github.com/mizosoft/graft"
@@ -119,18 +118,7 @@ func testTruncateEntriesFromDropsTheTail(t *testing.T, factory *persistenceFacto
 func testTruncateEntriesToCompactsTheHead(t *testing.T, factory *persistenceFactory) {
 	p := factory.open()
 	const count = 100
-	entries := make([]*pb.LogEntry, count)
-	for i := range entries {
-		entries[i] = &pb.LogEntry{
-			Index: int64(i),
-			Term:  int64(i + 1),
-			Type:  pb.LogEntry_Type(i % 3),
-			Data:  []byte(strings.Repeat("a", i*7%64)),
-		}
-		next, err := p.Append(appendState, []*pb.LogEntry{proto.CloneOf(entries[i])})
-		assert.NilError(t, err)
-		assert.Equal(t, next, int64(i+1))
-	}
+	entries := appendEach(t, p, count)
 
 	for i := int64(0); i < count-1; i++ {
 		assert.NilError(t, p.TruncateEntriesTo(i))

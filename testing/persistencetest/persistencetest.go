@@ -74,6 +74,8 @@ var tests = []struct {
 	{"ConcurrentCommitsLeaveTheNewestCurrent", testConcurrentCommitsLeaveTheNewestCurrent},
 	{"EmptyPersistenceReopensEmpty", testEmptyPersistenceReopensEmpty},
 	{"StateAndLogSurviveReopening", testStateAndLogSurviveReopening},
+	{"ReopenedLogReadsAndCompactsByIndex", testReopenedLogReadsAndCompactsByIndex},
+	{"ReopenedLogTruncatesAndAppends", testReopenedLogTruncatesAndAppends},
 	{"AppendWithoutStateSurvivesReopening", testAppendWithoutStateSurvivesReopening},
 	{"StateSurvivesEmptyingTheLog", testStateSurvivesEmptyingTheLog},
 	{"CompactionSurvivesReopening", testCompactionSurvivesReopening},
@@ -125,6 +127,47 @@ func appendEntries(t *testing.T, p graft.Persistence, count int) (first int64, e
 		entry.Index = first + int64(i)
 	}
 	return first, entries
+}
+
+// appendEach appends count entries to a fresh log one Append at a time, each with a term, type and size of its own, and
+// returns them as they should read back.
+func appendEach(t *testing.T, p graft.Persistence, count int) []*pb.LogEntry {
+	t.Helper()
+	entries := make([]*pb.LogEntry, count)
+	for i := range entries {
+		entries[i] = &pb.LogEntry{
+			Index: int64(i),
+			Term:  int64(i + 1),
+			Type:  pb.LogEntry_Type(i % 3),
+			Data:  []byte(strings.Repeat("a", i*7%64)),
+		}
+		next, err := p.Append(appendState, []*pb.LogEntry{proto.CloneOf(entries[i])})
+		assert.NilError(t, err)
+		assert.Equal(t, next, int64(i+1))
+	}
+	return entries
+}
+
+// assertReadsByIndex asserts that the log holds exactly entries, read from and at each of their indexes.
+func assertReadsByIndex(t *testing.T, p graft.Persistence, entries []*pb.LogEntry) {
+	t.Helper()
+	last := entries[len(entries)-1].Index
+	assertLogHolds(t, p, entries[0].Index, last)
+	for i, entry := range entries {
+		got, err := p.GetEntriesFrom(entry.Index)
+		assert.NilError(t, err)
+		assertEntries(t, got, entries[i:])
+		end := min(entry.Index+2, last)
+		got, err = p.GetEntries(entry.Index, end)
+		assert.NilError(t, err)
+		assertEntries(t, got, entries[i:i+int(end-entry.Index)+1])
+		single, err := p.GetEntry(entry.Index)
+		assert.NilError(t, err)
+		assertEntries(t, []*pb.LogEntry{single}, entries[i:i+1])
+		term, err := p.GetEntryTerm(entry.Index)
+		assert.NilError(t, err)
+		assert.Equal(t, term, entry.Term)
+	}
 }
 
 // assertEntries asserts that got holds want's entries, field for field.

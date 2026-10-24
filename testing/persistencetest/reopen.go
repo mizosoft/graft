@@ -39,6 +39,37 @@ func testStateAndLogSurviveReopening(t *testing.T, factory *persistenceFactory) 
 	assertEntries(t, got, entries)
 }
 
+// A reopened log reads each entry from and at its index, and compacts as before.
+func testReopenedLogReadsAndCompactsByIndex(t *testing.T, factory *persistenceFactory) {
+	p := factory.open()
+	entries := appendEach(t, p, 100)
+	assert.NilError(t, p.Close())
+
+	p = factory.open()
+	assertReadsByIndex(t, p, entries)
+	assert.NilError(t, p.TruncateEntriesTo(9))
+	assertReadsByIndex(t, p, entries[10:])
+}
+
+// A reopened log truncates and appends as before, and what's left survives reopening again.
+func testReopenedLogTruncatesAndAppends(t *testing.T, factory *persistenceFactory) {
+	p := factory.open()
+	entries := appendEach(t, p, 100)
+	assert.NilError(t, p.Close())
+
+	p = factory.open()
+	assert.NilError(t, p.TruncateEntriesFrom(50))
+	next, more := appendEntries(t, p, 3)
+	assert.Equal(t, next, int64(50))
+	want := append(entries[:50:50], more...)
+	assertReadsByIndex(t, p, want)
+	assert.NilError(t, p.Close())
+
+	p = factory.open()
+	assertState(t, p, appendState)
+	assertReadsByIndex(t, p, want)
+}
+
 // Entries appended with no state reopen with no state saved, rather than an empty one.
 func testAppendWithoutStateSurvivesReopening(t *testing.T, factory *persistenceFactory) {
 	p := factory.open()

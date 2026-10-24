@@ -126,7 +126,7 @@ func TestWalCorruptedCRC(t *testing.T) {
 			fileData, err := os.ReadFile(filePath)
 			assert.NilError(t, err)
 
-			fileData[w.tail().lastOffset-1] ^= 0xFF // Flip all bits at the last position.
+			fileData[w.tail().nextOffset-1] ^= 0xFF // Flip all bits at the last position.
 			err = os.WriteFile(filePath, fileData, 0644)
 			assert.NilError(t, err)
 
