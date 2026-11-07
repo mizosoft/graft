@@ -141,6 +141,9 @@ type segment struct {
 	// record is being appended, a new segment is created if appending the record will make nextOffset larger than
 	// w.segmentSize - len(w.trailerRecord).
 	nextOffset int64
+
+	// dirty is set when bytes are written to the segment, and cleared once they're synced.
+	dirty bool
 }
 
 func segFileName(number int, firstIndex int64) string {
@@ -206,6 +209,7 @@ func (s *segment) readBytes(offset int64, count int) ([]byte, error) {
 }
 
 func (s *segment) appendBytes(data []byte) error {
+	s.dirty = true
 	if s.m != nil {
 		if copy(s.m[s.nextOffset:], data) < len(data) {
 			return io.ErrUnexpectedEOF
@@ -217,11 +221,20 @@ func (s *segment) appendBytes(data []byte) error {
 }
 
 func (s *segment) sync() error {
-	if s.m != nil {
-		return s.m.Flush()
-	} else {
-		return s.f.Sync()
+	if !s.dirty {
+		return nil
 	}
+	var err error
+	if s.m != nil {
+		err = s.m.Flush()
+	} else {
+		err = s.f.Sync()
+	}
+	if err != nil {
+		return err
+	}
+	s.dirty = false
+	return nil
 }
 
 func (s *segment) entryCount() int {
@@ -690,7 +703,12 @@ func openWal(options WalOptions) (*wal, error) {
 			return nil, ErrClosed
 		}
 		return w.lastSnapshotMetadata, nil
-	}, w.saveSnapshotMetadata, w.logger.Desugar())
+	}, func(metadata *pb.SnapshotMetadata) error {
+		if err := w.saveSnapshotMetadata(metadata); err != nil {
+			return err
+		}
+		return w.tail().sync()
+	}, w.logger.Desugar())
 	if err != nil {
 		return nil, err
 	}
@@ -737,7 +755,10 @@ func (w *wal) SaveState(state *pb.PersistedState) error {
 	if proto.Equal(state, w.lastState) {
 		return nil
 	}
-	return w.saveState(state)
+	if err := w.saveState(state); err != nil {
+		return err
+	}
+	return w.tail().sync()
 }
 
 func (w *wal) Append(state *pb.PersistedState, entries []*pb.LogEntry) (int64, error) {
@@ -759,7 +780,10 @@ func (w *wal) Append(state *pb.PersistedState, entries []*pb.LogEntry) (int64, e
 	}
 
 	if len(entries) == 0 {
-		return nextIndex, w.saveState(state)
+		if err := w.saveState(state); err != nil {
+			return 0, err
+		}
+		return nextIndex, w.tail().sync()
 	}
 
 	for _, entry := range entries {
@@ -791,9 +815,6 @@ func (w *wal) Append(state *pb.PersistedState, entries []*pb.LogEntry) (int64, e
 				offsets = offsets[:1]
 			}
 
-			if err := w.tail().sync(); err != nil {
-				return 0, err
-			}
 			if err := w.appendSegment(); err != nil {
 				return 0, err
 			}
@@ -819,10 +840,11 @@ func (w *wal) Append(state *pb.PersistedState, entries []*pb.LogEntry) (int64, e
 	}
 
 	if state != nil {
-		if err := w.saveState(state); err != nil { // This will do a sync.
+		if err := w.saveState(state); err != nil {
 			return 0, err
 		}
-	} else if err := w.tail().sync(); err != nil {
+	}
+	if err := w.tail().sync(); err != nil {
 		return 0, err
 	}
 
@@ -834,6 +856,12 @@ func (w *wal) appendSegment() error {
 	firstIndex := int64(0)
 	segNumber := 0
 	if len(w.segments) > 0 {
+		// Make sure older segment is synced before create the new segment file. Otherwise, crash between creating the new
+		// one and syncing the older will create a gap as the name of the new segment indicates what is expected in the
+		// older segment.
+		if err := w.tail().sync(); err != nil {
+			return err
+		}
 		firstIndex = w.tail().nextIndex
 		segNumber = w.tail().number + 1
 	}
@@ -958,7 +986,7 @@ func (w *wal) TruncateEntriesFrom(index int64) error {
 			return err
 		}
 	}
-	return nil
+	return w.tail().sync()
 }
 
 func (w *wal) TruncateEntriesTo(index int64) error {
@@ -1014,7 +1042,7 @@ func (w *wal) TruncateEntriesTo(index int64) error {
 			return err
 		}
 	}
-	return nil
+	return w.tail().sync()
 }
 
 func (w *wal) EntryCount() int64 {
@@ -1299,9 +1327,6 @@ func (w *wal) appendRecord(recordType uint32, msg proto.Message) error {
 		return ErrLargeRecord
 	}
 	if err := w.tail().appendBytes(copyAppend(recordBytes, w.trailerRecord...)); err != nil {
-		return err
-	}
-	if err := w.tail().sync(); err != nil {
 		return err
 	}
 	w.tail().nextOffset += int64(len(recordBytes))

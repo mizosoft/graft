@@ -636,3 +636,81 @@ func TestWalSnapshotCommitFailureAfterRenameLeavesNoFile(t *testing.T) {
 		})
 	}
 }
+
+// Append returns with everything it wrote synced, including segments it moved past, whether its entries or the state
+// saved after them spilled into the next.
+func TestWalAppendLeavesNoSegmentUnsynced(t *testing.T) {
+	for _, memoryMapped := range []bool{false, true} {
+		for _, spill := range []struct {
+			name        string
+			count       int
+			votedFor    string
+			stateSpills bool
+		}{{"state", 6, strings.Repeat("v", 400), true}, {"entries", 20, "", false}} {
+			t.Run(fmt.Sprintf("MemoryMapped=%t/%s", memoryMapped, spill.name), func(t *testing.T) {
+				w, err := openWal(WalOptions{Dir: t.TempDir(), SegmentSize: 1024, MemoryMapped: memoryMapped})
+				assert.NilError(t, err)
+				defer w.Close()
+
+				entries := make([]*pb.LogEntry, spill.count)
+				for i := range entries {
+					entries[i] = &pb.LogEntry{Term: 1, Data: []byte(strings.Repeat("a", 100))}
+				}
+				_, err = w.Append(&pb.PersistedState{CurrentTerm: 1, VotedFor: spill.votedFor}, entries)
+				assert.NilError(t, err)
+				assert.Assert(t, len(w.segments) > 1, "nothing spilled into a new segment")
+				assert.Equal(t, w.tail().entryCount() == 0, spill.stateSpills, "a different record spilled")
+				for _, s := range w.segments {
+					assert.Assert(t, !s.dirty, "segment %d was left unsynced", s.number)
+				}
+			})
+		}
+	}
+}
+
+// Every public method that writes returns with what it wrote synced.
+func TestWalWritesLeaveNoSegmentUnsynced(t *testing.T) {
+	for _, memoryMapped := range []bool{false, true} {
+		for _, write := range []struct {
+			name string
+			run  func(w *wal) error
+		}{
+			{"SaveState", func(w *wal) error {
+				return w.SaveState(&pb.PersistedState{CurrentTerm: 2, CommitIndex: -1})
+			}},
+			{"Append with no entries", func(w *wal) error {
+				_, err := w.Append(&pb.PersistedState{CurrentTerm: 2, CommitIndex: -1}, nil)
+				return err
+			}},
+			{"TruncateEntriesFrom", func(w *wal) error { return w.TruncateEntriesFrom(2) }},
+			{"TruncateEntriesTo", func(w *wal) error { return w.TruncateEntriesTo(2) }},
+			{"Commit", func(w *wal) error {
+				writer, err := w.CreateSnapshot(&pb.SnapshotMetadata{LastIncludedIndex: 3, LastIncludedTerm: 1})
+				if err != nil {
+					return err
+				}
+				if _, err := writer.WriteAt([]byte("Snorlax"), 0); err != nil {
+					return err
+				}
+				return writer.Commit()
+			}},
+		} {
+			t.Run(fmt.Sprintf("MemoryMapped=%t/%s", memoryMapped, write.name), func(t *testing.T) {
+				w, err := openWal(WalOptions{Dir: t.TempDir(), SegmentSize: 1024, MemoryMapped: memoryMapped})
+				assert.NilError(t, err)
+				defer w.Close()
+
+				entries := make([]*pb.LogEntry, 5)
+				for i := range entries {
+					entries[i] = &pb.LogEntry{Term: 1, Data: []byte("Snorlax")}
+				}
+				_, err = w.Append(&pb.PersistedState{CurrentTerm: 1, CommitIndex: -1}, entries)
+				assert.NilError(t, err)
+				assert.NilError(t, write.run(w))
+				for _, s := range w.segments {
+					assert.Assert(t, !s.dirty, "segment %d was left unsynced", s.number)
+				}
+			})
+		}
+	}
+}
