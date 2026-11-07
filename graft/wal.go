@@ -696,6 +696,12 @@ func openWal(options WalOptions) (*wal, error) {
 		if err := w.appendSegment(); err != nil {
 			return nil, err
 		}
+	} else {
+		// A crashed process can leave writes it never synced in the tail, read back from the page cache as if durable.
+		w.tail().dirty = true
+		if err := w.tail().sync(); err != nil {
+			return nil, err
+		}
 	}
 
 	w.snapshotter, err = OpenFileSnapshotter(options.Dir, &w.mut, func() (*pb.SnapshotMetadata, error) {
