@@ -583,10 +583,8 @@ func openWal(options WalOptions) (*wal, error) {
 			}
 		}
 
-		reader := s.countingReader()
-
 		// Expect header record at the beginning.
-		record, err := w.readRecordFromReader(reader)
+		record, err := w.readRecordFromReader(s.reader())
 		if err != nil {
 			return nil, err
 		}
@@ -628,6 +626,18 @@ func openWal(options WalOptions) (*wal, error) {
 
 			s.number, s.firstIndex = correctedSegmentNumber, correctedFirstIndex
 			s.fpath = correctedFpath
+		}
+	}
+
+	// Records are applied as they're read, so read them in number order, which names don't sort by (log_10 < log_9).
+	sort.Slice(w.segments, func(i, j int) bool {
+		return w.segments[i].number < w.segments[j].number
+	})
+
+	for _, s := range w.segments {
+		reader := s.countingReader()
+		if _, err := w.readRecordFromReader(reader); err != nil { // The header, checked above.
+			return nil, err
 		}
 
 	outerLoop:
@@ -671,11 +681,6 @@ func openWal(options WalOptions) (*wal, error) {
 			}
 		}
 	}
-
-	// Sort segment files.
-	sort.Slice(w.segments, func(i, j int) bool {
-		return w.segments[i].number < w.segments[j].number
-	})
 
 	// Verify index continuity.
 	for i, seg := range w.segments {

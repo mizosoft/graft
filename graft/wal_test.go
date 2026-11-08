@@ -714,3 +714,42 @@ func TestWalWritesLeaveNoSegmentUnsynced(t *testing.T) {
 		}
 	}
 }
+
+// Segment names stop sorting by number at log_10, and a reopened WAL still applies their records in number order.
+func TestWalReopensSegmentsInNumberOrder(t *testing.T) {
+	for _, memoryMapped := range []bool{false, true} {
+		t.Run(fmt.Sprintf("MemoryMapped=%t", memoryMapped), func(t *testing.T) {
+			options := WalOptions{
+				Dir:             t.TempDir(),
+				SegmentSize:     1024,
+				SuffixCacheSize: 1 << 20,
+				MemoryMapped:    memoryMapped,
+			}
+			w, err := openWal(options)
+			assert.NilError(t, err)
+
+			var state *pb.PersistedState
+			var entries []*pb.LogEntry
+			for len(w.segments) <= 10 { // Through log_10, which sorts before log_2.
+				i := int64(len(entries))
+				state = &pb.PersistedState{CurrentTerm: i + 1, CommitIndex: -1}
+				entries = append(entries, &pb.LogEntry{Index: i, Term: i + 1, Data: []byte(strings.Repeat("a", 100))})
+				_, err := w.Append(state, []*pb.LogEntry{proto.CloneOf(entries[i])})
+				assert.NilError(t, err)
+			}
+			assert.NilError(t, w.Close())
+
+			w, err = openWal(options)
+			assert.NilError(t, err)
+			defer w.Close()
+			got, err := w.RetrieveState()
+			assert.NilError(t, err)
+			assert.Assert(t, proto.Equal(got, state), "got state %v, want %v", got, state)
+			for _, entry := range entries { // Read from the cache, which holds the whole log.
+				got, err := w.GetEntry(entry.Index)
+				assert.NilError(t, err)
+				assert.Assert(t, proto.Equal(got, entry), "got entry %v, want %v", got, entry)
+			}
+		})
+	}
+}
