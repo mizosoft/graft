@@ -114,6 +114,21 @@ func testCompactionSurvivesReopening(t *testing.T, factory *persistenceFactory) 
 	assertEntries(t, got, entries[5:])
 }
 
+// A compacted log stays compacted after its tail is truncated, and reopened after that.
+func testCompactionSurvivesTruncationAndReopening(t *testing.T, factory *persistenceFactory) {
+	p := factory.open()
+	_, entries := appendEntries(t, p, 10)
+	assert.NilError(t, p.TruncateEntriesTo(4))
+	assert.NilError(t, p.TruncateEntriesFrom(7))
+	assert.NilError(t, p.Close())
+
+	p = factory.open()
+	assertLogHolds(t, p, 5, 6)
+	got, err := p.GetEntriesFrom(5)
+	assert.NilError(t, err)
+	assertEntries(t, got, entries[5:7])
+}
+
 // The current snapshot, all of its metadata and its data, outlives the persistence it was committed to.
 func testCurrentSnapshotSurvivesReopening(t *testing.T, factory *persistenceFactory) {
 	p := factory.open()

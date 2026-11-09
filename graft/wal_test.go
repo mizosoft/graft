@@ -753,3 +753,43 @@ func TestWalReopensSegmentsInNumberOrder(t *testing.T) {
 		})
 	}
 }
+
+// A crash can leave any of the segments a compaction deletes, and reopening deletes them rather than finding a gap.
+func TestWalReopeningDeletesCompactedSegments(t *testing.T) {
+	for _, memoryMapped := range []bool{false, true} {
+		t.Run(fmt.Sprintf("MemoryMapped=%t", memoryMapped), func(t *testing.T) {
+			options := WalOptions{Dir: t.TempDir(), SegmentSize: 1024, MemoryMapped: memoryMapped}
+			w, err := openWal(options)
+			assert.NilError(t, err)
+
+			var entries []*pb.LogEntry
+			for len(w.segments) < 3 {
+				i := int64(len(entries))
+				entries = append(entries, &pb.LogEntry{Index: i, Term: 1, Data: []byte(strings.Repeat("a", 100))})
+				_, err := w.Append(nil, []*pb.LogEntry{proto.CloneOf(entries[i])})
+				assert.NilError(t, err)
+			}
+			head := w.segments[0].fpath
+			data, err := os.ReadFile(head)
+			assert.NilError(t, err)
+			index := w.tail().firstIndex - 1 // Compacts every segment but the tail.
+			assert.NilError(t, w.TruncateEntriesTo(index))
+			assert.NilError(t, w.Close())
+			assert.NilError(t, os.WriteFile(head, data, 0644)) // The head's delete lost, but not the next segment's.
+
+			w, err = openWal(options)
+			assert.NilError(t, err)
+			defer w.Close()
+			assert.Assert(t, !fileExists(head))
+			first, err := w.FirstEntryIndex()
+			assert.NilError(t, err)
+			assert.Equal(t, first, index+1)
+			got, err := w.GetEntriesFrom(first)
+			assert.NilError(t, err)
+			assert.Equal(t, len(got), len(entries[first:]))
+			for i, entry := range entries[first:] {
+				assert.Assert(t, proto.Equal(got[i], entry), "got entry %v, want %v", got[i], entry)
+			}
+		})
+	}
+}

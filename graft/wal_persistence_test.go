@@ -16,7 +16,6 @@ func TestWalPersistence(t *testing.T) {
 					// Small segments, so the longer logs span several.
 					return graft.OpenWal(graft.WalOptions{Dir: dir, SegmentSize: 1024, MemoryMapped: memoryMapped})
 				},
-				Skip: map[string]string{"CompactionSurvivesReopening": "#32: compaction leaves the old segment file"},
 			})
 		})
 	}

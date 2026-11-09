@@ -17,6 +17,7 @@ import (
 	"github.com/mizosoft/graft/pb"
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
 const (
@@ -25,6 +26,7 @@ const (
 	entryRecordType
 	snapshotMetadataRecordType
 	trailerRecordType
+	compactionRecordType
 )
 
 const (
@@ -122,6 +124,7 @@ type wal struct {
 	memoryMapped         bool
 	lastState            *pb.PersistedState
 	lastSnapshotMetadata *pb.SnapshotMetadata
+	lastCompaction       *wrapperspb.Int64Value // The index the log was last compacted to.
 	cache                *entryCache
 	mut                  sync.RWMutex
 	logger               *zap.SugaredLogger
@@ -359,104 +362,6 @@ func (s *segment) truncateEntriesFrom(index int64) error {
 	return nil
 }
 
-func (s *segment) truncateEntriesTo(index int64) (removeHead bool, err error) {
-	localIndex := int(index - s.firstIndex)
-	if localIndex < 0 || localIndex >= s.entryCount() {
-		return false, nil // Ignore.
-	}
-
-	// If all entries are to be truncated then delete this segment.
-	if localIndex >= len(s.entryOffsets)-1 {
-		return true, s.delete()
-	}
-
-	// Write the new segment into a temp file and do an atomic replace.
-	newFirstIndex := index + 1
-	newFpath := path.Join(s.w.dir, segFileName(s.number, newFirstIndex))
-	tempNewFpath := newFpath + ".tmp"
-	tempF, err := os.Create(tempNewFpath)
-	if err != nil {
-		return false, err
-	}
-	if err := tempF.Truncate(s.w.segmentSize); err != nil {
-		return false, removeOnErr(tempNewFpath, closeOnErr(tempF, err))
-	}
-
-	var newNextOffset int64
-	var offsetDiff int64
-	err = func() error {
-		// Append a new header record.
-		buf := s.w.appendRecordTo(nil, headerRecordType, &pb.WalSegmentHeader{
-			Magic:         walMagic,
-			Version:       walVersion,
-			Flags:         0,
-			SegmentNumber: int32(s.number),
-			FirstIndex:    newFirstIndex,
-		})
-		nHeader, err := tempF.WriteAt(buf, 0)
-		if err != nil {
-			return err
-		}
-
-		// Copy remaining records.
-		copyFromOffset := s.entryOffsets[localIndex+1]
-		copyToOffset := s.nextOffset + int64(len(s.w.trailerRecord)) // Include the trailer record when copying.
-		nCopied, err := io.Copy(newWriterAt(tempF, int64(nHeader)), io.NewSectionReader(s.f, copyFromOffset, copyToOffset-copyFromOffset))
-		if err != nil {
-			return err
-		}
-		if err := tempF.Sync(); err != nil {
-			return err
-		}
-		if err := tempF.Close(); err != nil {
-			return err
-		}
-
-		// We want oldOffset + offsetDiff = newOffset.
-		offsetDiff = int64(len(buf)) - copyFromOffset
-		newNextOffset = int64(len(buf)) + nCopied - int64(len(s.w.trailerRecord))
-		return nil
-	}()
-	if err != nil {
-		return false, removeOnErr(tempNewFpath, closeOnErr(tempF, err))
-	}
-
-	// Close, do atomic replace, re-open.
-
-	if err := s.close(); err != nil {
-		return false, removeOnErr(tempNewFpath, err)
-	}
-
-	if err := os.Rename(tempNewFpath, newFpath); err != nil {
-		return false, removeOnErr(tempNewFpath, err)
-	}
-
-	s.entryOffsets = s.entryOffsets[localIndex+1:]
-
-	// Shift the offsets by the amount we deleted.
-	for i := range s.entryOffsets {
-		s.entryOffsets[i] += offsetDiff
-	}
-
-	newF, err := os.OpenFile(newFpath, os.O_RDWR, 0644)
-	if err != nil {
-		return false, err
-	}
-
-	var newM []byte
-	if s.w.memoryMapped {
-		newM, err = mmap.Map(newF, mmap.RDWR, 0)
-		if err != nil {
-			return false, closeOnErr(newF, err)
-		}
-	}
-
-	s.firstIndex = newFirstIndex
-	s.m, s.f, s.fpath = newM, newF, newFpath
-	s.nextOffset = newNextOffset
-	return false, nil
-}
-
 func (s *segment) delete() error {
 	if err := s.close(); err != nil {
 		return err
@@ -666,6 +571,10 @@ func openWal(options WalOptions) (*wal, error) {
 				var snapshot pb.SnapshotMetadata
 				protoUnmarshal(record.Data, &snapshot)
 				w.lastSnapshotMetadata = &snapshot
+			case compactionRecordType:
+				var compaction wrapperspb.Int64Value
+				protoUnmarshal(record.Data, &compaction)
+				w.lastCompaction = &compaction
 			case trailerRecordType:
 				var trailer pb.WalSegmentTrailer
 				protoUnmarshal(record.Data, &trailer)
@@ -679,6 +588,13 @@ func openWal(options WalOptions) (*wal, error) {
 			default:
 				return nil, fmt.Errorf("unexpected record type: %d", record.Type)
 			}
+		}
+	}
+
+	// Before checking continuity: a crash can leave any of the segments a compaction deleted.
+	if w.lastCompaction != nil {
+		if err := w.compactTo(w.lastCompaction.Value); err != nil {
+			return nil, err
 		}
 	}
 
@@ -895,7 +811,8 @@ func (w *wal) appendSegment() error {
 		FirstIndex:    firstIndex,
 	})
 
-	// Make sure each segment knows the last state & snapshot.
+	// Make sure each segment knows the last state & snapshot. The last compaction needn't be carried: a segment holding
+	// it is only deleted by a later compaction, or by TruncateEntriesFrom, which saves it again.
 	if w.lastState != nil {
 		w.appendRecordToBuffer(&buf, stateRecordType, w.lastState)
 	}
@@ -986,7 +903,7 @@ func (w *wal) TruncateEntriesFrom(index int64) error {
 		w.cache.truncateFrom(max(index, w.cache.firstIndex()))
 	}
 
-	// Save last state & snapshot metadata since they could've been truncated.
+	// Save last state, snapshot metadata & compaction since they could've been truncated.
 	if w.lastState != nil {
 		if err := w.saveState(w.lastState); err != nil {
 			return err
@@ -994,6 +911,11 @@ func (w *wal) TruncateEntriesFrom(index int64) error {
 	}
 	if w.lastSnapshotMetadata != nil {
 		if err := w.saveSnapshotMetadata(w.lastSnapshotMetadata); err != nil {
+			return err
+		}
+	}
+	if w.lastCompaction != nil {
+		if err := w.saveCompaction(w.lastCompaction); err != nil {
 			return err
 		}
 	}
@@ -1014,46 +936,32 @@ func (w *wal) TruncateEntriesTo(index int64) error {
 	if index = min(index, last); index < first {
 		return nil
 	}
-	segIndex := w.findSegment(index)
 
-	removedSegments := w.segments[:segIndex]
-	for _, seg := range removedSegments {
-		if err := seg.delete(); err != nil {
-			return err
-		}
-	}
-
-	removeHead, err := w.segments[segIndex].truncateEntriesTo(index)
-	if err != nil {
+	// Sync the record before deleting the segments it covers: a crash can leave any of them, and only the record tells
+	// opening they're compacted rather than a gap.
+	if err := w.saveCompaction(wrapperspb.Int64(index)); err != nil {
 		return err
 	}
+	if err := w.tail().sync(); err != nil {
+		return err
+	}
+	return w.compactTo(index)
+}
 
-	w.segments = w.segments[segIndex:]
-	if removeHead { // Head segment is deleted.
-		if len(w.segments) == 1 {
-			if err := w.appendSegment(); err != nil {
-				return err
-			}
+// compactTo drops the entries up to index, deleting each segment it empties but the tail.
+func (w *wal) compactTo(index int64) error {
+	for len(w.segments) > 1 && w.segments[0].nextIndex <= index+1 {
+		if err := w.segments[0].delete(); err != nil {
+			return err
 		}
 		w.segments = w.segments[1:]
 	}
-
-	if w.cache.firstIndex() >= 0 && index >= w.cache.firstIndex() {
-		w.cache.truncateTo(index)
+	if head := w.segments[0]; index >= head.firstIndex {
+		head.entryOffsets = head.entryOffsets[index+1-head.firstIndex:]
+		head.firstIndex = index + 1
 	}
-
-	// Save last state & snapshot metadata since they could've been truncated.
-	if w.lastState != nil {
-		if err := w.saveState(w.lastState); err != nil {
-			return err
-		}
-	}
-	if w.lastSnapshotMetadata != nil {
-		if err := w.saveSnapshotMetadata(w.lastSnapshotMetadata); err != nil {
-			return err
-		}
-	}
-	return w.tail().sync()
+	w.cache.truncateTo(index)
+	return nil
 }
 
 func (w *wal) EntryCount() int64 {
@@ -1219,6 +1127,14 @@ func (w *wal) saveSnapshotMetadata(metadata *pb.SnapshotMetadata) error {
 		return err
 	}
 	w.lastSnapshotMetadata = metadata
+	return nil
+}
+
+func (w *wal) saveCompaction(compaction *wrapperspb.Int64Value) error {
+	if err := w.appendRecord(compactionRecordType, compaction); err != nil {
+		return err
+	}
+	w.lastCompaction = compaction
 	return nil
 }
 

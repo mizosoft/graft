@@ -79,6 +79,7 @@ var tests = []struct {
 	{"AppendWithoutStateSurvivesReopening", testAppendWithoutStateSurvivesReopening},
 	{"StateSurvivesEmptyingTheLog", testStateSurvivesEmptyingTheLog},
 	{"CompactionSurvivesReopening", testCompactionSurvivesReopening},
+	{"CompactionSurvivesTruncationAndReopening", testCompactionSurvivesTruncationAndReopening},
 	{"CurrentSnapshotSurvivesReopening", testCurrentSnapshotSurvivesReopening},
 }
 
